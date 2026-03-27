@@ -201,6 +201,7 @@ back to the spawning session when done.
 | `IPC_HUB_HOST` | auto-detect | Hub host; auto-detects WSL2 Windows host from `/etc/resolv.conf` |
 | `IPC_HUB_AUTOSTART` | `true` | Auto-start hub if not running when MCP server connects |
 | `IPC_CHANNEL_URL` | — | HTTP endpoint for the Channel Server to POST incoming messages to |
+| `IPC_AUTH_TOKEN` | (empty) | Shared secret for authentication. If set, all connections must provide this token. |
 
 ## HTTP API
 

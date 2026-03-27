@@ -29,6 +29,7 @@ if (!name) {
 
 const port = parseInt(process.env.IPC_PORT || String(DEFAULT_PORT), 10);
 const channelUrl = process.env.IPC_CHANNEL_URL || null;
+const authToken = process.env.IPC_AUTH_TOKEN || '';
 
 // ---------------------------------------------------------------------------
 // Host auto-detection (WSL2 support)
@@ -104,7 +105,9 @@ const RECONNECT_BASE_DELAY = 3000;
 const RECONNECT_MAX_DELAY = 30000;
 
 function buildWsUrl() {
-  return `ws://${host}:${port}/ws?name=${encodeURIComponent(name)}`;
+  let url = `ws://${host}:${port}/ws?name=${encodeURIComponent(name)}`;
+  if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
+  return url;
 }
 
 function scheduleReconnect() {

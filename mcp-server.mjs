@@ -40,6 +40,7 @@ if (!process.env.IPC_NAME && !process.env.IPC_DEFAULT_NAME) {
 }
 
 const IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
+const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || '';
 
 // ---------------------------------------------------------------------------
 // Host auto-detection (WSL2 support)
@@ -387,7 +388,9 @@ function autostartHub() {
 // WebSocket connection helpers
 // ---------------------------------------------------------------------------
 function buildWsUrl() {
-  return `ws://${HOST}:${IPC_PORT}/ws?name=${encodeURIComponent(IPC_NAME)}`;
+  let url = `ws://${HOST}:${IPC_PORT}/ws?name=${encodeURIComponent(IPC_NAME)}`;
+  if (AUTH_TOKEN) url += `&token=${encodeURIComponent(AUTH_TOKEN)}`;
+  return url;
 }
 
 function flushOutgoingQueue() {
@@ -565,7 +568,9 @@ async function initialConnect() {
 // ---------------------------------------------------------------------------
 function httpGet(url) {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, (res) => {
+    const headers = {};
+    if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
+    const req = http.get(url, { headers }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
       res.on('end', () => {

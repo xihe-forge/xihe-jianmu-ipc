@@ -22,6 +22,15 @@ import {
 import { createMessage, createSystemEvent, validateMessage } from './lib/protocol.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
+const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
+
+// ---------------------------------------------------------------------------
+// Auth helper
+// ---------------------------------------------------------------------------
+function checkAuth(providedToken) {
+  if (!AUTH_TOKEN) return true; // Auth disabled
+  return providedToken === AUTH_TOKEN;
+}
 
 // ---------------------------------------------------------------------------
 // Session registry
@@ -111,6 +120,17 @@ function scheduleInboxCleanup(session) {
 // HTTP server (health endpoint)
 // ---------------------------------------------------------------------------
 const httpServer = http.createServer((req, res) => {
+  // Auth check for all routes except /health
+  if (AUTH_TOKEN) {
+    const authHeader = req.headers.authorization;
+    const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (req.url !== '/health' && !checkAuth(providedToken)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+  }
+
   if (req.method === 'GET' && req.url === '/health') {
     const sessionList = [];
     for (const [, s] of sessions) {
@@ -195,9 +215,15 @@ const httpServer = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', (ws, req) => {
-  // Parse session name from query string
+  // Parse session name and token from query string
   const url = new URL(req.url, `http://localhost`);
   const name = url.searchParams.get('name');
+  const token = url.searchParams.get('token');
+
+  if (!checkAuth(token)) {
+    ws.close(4003, 'unauthorized');
+    return;
+  }
 
   if (!name) {
     ws.close(4000, 'name query param required');
@@ -318,6 +344,57 @@ wss.on('connection', (ws, req) => {
 });
 
 // ---------------------------------------------------------------------------
+// OpenClaw adapter — deliver messages to OpenClaw sessions via CLI
+// ---------------------------------------------------------------------------
+function isOpenClawSession(name) {
+  return name.startsWith('openclaw');
+}
+
+async function deliverToOpenClaw(msg) {
+  const { spawn } = await import('node:child_process');
+  const content = `[IPC from ${msg.from}] ${msg.content}`;
+
+  // Detect if we're on Windows or Linux
+  const isWin = process.platform === 'win32';
+  let child;
+
+  if (isWin) {
+    // On Windows, call WSL to reach OpenClaw
+    child = spawn('wsl', ['-e', 'bash', '-c',
+      `npx openclaw agent -m '${content.replace(/'/g, "'\\''")}' --json 2>/dev/null`
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  } else {
+    // On Linux/WSL, call directly
+    child = spawn('npx', ['openclaw', 'agent', '-m', content, '--json'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+
+  let stdout = '';
+  let stderr_output = '';
+  child.stdout?.on('data', d => { stdout += d.toString(); });
+  child.stderr?.on('data', d => { stderr_output += d.toString(); });
+
+  return new Promise((resolve) => {
+    child.on('exit', (code) => {
+      if (code === 0) {
+        stderr(`[ipc-hub] openclaw adapter: delivered to ${msg.to}, response: ${stdout.substring(0, 200)}`);
+        resolve(true);
+      } else {
+        stderr(`[ipc-hub] openclaw adapter: failed (exit=${code}): ${stderr_output.substring(0, 200)}`);
+        resolve(false);
+      }
+    });
+    // Timeout after 60s
+    setTimeout(() => {
+      child.kill();
+      stderr(`[ipc-hub] openclaw adapter: timeout delivering to ${msg.to}`);
+      resolve(false);
+    }, 60000);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Message routing
 // ---------------------------------------------------------------------------
 function routeMessage(msg, senderSession) {
@@ -360,21 +437,32 @@ function routeMessage(msg, senderSession) {
           send(target.ws, msg);
         } else {
           pushInbox(target, msg);
-          stderr(`[ipc-hub] ${senderSession.name} → ${to}: session offline, buffered (inbox: ${target.inbox.length})`);
+          // Try OpenClaw adapter for openclaw sessions
+          if (isOpenClawSession(to)) {
+            deliverToOpenClaw(msg);
+          }
+          stderr(`[ipc-hub] ${senderSession.name} → ${to}: session offline, buffered`);
         }
       } else {
-        // Unknown target — create a stub session with the message buffered
-        const stub = {
-          name: to,
-          ws: null,
-          connectedAt: 0,
-          topics: new Set(),
-          inbox: [msg],
-          inboxExpiry: null,
-        };
-        sessions.set(to, stub);
-        scheduleInboxCleanup(stub);
-        stderr(`[ipc-hub] ${senderSession.name} → ${to}: unknown session, created stub with buffered msg`);
+        // Unknown target
+        if (isOpenClawSession(to)) {
+          // Don't create stub, try OpenClaw adapter directly
+          deliverToOpenClaw(msg);
+          stderr(`[ipc-hub] ${senderSession.name} → ${to}: routing to OpenClaw adapter`);
+        } else {
+          // Create stub for non-OpenClaw targets
+          const stub = {
+            name: to,
+            ws: null,
+            connectedAt: 0,
+            topics: new Set(),
+            inbox: [msg],
+            inboxExpiry: null,
+          };
+          sessions.set(to, stub);
+          scheduleInboxCleanup(stub);
+          stderr(`[ipc-hub] ${senderSession.name} → ${to}: unknown session, created stub with buffered msg`);
+        }
       }
     }
   }
@@ -419,6 +507,7 @@ heartbeatInterval.unref(); // Don't block process exit
 // ---------------------------------------------------------------------------
 httpServer.listen(PORT, DEFAULT_HOST, () => {
   stderr(`[ipc-hub] listening on :${PORT}`);
+  stderr(`[ipc-hub] auth: ${AUTH_TOKEN ? 'enabled (token required)' : 'disabled (open access)'}`);
 });
 
 httpServer.on('error', (err) => {

@@ -587,6 +587,10 @@ function wsSend(payload) {
     ws.send(serialized);
   } else {
     outgoingQueue.push(serialized);
+    if (outgoingQueue.length > 100) {
+      outgoingQueue.shift(); // Drop oldest
+      process.stderr.write('[ipc] outgoing queue full, dropped oldest message\n');
+    }
     process.stderr.write('[ipc] hub not connected, message queued\n');
   }
 }

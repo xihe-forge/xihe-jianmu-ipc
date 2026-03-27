@@ -59,8 +59,12 @@ function stderr(...args) {
 }
 
 function send(ws, payload) {
-  if (ws && ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify(payload));
+  try {
+    if (ws && ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify(payload));
+    }
+  } catch (err) {
+    stderr(`[ipc-hub] send error: ${err.message}`);
   }
 }
 
@@ -128,7 +132,18 @@ const httpServer = http.createServer((req, res) => {
   } else if (req.method === 'POST' && req.url === '/send') {
     // HTTP API for sending messages — any tool (Codex, curl, scripts) can use this
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    let size = 0;
+    const MAX_BODY = 1024 * 1024; // 1MB
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'payload too large' }));
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => {
       let msg;
       try {
@@ -154,8 +169,10 @@ const httpServer = http.createServer((req, res) => {
       const fakeSender = { name: msg.from };
       routeMessage(msg, fakeSender);
 
+      const target = sessions.get(msg.to);
+      const online = target?.ws?.readyState === target?.ws?.OPEN;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, id: msg.id }));
+      res.end(JSON.stringify({ ok: true, id: msg.id, online: !!online, buffered: !online }));
       stderr(`[ipc-hub] HTTP POST /send: ${msg.from} → ${msg.to}`);
     });
   } else if (req.method === 'GET' && req.url === '/sessions') {
@@ -305,6 +322,7 @@ wss.on('connection', (ws, req) => {
 // ---------------------------------------------------------------------------
 function routeMessage(msg, senderSession) {
   const { to, topic } = msg;
+  const delivered = new Set(); // Track who already received the message
 
   // Topic-based fanout (can combine with direct addressing)
   if (topic) {
@@ -316,6 +334,7 @@ function routeMessage(msg, senderSession) {
         } else {
           pushInbox(s, msg);
         }
+        delivered.add(s.name); // Mark as delivered via topic
       }
     }
   }
@@ -325,6 +344,7 @@ function routeMessage(msg, senderSession) {
     // Broadcast to all except sender
     for (const [, s] of sessions) {
       if (s.name === senderSession.name) continue;
+      if (delivered.has(s.name)) continue; // Skip if already got via topic
       if (s.ws && s.ws.readyState === s.ws.OPEN) {
         send(s.ws, msg);
       } else {
@@ -332,28 +352,30 @@ function routeMessage(msg, senderSession) {
       }
     }
   } else if (to && to !== '*') {
-    // Direct message
-    const target = sessions.get(to);
-    if (target) {
-      if (target.ws && target.ws.readyState === target.ws.OPEN) {
-        send(target.ws, msg);
+    // Direct message — skip if already delivered via topic
+    if (!delivered.has(to)) {
+      const target = sessions.get(to);
+      if (target) {
+        if (target.ws && target.ws.readyState === target.ws.OPEN) {
+          send(target.ws, msg);
+        } else {
+          pushInbox(target, msg);
+          stderr(`[ipc-hub] ${senderSession.name} → ${to}: session offline, buffered (inbox: ${target.inbox.length})`);
+        }
       } else {
-        pushInbox(target, msg);
-        stderr(`[ipc-hub] ${senderSession.name} → ${to}: session offline, buffered (inbox: ${target.inbox.length})`);
+        // Unknown target — create a stub session with the message buffered
+        const stub = {
+          name: to,
+          ws: null,
+          connectedAt: 0,
+          topics: new Set(),
+          inbox: [msg],
+          inboxExpiry: null,
+        };
+        sessions.set(to, stub);
+        scheduleInboxCleanup(stub);
+        stderr(`[ipc-hub] ${senderSession.name} → ${to}: unknown session, created stub with buffered msg`);
       }
-    } else {
-      // Unknown target — create a stub session with the message buffered
-      const stub = {
-        name: to,
-        ws: null,
-        connectedAt: 0,
-        topics: new Set(),
-        inbox: [msg],
-        inboxExpiry: null,
-      };
-      sessions.set(to, stub);
-      scheduleInboxCleanup(stub);
-      stderr(`[ipc-hub] ${senderSession.name} → ${to}: unknown session, created stub with buffered msg`);
     }
   }
 }

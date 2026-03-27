@@ -1,0 +1,8 @@
+node_modules/
+pnpm-lock.yaml
+.git/
+*.log
+.env
+ai/
+bin/claude-ipc.mjs
+bin/setup-alias.ps1

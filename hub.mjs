@@ -344,54 +344,53 @@ wss.on('connection', (ws, req) => {
 });
 
 // ---------------------------------------------------------------------------
-// OpenClaw adapter — deliver messages to OpenClaw sessions via CLI
+// OpenClaw adapter — deliver messages to OpenClaw via Gateway HTTP API
 // ---------------------------------------------------------------------------
+const OPENCLAW_URL = process.env.OPENCLAW_URL || 'http://127.0.0.1:18789';
+const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN || '';
+
 function isOpenClawSession(name) {
   return name.startsWith('openclaw');
 }
 
 async function deliverToOpenClaw(msg) {
-  const { spawn } = await import('node:child_process');
   const content = `[IPC from ${msg.from}] ${msg.content}`;
 
-  // Detect if we're on Windows or Linux
-  const isWin = process.platform === 'win32';
-  let child;
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (OPENCLAW_TOKEN) headers['Authorization'] = `Bearer ${OPENCLAW_TOKEN}`;
 
-  if (isWin) {
-    // On Windows, call WSL to reach OpenClaw
-    child = spawn('wsl', ['-e', 'bash', '-c',
-      `npx openclaw agent -m '${content.replace(/'/g, "'\\''")}' --json 2>/dev/null`
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-  } else {
-    // On Linux/WSL, call directly
-    child = spawn('npx', ['openclaw', 'agent', '-m', content, '--json'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
+    const res = await fetch(`${OPENCLAW_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: 'openclaw',
+        messages: [{ role: 'user', content }],
+      }),
+      signal: controller.signal,
     });
-  }
+    clearTimeout(timeout);
 
-  let stdout = '';
-  let stderr_output = '';
-  child.stdout?.on('data', d => { stdout += d.toString(); });
-  child.stderr?.on('data', d => { stderr_output += d.toString(); });
+    const data = await res.json();
+    const reply = data.choices?.[0]?.message?.content || '';
+    stderr(`[ipc-hub] openclaw adapter: delivered to ${msg.to}, reply: ${reply.substring(0, 200)}`);
 
-  return new Promise((resolve) => {
-    child.on('exit', (code) => {
-      if (code === 0) {
-        stderr(`[ipc-hub] openclaw adapter: delivered to ${msg.to}, response: ${stdout.substring(0, 200)}`);
-        resolve(true);
-      } else {
-        stderr(`[ipc-hub] openclaw adapter: failed (exit=${code}): ${stderr_output.substring(0, 200)}`);
-        resolve(false);
+    // If OpenClaw replied and the sender is online, forward the reply back
+    if (reply && msg.from) {
+      const sender = sessions.get(msg.from);
+      if (sender?.ws?.readyState === sender?.ws?.OPEN) {
+        send(sender.ws, createMessage({ from: msg.to, to: msg.from, content: reply }));
+        stderr(`[ipc-hub] openclaw adapter: forwarded reply to ${msg.from}`);
       }
-    });
-    // Timeout after 60s
-    setTimeout(() => {
-      child.kill();
-      stderr(`[ipc-hub] openclaw adapter: timeout delivering to ${msg.to}`);
-      resolve(false);
-    }, 60000);
-  });
+    }
+    return true;
+  } catch (err) {
+    stderr(`[ipc-hub] openclaw adapter: failed: ${err?.message ?? err}`);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

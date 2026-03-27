@@ -1,8 +1,18 @@
-# 建木 (Jianmu) — Real-time IPC for AI Coding Sessions
+# xihe-jianmu-ipc
 
-WebSocket message hub for routing messages between independent AI coding sessions.
-Designed for multi-agent workflows where Claude Code, Codex, and other AI tools
-need to coordinate in real time.
+> **命名由来 / Etymology** — 遵循曦和项目三段式命名规范 `xihe-{隐喻}-{功能}`：
+>
+> - **xihe（曦和）** — 品牌。源自中国神话中的太阳女神曦和 / Brand. Xihe, the sun goddess in Chinese mythology
+> - **jianmu（建木）** — 隐喻。建木是上古神话中天地之间的通天神树，诸神借之往来天地、沟通上下。多个 AI 会话之间的通信如建木般无声连通 / Metaphor. Jiànmù is the mythical World Tree bridging heaven and earth in ancient Chinese mythology — gods traveled between realms through it in silence. IPC messages flow between AI sessions like spirits through the World Tree
+> - **ipc** — 功能。进程间实时通信 / Function. Real-time inter-process communication
+
+多 AI 会话实时通信中枢——WebSocket 消息路由 + MCP 集成 + Channel 推送唤醒。
+
+Real-time communication hub for AI coding sessions — WebSocket message routing + MCP integration + Channel push notifications.
+
+为需要多个 AI agent 协作而非各自为战的开发者而建。
+
+Built for developers who need multiple AI agents to collaborate, not work in isolation.
 
 ## Architecture
 
@@ -301,6 +311,14 @@ xihe-jianmu-ipc/
 │   └── patch-channels.mjs  # Claude Code channel patch helper
 └── package.json
 ```
+
+---
+
+## 关于曦和 AI / About Xihe AI
+
+曦和（Xihe）得名于中国神话中驾驭太阳的女神。[xihe-forge](https://github.com/xihe-forge) 是曦和 AI 的开源锻造炉——我们在这里把实用的 AI 工具从想法锤炼成可以直接上手的开源项目。xihe-jianmu-ipc 是锻造炉中的第三个开源作品。更多面向 AI 协作、搜索和增长的工具正在锻造中，欢迎关注或参与贡献。
+
+Xihe is named after the sun goddess who drives the solar chariot in Chinese mythology. [xihe-forge](https://github.com/xihe-forge) is Xihe AI's open-source forge — where we hammer practical AI tools from ideas into ready-to-use open-source projects. xihe-jianmu-ipc is the third open-source piece out of the forge. More AI tools for collaboration, search, and growth are being forged — follow the org or contribute.
 
 ## License
 

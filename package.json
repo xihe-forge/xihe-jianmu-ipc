@@ -1,0 +1,17 @@
+{
+  "name": "xihe-jianmu-ipc",
+  "version": "0.1.0",
+  "description": "建木 — Real-time IPC between Claude Code sessions",
+  "type": "module",
+  "bin": {
+    "jianmu": "./bin/jianmu.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "ws": "^8.18.0"
+  },
+  "scripts": {
+    "hub": "node hub.mjs",
+    "status": "node bin/jianmu.mjs status"
+  }
+}

@@ -1,5 +1,5 @@
 ---
-name: jianmu-ipc
+name: xihe-jianmu-ipc
 description: "建木 IPC — Real-time cross-AI communication hub. Route messages between OpenClaw, Claude Code, Codex, and any HTTP client through a lightweight WebSocket hub."
 metadata:
   openclaw:
@@ -32,7 +32,7 @@ Before using IPC tools, ensure the MCP server is configured in `openclaw.json`:
 {
   "mcp": {
     "servers": {
-      "jianmu-ipc": {
+      "xihe-jianmu-ipc": {
         "command": "node",
         "args": ["node_modules/xihe-jianmu-ipc/mcp-server.mjs"],
         "env": { "IPC_NAME": "openclaw" }

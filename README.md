@@ -173,7 +173,7 @@ npm install xihe-jianmu-ipc
 {
   "mcp": {
     "servers": {
-      "jianmu-ipc": {
+      "xihe-jianmu-ipc": {
         "command": "node",
         "args": ["node_modules/xihe-jianmu-ipc/mcp-server.mjs"],
         "env": {
@@ -199,9 +199,9 @@ ipc_sessions()  // see what tools are connected
 
 **4. ClawHub 可用性 / ClawHub availability**
 
-`jianmu-ipc` skill 已在 ClawHub 上线。在 OpenClaw 内搜索 `jianmu` 即可直接安装。
+`xihe-jianmu-ipc` skill 已在 ClawHub 上线。在 OpenClaw 内搜索 `jianmu` 即可直接安装。
 
-The `jianmu-ipc` skill is available in ClawHub. Search for `jianmu` to install it directly from within OpenClaw.
+The `xihe-jianmu-ipc` skill is available in ClawHub. Search for `jianmu` to install it directly from within OpenClaw.
 
 双向通信已验证 / Bidirectional OpenClaw ↔ Claude Code communication has been tested and verified:
 - OpenClaw → Hub → Claude Code: delivered via WebSocket, wakes Claude Code via Channel notification

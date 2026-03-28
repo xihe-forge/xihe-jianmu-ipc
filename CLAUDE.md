@@ -14,39 +14,69 @@ Real-time communication hub for AI coding sessions — WebSocket message routing
 
 Built for developers who need multiple AI agents to collaborate, not work in isolation.
 
+## Why This Exists: The Token Cost Problem
+
+多 agent 协作的标准路径——让 LLM 充当路由器，通过 Gateway 中转上下文——代价极高。每次跨 session 通信都会触发完整的 agent run，重新加载整个 JSONL 对话记录。随着对话变长，token 消耗是 O(N²) 累积的。
+
+The standard path for multi-agent coordination — routing messages through the LLM, rebuilding context at every hop — is expensive by design. Every inter-session message triggers a full agent run that reloads the entire JSONL transcript. As conversations grow, token costs scale O(N²) cumulatively.
+
+已有记录的真实代价：
+
+Documented real-world costs:
+
+- Claude Code issue #4911: sub-agent consumed **160K tokens** for a task that took 2–3K when done directly
+- Claude Code issue #27645: *"Subagents don't share context — they re-read and re-analyze everything. 5–10x more token-efficient to do direct edits."*
+- Claude Code issue #18240: **296K/200K tokens** (148% context overflow) after a subagent returned
+- ICLR 2026 research: ~30% of tokens in multi-agent operations are consumed unnecessarily by context reconstruction
+- Anthropic's own research: multi-agent uses **15× more tokens** than equivalent single-agent work
+
+**建木的思路 / The Jianmu approach**: 不让 LLM 做路由，让哑管道做路由。消息通过 WebSocket 直接送达目标 session，LLM 只看到最终消息，看不到路由历史。每条消息的 token 开销约 50 tokens，与对话深度无关。
+
+**The Jianmu approach**: route through a dumb pipe, not through the LLM. Messages travel over WebSocket directly to the target session. The LLM sees only the final message — not the routing history. Token cost per message: ~50 tokens, regardless of conversation depth.
+
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                        Hub (hub.mjs)                    │
-│         WebSocket server + HTTP API on :3179            │
-│  - Session registry (name → ws connection)              │
-│  - Offline inbox with TTL-based cleanup                 │
-│  - Topic pub/sub fanout                                 │
-│  - Heartbeat / auto-reconnect                           │
-└────────────┬──────────────────────┬────────────────────┘
-             │ ws://localhost:3179  │ http://localhost:3179
-             │                      │
-   ┌─────────▼──────────┐  ┌────────▼────────────────────┐
-   │  MCP Server        │  │  HTTP API                   │
-   │  (mcp-server.mjs)  │  │  POST /send                 │
-   │                    │  │  GET  /health               │
-   │  Claude Code       │  │  GET  /sessions             │
-   │  integration via   │  │                             │
-   │  stdio MCP proto   │  │  Any HTTP client: Codex,    │
-   │                    │  │  curl, scripts, etc.        │
-   └─────────┬──────────┘  └─────────────────────────────┘
-             │
-   ┌─────────▼──────────────────────────────────────────┐
-   │  Channel (claude/channel capability)                │
-   │  Push incoming messages to Claude Code as          │
-   │  <channel> notifications — wakes idle sessions     │
-   └────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        Hub (hub.mjs)                        │
+│           WebSocket server + HTTP API on :3179              │
+│  - Session registry (name → ws connection)                  │
+│  - Offline inbox with TTL-based cleanup                     │
+│  - Topic pub/sub fanout                                     │
+│  - Heartbeat / auto-reconnect                               │
+└──────────┬───────────────────────┬──────────────────────────┘
+           │ ws://localhost:3179   │ http://localhost:3179
+           │                       │
+ ┌─────────▼──────────┐  ┌────────▼────────────────────────┐
+ │  MCP Server        │  │  HTTP API                       │
+ │  (mcp-server.mjs)  │  │  POST /send  (online/buffered)  │
+ │                    │  │  GET  /health                   │
+ │  Claude Code &     │  │  GET  /sessions                 │
+ │  OpenClaw load     │  │                                 │
+ │  via stdio MCP     │  │  Any HTTP client: Codex,        │
+ │  protocol          │  │  curl, scripts, CI pipelines    │
+ └─────────┬──────────┘  └─────────────────────────────────┘
+           │
+ ┌─────────▼──────────────────────────────────────────────┐
+ │  Channel (claude/channel capability)                    │
+ │  Push incoming messages to Claude Code as              │
+ │  <channel> notifications — wakes idle sessions         │
+ └────────────────────────────────────────────────────────┘
+           │
+ ┌─────────▼──────────────────────────────────────────────┐
+ │  OpenClaw Adapter                                       │
+ │  Outbound: Hub calls /v1/chat/completions on the        │
+ │  Gateway when a message targets an OpenClaw session     │
+ │  Inbound:  OpenClaw loads mcp-server.mjs via            │
+ │  openclaw.json — ipc_send reaches any connected tool    │
+ └────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
 
-### 1. Install
+### For Claude Code Users
+
+**1. Install**
 
 ```bash
 npm install -g xihe-jianmu-ipc
@@ -56,19 +86,9 @@ cd xihe-jianmu-ipc
 npm install
 ```
 
-### 2. Start the Hub
+**2. Add to `.mcp.json` in your project**
 
-```bash
-node hub.mjs
-# or via the CLI:
-jianmu hub
-```
-
-The hub starts on `localhost:3179` and auto-shuts-down when all sessions disconnect.
-
-### 3. Connect Claude Code
-
-Add to your project's `.mcp.json`:
+Session 1 (main):
 
 ```json
 {
@@ -84,7 +104,7 @@ Add to your project's `.mcp.json`:
 }
 ```
 
-Start a second Claude Code session with a different `IPC_NAME`:
+Session 2 (worker):
 
 ```json
 {
@@ -100,30 +120,81 @@ Start a second Claude Code session with a different `IPC_NAME`:
 }
 ```
 
-### 4. Send Messages Between Sessions
+**3. The hub starts automatically** when the first MCP session connects (`IPC_HUB_AUTOSTART=true` by default). Or start it manually:
 
-In the `main` session, use the `ipc_send` tool:
+```bash
+node hub.mjs
+```
 
+**4. Send messages**
+
+From the `main` session:
 ```
 ipc_send(to="worker", content="Start processing task A")
 ```
 
-In the `worker` session, incoming messages arrive as `<channel>` notifications.
+Incoming messages arrive in the `worker` session as `<channel>` notifications that wake idle sessions.
 
-### 5. Windows PowerShell Shortcut (optional)
+**5. Windows PowerShell shortcut (optional)**
 
 ```powershell
-# Run once to install the `ipc` function into your PowerShell profile:
+# Install the `ipc` function into your PowerShell profile:
 .\bin\install.ps1
 
-# Then open Claude Code sessions with:
+# Open Claude Code sessions with:
 ipc main
 ipc worker
 ```
 
+### For OpenClaw Users
+
+**1. Install the package**
+
+```bash
+npm install xihe-jianmu-ipc
+```
+
+**2. Add to `openclaw.json`**
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "jianmu-ipc": {
+        "command": "node",
+        "args": ["node_modules/xihe-jianmu-ipc/mcp-server.mjs"],
+        "env": {
+          "IPC_NAME": "openclaw",
+          "IPC_AUTH_TOKEN": "your-shared-secret",
+          "OPENCLAW_URL": "http://localhost:3000",
+          "OPENCLAW_TOKEN": "your-openclaw-token"
+        }
+      }
+    }
+  }
+}
+```
+
+**3. Use IPC tools from within OpenClaw**
+
+OpenClaw can now reach any connected session:
+
+```
+ipc_send(to="claude-main", content="Login failure detected, need attention")
+ipc_sessions()  // see what tools are connected
+```
+
+**4. ClawHub availability**
+
+The `jianmu-ipc` skill is available in ClawHub. Search for `jianmu` to install it directly from within OpenClaw.
+
+Bidirectional OpenClaw ↔ Claude Code communication has been tested and verified:
+- OpenClaw → Hub → Claude Code: delivered via WebSocket, wakes Claude Code via Channel notification
+- Claude Code → Hub → OpenClaw: Hub calls `/v1/chat/completions`, OpenClaw processes and replies
+
 ## IPC Tools (MCP)
 
-These tools are available inside any Claude Code session connected to the hub.
+These tools are available inside any session connected to the hub — Claude Code, OpenClaw, or any MCP-capable tool.
 
 ### `ipc_send`
 
@@ -139,6 +210,8 @@ Send a message to a named session or broadcast to all.
 ipc_send(to="worker", content="your task is done")
 ipc_send(to="*", content="shutdown signal", topic="control")
 ```
+
+If the target session is offline, the message is buffered (TTL-based) and delivered when it reconnects.
 
 ### `ipc_sessions`
 
@@ -160,8 +233,7 @@ ipc_whoami()
 
 ### `ipc_subscribe`
 
-Subscribe or unsubscribe to a topic channel. All messages tagged with that topic
-are delivered to every subscriber.
+Subscribe or unsubscribe to a topic channel. All messages tagged with that topic are delivered to every subscriber.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -189,25 +261,24 @@ ipc_spawn(name="reviewer", task="Review the PR diff and report back via ipc_send
 ipc_spawn(name="ui-dev", task="Build the dashboard component", interactive=true)
 ```
 
-Spawned sessions automatically know their IPC name and are instructed to report
-back to the spawning session when done.
+Spawned sessions automatically know their IPC name and are instructed to report back to the spawning session when done.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `IPC_NAME` | `session-<pid>` | Session display name (recommended to set explicitly) |
+| `IPC_NAME` | `session-<pid>` | Session display name (set this explicitly) |
 | `IPC_PORT` | `3179` | Hub WebSocket + HTTP port |
 | `IPC_HUB_HOST` | auto-detect | Hub host; auto-detects WSL2 Windows host from `/etc/resolv.conf` |
 | `IPC_HUB_AUTOSTART` | `true` | Auto-start hub if not running when MCP server connects |
+| `IPC_AUTH_TOKEN` | (empty) | Shared secret. If set, all connections must provide this token. |
 | `IPC_CHANNEL_URL` | — | HTTP endpoint for the Channel Server to POST incoming messages to |
-| `IPC_AUTH_TOKEN` | (empty) | Shared secret for authentication. If set, all connections must provide this token. |
+| `OPENCLAW_URL` | — | OpenClaw Gateway base URL (e.g. `http://localhost:3000`). Required for OpenClaw adapter. |
+| `OPENCLAW_TOKEN` | — | OpenClaw API token for calling `/v1/chat/completions` on the Gateway. |
 
 ## HTTP API
 
-The hub exposes a minimal HTTP API on the same port as WebSocket. This lets any
-tool — Codex, shell scripts, CI pipelines — send messages without a WebSocket
-connection.
+The hub exposes a minimal HTTP API on the same port as WebSocket. This lets any tool — Codex, shell scripts, CI pipelines — send messages without a WebSocket connection.
 
 ### `POST /send`
 
@@ -224,10 +295,16 @@ Send a message from any HTTP client.
 }
 ```
 
-**Response:**
+**Response (recipient online):**
 
 ```json
-{ "ok": true, "id": "msg-abc123" }
+{ "ok": true, "id": "msg-abc123", "delivered": true }
+```
+
+**Response (recipient offline — message buffered):**
+
+```json
+{ "ok": true, "id": "msg-abc123", "delivered": false, "buffered": true }
 ```
 
 **Example with curl:**
@@ -235,6 +312,15 @@ Send a message from any HTTP client.
 ```bash
 curl -s -X POST http://localhost:3179/send \
   -H "Content-Type: application/json" \
+  -d '{"from":"ci","to":"main","content":"tests passed"}'
+```
+
+With auth token:
+
+```bash
+curl -s -X POST http://localhost:3179/send \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-shared-secret" \
   -d '{"from":"ci","to":"main","content":"tests passed"}'
 ```
 
@@ -255,7 +341,7 @@ Returns hub status and all connected sessions.
 
 ### `GET /sessions`
 
-Returns the sessions array only (alias for `/health`).
+Returns the sessions array only.
 
 ```json
 [
@@ -263,7 +349,7 @@ Returns the sessions array only (alias for `/health`).
 ]
 ```
 
-## Skill Commands
+## /ipc Skill Commands
 
 If you have the `jianmu` CLI installed (`npm install -g` or `node bin/jianmu.mjs`):
 
@@ -272,43 +358,74 @@ If you have the `jianmu` CLI installed (`npm install -g` or `node bin/jianmu.mjs
 | `jianmu hub` | Start the hub server |
 | `jianmu status` | Show connected sessions and hub uptime |
 
-Inside a Claude Code session, you can also use the MCP tools directly as slash commands
-if you configure them as skills in your `.claude/skills/` directory.
+Inside a Claude Code session, the MCP tools can also be configured as `/ipc` slash commands via `.claude/skills/`:
+
+| Skill | What it does |
+|---|---|
+| `/ipc send <target> <message>` | Send a message to a named session |
+| `/ipc sessions` | List connected sessions |
+| `/ipc whoami` | Show your session identity |
+| `/ipc subscribe <topic>` | Subscribe to a topic channel |
+
+## Claude Code Integration
+
+Claude Code loads the MCP server via `.mcp.json`. Incoming messages are pushed as `<channel>` notifications, which wake idle Claude Code sessions without requiring a poll loop. The flow:
+
+1. Sender calls `ipc_send(to="target-session", content="...")`
+2. Hub routes over WebSocket if target is online; buffers if offline
+3. `channel-server.mjs` (if running) POSTs the message to the Claude Code Channel endpoint
+4. Claude Code receives a `<channel>` notification and processes it
+
+## OpenClaw Integration
+
+OpenClaw loads `mcp-server.mjs` as a standard MCP server via `openclaw.json`. No code changes to OpenClaw required. The OpenClaw adapter handles the reverse direction:
+
+- When a message arrives at the hub addressed to an OpenClaw session, the hub calls `POST /v1/chat/completions` on the Gateway URL (`OPENCLAW_URL`) with the message as user content
+- The Gateway processes it as a normal agent turn and responds
+- The response is forwarded back to the original sender
+
+This means Claude Code can send a message to OpenClaw and receive the reply — all through the same `ipc_send` / `ipc_sessions` interface.
 
 ## Cross-AI Support
 
-建木 is not Claude-specific. Any tool that can send HTTP requests or open a WebSocket
-can participate:
+建木 is not Claude-specific. Any tool that can send HTTP requests or open a WebSocket can participate:
 
 | AI Tool | Integration Method |
 |---|---|
 | Claude Code | MCP Server (`mcp-server.mjs`) via `.mcp.json` |
+| OpenClaw | MCP Server via `openclaw.json` + OpenClaw adapter |
 | OpenAI Codex | HTTP API (`POST /send`) |
 | Custom scripts | HTTP API or raw WebSocket |
 | Channel Server | `channel-server.mjs` — standalone receiver that POSTs to a webhook |
 
 ## WSL2 Support
 
-When running inside WSL2, the MCP server and channel server automatically detect
-the Windows host IP from `/etc/resolv.conf` and connect to the hub running on
-the Windows side. No manual configuration needed.
+When running inside WSL2, the MCP server and channel server automatically detect the Windows host IP from `/etc/resolv.conf` and connect to the hub running on the Windows side. No manual configuration needed.
 
 To override: `export IPC_HUB_HOST=172.x.x.x`
+
+## Known Limitations
+
+- **In-memory only**: The hub does not persist messages to disk. If the hub process restarts, buffered offline messages are lost.
+- **No structured agent lifecycle**: OpenClaw has richer agent orchestration primitives. Jianmu handles raw message routing — it does not manage agent state, retry policies, or task queues.
+- **Basic auth**: Authentication is a shared token (`IPC_AUTH_TOKEN`). There is no per-session identity verification or ACL.
+- **Single hub**: No multi-hub federation. All sessions must connect to the same hub instance. Cross-machine setups require a reverse proxy or tunnel.
 
 ## Project Structure
 
 ```
 xihe-jianmu-ipc/
 ├── hub.mjs              # WebSocket hub server
-├── mcp-server.mjs       # MCP server (Claude Code adapter)
+├── mcp-server.mjs       # MCP server (Claude Code + OpenClaw adapter)
 ├── channel-server.mjs   # Standalone channel receiver
+├── SKILL.md             # OpenClaw ClawHub skill manifest
 ├── lib/
 │   ├── constants.mjs    # Shared constants (ports, timeouts, etc.)
-│   ├── protocol.mjs     # Message schema and validation
-│   └── rpc.mjs          # RPC helpers
+│   └── protocol.mjs     # Message schema and validation
 ├── bin/
 │   ├── jianmu.mjs       # CLI entry point
 │   ├── install.ps1      # PowerShell profile installer
+│   ├── ipc-claude.ps1   # PowerShell helper for Claude Code sessions
 │   └── patch-channels.mjs  # Claude Code channel patch helper
 └── package.json
 ```
@@ -319,7 +436,7 @@ xihe-jianmu-ipc/
 
 曦和（Xihe）得名于中国神话中驾驭太阳的女神。[xihe-forge](https://github.com/xihe-forge) 是曦和 AI 的开源锻造炉——我们在这里把实用的 AI 工具从想法锤炼成可以直接上手的开源项目。xihe-jianmu-ipc 是锻造炉中的第三个开源作品。更多面向 AI 协作、搜索和增长的工具正在锻造中，欢迎关注或参与贡献。
 
-Xihe is named after the sun goddess who drives the solar chariot in Chinese mythology. [xihe-forge](https://github.com/xihe-forge) is Xihe AI's open-source forge — where we hammer practical AI tools from ideas into ready-to-use open-source projects. xihe-jianmu-ipc is the third open-source piece out of the forge. More AI tools for collaboration, search, and growth are being forged — follow the org or contribute.
+Xihe is named after the sun goddess who drives the solar chariot in Chinese mythology. [xihe-forge](https://github.com/xihe-forge) is Xihe AI's open-source forge — where we hammer practical AI tools from ideas into ready-to-use open-source projects. xihe-jianmu-ipc is the third open-source piece out of the forge. More AI tools for AI collaboration, search, and growth are being forged — follow the org or contribute.
 
 ## License
 

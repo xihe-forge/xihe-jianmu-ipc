@@ -354,6 +354,8 @@ function isOpenClawSession(name) {
 }
 
 async function deliverToOpenClaw(msg) {
+  // Inject message as a cron systemEvent into the main session.
+  // This wakes the main agent which can then reply back through the configured channels (Feishu, etc.)
   const content = `[IPC from ${msg.from}] ${msg.content}`;
 
   try {
@@ -363,30 +365,30 @@ async function deliverToOpenClaw(msg) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
 
-    const res = await fetch(`${OPENCLAW_URL}/v1/chat/completions`, {
+    // Use cron one-shot systemEvent to inject into the main session
+    const res = await fetch(`${OPENCLAW_URL}/v1/cron`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model: 'openclaw',
-        messages: [{ role: 'user', content }],
+        name: `ipc-${msg.from}-${Date.now()}`,
+        schedule: { kind: 'at', at: new Date(Date.now() + 500).toISOString() },
+        sessionTarget: 'main',
+        payload: { kind: 'systemEvent', text: content },
+        delivery: { mode: 'none' },
       }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
 
-    const data = await res.json();
-    const reply = data.choices?.[0]?.message?.content || '';
-    stderr(`[ipc-hub] openclaw adapter: delivered to ${msg.to}, reply: ${reply.substring(0, 200)}`);
-
-    // If OpenClaw replied and the sender is online, forward the reply back
-    if (reply && msg.from) {
-      const sender = sessions.get(msg.from);
-      if (sender?.ws?.readyState === sender?.ws?.OPEN) {
-        send(sender.ws, createMessage({ from: msg.to, to: msg.from, content: reply }));
-        stderr(`[ipc-hub] openclaw adapter: forwarded reply to ${msg.from}`);
-      }
+    if (res.ok) {
+      const data = await res.json();
+      stderr(`[ipc-hub] openclaw adapter: injected systemEvent via cron (id=${data.id})`);
+      return true;
+    } else {
+      const text = await res.text();
+      stderr(`[ipc-hub] openclaw adapter: cron API error ${res.status}: ${text.substring(0, 200)}`);
+      return false;
     }
-    return true;
   } catch (err) {
     stderr(`[ipc-hub] openclaw adapter: failed: ${err?.message ?? err}`);
     return false;

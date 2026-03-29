@@ -304,13 +304,23 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
       } catch { /* not WSL2 or no powershell.exe */ }
 
       if (isWSL2) {
-        // WSL2: open a new Windows Terminal tab (preferred) or PowerShell window
-        // Convert WSL paths to Windows paths for use inside PowerShell
-        const wslToWin = (p) => p.replace(/^\/mnt\/([a-z])\//, '$1:\\').replace(/\//g, '\\');
+        // WSL2: write a temp .ps1 script and execute it via wt.exe / powershell.exe
+        // Avoids all quoting issues with inline -Command strings
+        const { writeFileSync: _wfs } = await import('node:fs');
+        const wslToWin = (p) => p.replace(/^\/mnt\/([a-z])\//, (_, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\');
         const patchScriptWin = wslToWin(join(PROJECT_DIR, 'bin', 'patch-channels.mjs'));
-        // claude is installed via npm on Windows side
         const claudeCmd = 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\claude.ps1';
-        const psCommand = `$env:IPC_NAME='${sessionName}'; node '${patchScriptWin}'; & '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
+        // Write to Windows Temp dir so PowerShell can access it without UNC path issues
+        const winTempDir = '/mnt/c/Users/jolen/AppData/Local/Temp';
+        const tmpPs1Wsl = join(winTempDir, `ipc-spawn-${sessionName}-${Date.now()}.ps1`);
+        const tmpPs1Win = wslToWin(tmpPs1Wsl);
+        const ps1Content = [
+          '\uFEFF', // UTF-8 BOM — prevents PowerShell from garbling non-ASCII
+          `$env:IPC_NAME = '${sessionName}'`,
+          `node '${patchScriptWin}'`,
+          `& '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`,
+        ].join('\r\n');
+        _wfs(tmpPs1Wsl, ps1Content, 'utf8');
 
         // Try wt.exe (Windows Terminal) first — cleaner UX
         let wtAvailable = false;
@@ -321,13 +331,13 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
         } catch { /* no wt.exe */ }
 
         if (wtAvailable) {
-          spawn('wt.exe', ['new-tab', '--title', sessionName, 'powershell.exe', '-NoExit', '-Command', psCommand], {
+          spawn('wt.exe', ['new-tab', '--title', sessionName, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1Win], {
             detached: true,
             stdio: 'ignore',
             env: ipcEnv,
           }).unref();
         } else {
-          spawn('powershell.exe', ['-NoExit', '-Command', psCommand], {
+          spawn('powershell.exe', ['-NoExit', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1Win], {
             detached: true,
             stdio: 'ignore',
             env: ipcEnv,

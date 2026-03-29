@@ -354,9 +354,9 @@ function isOpenClawSession(name) {
 }
 
 async function deliverToOpenClaw(msg) {
-  // Use /hooks/agent to run an isolated agent turn that auto-delivers to Feishu.
-  // The agent processes the IPC message and its response is pushed to the channel.
-  const message = `[IPC from ${msg.from}] ${msg.content}`;
+  // Use /hooks/wake to inject into main session as a system event.
+  // The wake text instructs the agent to forward the IPC result to Feishu via message tool.
+  const text = `[IPC from ${msg.from}] ${msg.content}\n\n⚡ 请用 message 工具将以上 IPC 结果转发到飞书。`;
 
   try {
     const headers = { 'Content-Type': 'application/json' };
@@ -365,26 +365,20 @@ async function deliverToOpenClaw(msg) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
 
-    const res = await fetch(`${OPENCLAW_URL}/hooks/agent`, {
+    const res = await fetch(`${OPENCLAW_URL}/hooks/wake`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        message,
-        name: `ipc-${msg.from}`,
-        deliver: true,
-        channel: 'feishu',
-        wakeMode: 'now',
-      }),
+      body: JSON.stringify({ text, mode: 'now' }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
 
     if (res.ok) {
-      stderr(`[ipc-hub] openclaw adapter: pushed to /hooks/agent (from=${msg.from})`);
+      stderr(`[ipc-hub] openclaw adapter: pushed to /hooks/wake (from=${msg.from})`);
       return true;
     } else {
       const body = await res.text();
-      stderr(`[ipc-hub] openclaw adapter: /hooks/agent error ${res.status}: ${body.substring(0, 200)}`);
+      stderr(`[ipc-hub] openclaw adapter: /hooks/wake error ${res.status}: ${body.substring(0, 200)}`);
       return false;
     }
   } catch (err) {

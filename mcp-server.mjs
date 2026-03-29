@@ -247,7 +247,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     try {
-      const result = spawnSession({ name: sessionName, task, interactive: !!interactive, model });
+      const result = await spawnSession({ name: sessionName, task, interactive: !!interactive, model });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     } catch (err) {
       return { content: [{ type: 'text', text: `Failed to spawn session: ${err?.message ?? err}` }], isError: true };
@@ -263,7 +263,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ---------------------------------------------------------------------------
 // spawnSession — launch a new Claude Code session (background or interactive)
 // ---------------------------------------------------------------------------
-function spawnSession({ name: sessionName, task, interactive, model }) {
+async function spawnSession({ name: sessionName, task, interactive, model }) {
   const ipcEnv = {
     ...process.env,
     IPC_NAME: sessionName,
@@ -291,27 +291,48 @@ function spawnSession({ name: sessionName, task, interactive, model }) {
         env: ipcEnv,
       }).unref();
     } else {
-      // Linux/WSL: try to open a new terminal
-      const terminals = ['gnome-terminal', 'xterm', 'konsole'];
-      let spawned = false;
-      for (const term of terminals) {
-        try {
-          spawn(term, ['--', 'bash', '-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`], {
-            detached: true,
-            stdio: 'ignore',
-            env: ipcEnv,
-          }).unref();
-          spawned = true;
-          break;
-        } catch { continue; }
-      }
-      if (!spawned) {
-        // Fallback: just spawn in background
-        spawn('bash', ['-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`], {
+      // Linux/WSL2: prefer calling powershell.exe via WSL interop to open a Windows terminal
+      const patchScript = join(PROJECT_DIR, 'bin', 'patch-channels.mjs').replace(/\\/g, '\\\\');
+      const extraArgs = model ? ` --model ${model}` : '';
+
+      // Detect WSL2: check if powershell.exe is reachable (sync)
+      let isWSL2 = false;
+      try {
+        const { execSync: _execSync } = await import('node:child_process');
+        _execSync('which powershell.exe', { stdio: 'ignore' });
+        isWSL2 = true;
+      } catch { /* not WSL2 or no powershell.exe */ }
+
+      if (isWSL2) {
+        // WSL2: open a new PowerShell window on Windows side
+        const psCommand = `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
+        spawn('powershell.exe', ['-NoExit', '-Command', psCommand], {
           detached: true,
           stdio: 'ignore',
           env: ipcEnv,
         }).unref();
+      } else {
+        // Native Linux: try common terminal emulators
+        const terminals = ['gnome-terminal', 'xterm', 'konsole'];
+        let spawned = false;
+        for (const term of terminals) {
+          try {
+            spawn(term, ['--', 'bash', '-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`], {
+              detached: true,
+              stdio: 'ignore',
+              env: ipcEnv,
+            }).unref();
+            spawned = true;
+            break;
+          } catch { continue; }
+        }
+        if (!spawned) {
+          spawn('bash', ['-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`], {
+            detached: true,
+            stdio: 'ignore',
+            env: ipcEnv,
+          }).unref();
+        }
       }
     }
 

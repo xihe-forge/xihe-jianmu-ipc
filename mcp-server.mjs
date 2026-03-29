@@ -304,13 +304,30 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
       } catch { /* not WSL2 or no powershell.exe */ }
 
       if (isWSL2) {
-        // WSL2: open a new PowerShell window on Windows side
+        // WSL2: open a new Windows Terminal tab (preferred) or PowerShell window
         const psCommand = `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
-        spawn('powershell.exe', ['-NoExit', '-Command', psCommand], {
-          detached: true,
-          stdio: 'ignore',
-          env: ipcEnv,
-        }).unref();
+
+        // Try wt.exe (Windows Terminal) first — cleaner UX
+        let wtAvailable = false;
+        try {
+          const { execSync: _es2 } = await import('node:child_process');
+          _es2('which wt.exe', { stdio: 'ignore' });
+          wtAvailable = true;
+        } catch { /* no wt.exe */ }
+
+        if (wtAvailable) {
+          spawn('wt.exe', ['new-tab', '--title', sessionName, 'powershell.exe', '-NoExit', '-Command', psCommand], {
+            detached: true,
+            stdio: 'ignore',
+            env: ipcEnv,
+          }).unref();
+        } else {
+          spawn('powershell.exe', ['-NoExit', '-Command', psCommand], {
+            detached: true,
+            stdio: 'ignore',
+            env: ipcEnv,
+          }).unref();
+        }
       } else {
         // Native Linux: try common terminal emulators
         const terminals = ['gnome-terminal', 'xterm', 'konsole'];

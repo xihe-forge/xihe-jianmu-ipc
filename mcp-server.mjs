@@ -309,16 +309,31 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
         const { writeFileSync: _wfs } = await import('node:fs');
         const wslToWin = (p) => p.replace(/^\/mnt\/([a-z])\//, (_, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\');
         const patchScriptWin = wslToWin(join(PROJECT_DIR, 'bin', 'patch-channels.mjs'));
+        const mcpServerWin = wslToWin(join(PROJECT_DIR, 'mcp-server.mjs'));
         const claudeCmd = 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\claude.ps1';
         // Write to Windows Temp dir so PowerShell can access it without UNC path issues
         const winTempDir = '/mnt/c/Users/jolen/AppData/Local/Temp';
-        const tmpPs1Wsl = join(winTempDir, `ipc-spawn-${sessionName}-${Date.now()}.ps1`);
+        const ts = Date.now();
+        const tmpPs1Wsl = join(winTempDir, `ipc-spawn-${sessionName}-${ts}.ps1`);
+        const tmpMcpWsl = join(winTempDir, `ipc-mcp-${sessionName}-${ts}.json`);
         const tmpPs1Win = wslToWin(tmpPs1Wsl);
+        const tmpMcpWin = wslToWin(tmpMcpWsl);
+        // Write .mcp.json so claude knows how to connect to IPC hub
+        const mcpConfig = {
+          mcpServers: {
+            ipc: {
+              command: 'node',
+              args: [mcpServerWin],
+              env: { IPC_NAME: sessionName, IPC_HUB_AUTOSTART: 'true' },
+            },
+          },
+        };
+        _wfs(tmpMcpWsl, JSON.stringify(mcpConfig, null, 2), 'utf8');
         const ps1Content = [
           '\uFEFF', // UTF-8 BOM — prevents PowerShell from garbling non-ASCII
           `$env:IPC_NAME = '${sessionName}'`,
           `node '${patchScriptWin}'`,
-          `& '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`,
+          `& '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels --mcp-config '${tmpMcpWin}' server:ipc${extraArgs}`,
         ].join('\r\n');
         _wfs(tmpPs1Wsl, ps1Content, 'utf8');
 

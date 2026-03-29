@@ -13,25 +13,55 @@ import { dirname, join } from 'node:path';
 const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
 const cliPath = join(npmRoot, '@anthropic-ai', 'claude-code', 'cli.js');
 
-const content = readFileSync(cliPath, 'utf8');
+let content = readFileSync(cliPath, 'utf8');
+let patched = false;
 
+// Patch 1: Skip dev channels warning dialog
 // Support multiple known patterns across Claude Code versions
-const patterns = [
+const channelPatterns = [
   // v1.x (original)
   { target: 'if(!w()||!j()?.accessToken)gd', replacement: 'if(true)gd' },
   // v2.x+ (updated variable names)
   { target: 'if(!w()||!j()?.accessToken)cd', replacement: 'if(true)cd' },
 ];
 
-const alreadyPatched = patterns.some(({ replacement }) => content.includes(replacement));
-if (alreadyPatched) {
-  process.stderr.write('[patch] already patched\n');
+const channelAlreadyPatched = channelPatterns.some(({ replacement }) => content.includes(replacement));
+if (channelAlreadyPatched) {
+  process.stderr.write('[patch] channels dialog: already patched\n');
 } else {
-  const matched = patterns.find(({ target }) => content.includes(target));
+  const matched = channelPatterns.find(({ target }) => content.includes(target));
   if (matched) {
-    writeFileSync(cliPath, content.replace(matched.target, matched.replacement));
-    process.stderr.write('[patch] patched successfully\n');
+    content = content.replace(matched.target, matched.replacement);
+    patched = true;
+    process.stderr.write('[patch] channels dialog: patched\n');
   } else {
-    process.stderr.write('[patch] WARNING: target pattern not found, Claude Code may have updated\n');
+    process.stderr.write('[patch] channels dialog: WARNING target not found\n');
   }
+}
+
+// Patch 2: Skip "trust this folder" dialog
+// C2() = checkHasTrustDialogAccepted() — make it always return true
+const trustPatterns = [
+  { target: 'function C2(){return Kv7||=kP5()}', replacement: 'function C2(){return true}' },
+  // fallback pattern if variable names changed
+  { target: 'function C2(){return ', suffix: '||=kP5()}', replacement: 'function C2(){return true}' },
+];
+
+const trustAlreadyPatched = content.includes('function C2(){return true}');
+if (trustAlreadyPatched) {
+  process.stderr.write('[patch] trust dialog: already patched\n');
+} else {
+  const trustMatched = trustPatterns.find(({ target }) => content.includes(target));
+  if (trustMatched) {
+    content = content.replace(trustMatched.target, trustMatched.replacement);
+    patched = true;
+    process.stderr.write('[patch] trust dialog: patched\n');
+  } else {
+    process.stderr.write('[patch] trust dialog: WARNING target not found (may need manual skip)\n');
+  }
+}
+
+if (patched) {
+  writeFileSync(cliPath, content);
+  process.stderr.write('[patch] written to cli.js\n');
 }

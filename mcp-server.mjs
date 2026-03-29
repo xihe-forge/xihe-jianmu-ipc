@@ -333,7 +333,7 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
           '\uFEFF', // UTF-8 BOM — prevents PowerShell from garbling non-ASCII
           `$env:IPC_NAME = '${sessionName}'`,
           `node '${patchScriptWin}'`,
-          `& '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels --mcp-config '${tmpMcpWin}' server:ipc${extraArgs}`,
+          `& '${claudeCmd}' --dangerously-skip-permissions --mcp-config '${tmpMcpWin}' --dangerously-load-development-channels server:ipc${extraArgs}`,
         ].join('\r\n');
         _wfs(tmpPs1Wsl, ps1Content, 'utf8');
 

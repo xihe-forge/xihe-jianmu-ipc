@@ -14,14 +14,24 @@ const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
 const cliPath = join(npmRoot, '@anthropic-ai', 'claude-code', 'cli.js');
 
 const content = readFileSync(cliPath, 'utf8');
-const target = 'if(!w()||!j()?.accessToken)gd';
-const replacement = 'if(true)gd';
 
-if (content.includes(replacement)) {
+// Support multiple known patterns across Claude Code versions
+const patterns = [
+  // v1.x (original)
+  { target: 'if(!w()||!j()?.accessToken)gd', replacement: 'if(true)gd' },
+  // v2.x+ (updated variable names)
+  { target: 'if(!w()||!j()?.accessToken)cd', replacement: 'if(true)cd' },
+];
+
+const alreadyPatched = patterns.some(({ replacement }) => content.includes(replacement));
+if (alreadyPatched) {
   process.stderr.write('[patch] already patched\n');
-} else if (content.includes(target)) {
-  writeFileSync(cliPath, content.replace(target, replacement));
-  process.stderr.write('[patch] patched successfully\n');
 } else {
-  process.stderr.write('[patch] WARNING: target pattern not found, Claude Code may have updated\n');
+  const matched = patterns.find(({ target }) => content.includes(target));
+  if (matched) {
+    writeFileSync(cliPath, content.replace(matched.target, matched.replacement));
+    process.stderr.write('[patch] patched successfully\n');
+  } else {
+    process.stderr.write('[patch] WARNING: target pattern not found, Claude Code may have updated\n');
+  }
 }

@@ -70,8 +70,9 @@ The standard path for multi-agent coordination — routing messages through the 
            │
  ┌─────────▼──────────────────────────────────────────────┐
  │  OpenClaw Adapter                                       │
- │  Outbound: Hub calls /v1/chat/completions on the        │
- │  Gateway when a message targets an OpenClaw session     │
+ │  Outbound: Hub calls /hooks/wake on the Gateway         │
+ │  when a message targets an openclaw-* session           │
+ │  (ALWAYS via HTTP, even if WS is connected)             │
  │  Inbound:  OpenClaw loads mcp-server.mjs via            │
  │  openclaw.json — ipc_send reaches any connected tool    │
  └────────────────────────────────────────────────────────┘
@@ -205,7 +206,7 @@ The `xihe-jianmu-ipc` skill is available in ClawHub. Search for `jianmu` to inst
 
 双向通信已验证 / Bidirectional OpenClaw ↔ Claude Code communication has been tested and verified:
 - OpenClaw → Hub → Claude Code: delivered via WebSocket, wakes Claude Code via Channel notification
-- Claude Code → Hub → OpenClaw: Hub calls `/v1/chat/completions`, OpenClaw processes and replies
+- Claude Code → Hub → OpenClaw: Hub calls `POST /hooks/wake` on the Gateway to push the message into OpenClaw's main session in real-time (always via HTTP, even if the openclaw MCP session is connected via WebSocket)
 
 ---
 
@@ -301,8 +302,8 @@ Spawned sessions automatically know their IPC name and are instructed to report 
 | `IPC_HUB_AUTOSTART` | `true` | Auto-start hub if not running when MCP server connects |
 | `IPC_AUTH_TOKEN` | (empty) | Shared secret. If set, all connections must provide this token. |
 | `IPC_CHANNEL_URL` | — | HTTP endpoint for the Channel Server to POST incoming messages to |
-| `OPENCLAW_URL` | — | OpenClaw Gateway base URL (e.g. `http://localhost:3000`). Required for OpenClaw adapter. |
-| `OPENCLAW_TOKEN` | — | OpenClaw API token for calling `/v1/chat/completions` on the Gateway. |
+| `OPENCLAW_URL` | `http://127.0.0.1:18789` | OpenClaw Gateway base URL. Hub uses this to call `POST /hooks/wake` for real-time message delivery to OpenClaw's main session. |
+| `OPENCLAW_TOKEN` | — | Bearer auth token for the OpenClaw Gateway. Sent as `Authorization: Bearer <token>` in `/hooks/wake` requests. |
 
 ---
 
@@ -405,13 +406,13 @@ OpenClaw 通过 `openclaw.json` 将 `mcp-server.mjs` 作为标准 MCP server 加
 
 OpenClaw loads `mcp-server.mjs` as a standard MCP server via `openclaw.json`. No code changes to OpenClaw required. The OpenClaw adapter handles the reverse direction:
 
-- 当 Hub 收到发给 OpenClaw session 的消息时，Hub 会以消息内容为用户输入调用 Gateway URL（`OPENCLAW_URL`）的 `POST /v1/chat/completions` / When a message arrives at the hub addressed to an OpenClaw session, the hub calls `POST /v1/chat/completions` on the Gateway URL (`OPENCLAW_URL`) with the message as user content
-- Gateway 作为正常 agent turn 处理并响应 / The Gateway processes it as a normal agent turn and responds
-- 响应被转发回原始发送方 / The response is forwarded back to the original sender
+- 当 Hub 收到发给 `openclaw-*` session 的消息时，Hub **始终**通过 HTTP 调用 Gateway URL（`OPENCLAW_URL`）的 `POST /hooks/wake`，将消息注入 OpenClaw 主会话。即使 openclaw MCP session 通过 WebSocket 连接到了 Hub，消息仍走 `/hooks/wake`，因为 WebSocket 连接只是 MCP 客户端，不是 OpenClaw 的主 agent 会话 / When a message arrives at the hub addressed to an `openclaw-*` session, the hub **always** calls `POST /hooks/wake` on the Gateway URL (`OPENCLAW_URL`) to inject the message into OpenClaw's main session. Even if the openclaw MCP session is connected via WebSocket, messages still go through `/hooks/wake` — the WebSocket connection is just the MCP client, not OpenClaw's main agent session
+- Gateway 将消息作为系统事件推入主会话 / The Gateway pushes the message into the main session as a system event
+- wake 请求体为 `{ text, mode: "now" }`，text 中包含 IPC 来源和消息内容 / The wake request body is `{ text, mode: "now" }`, where text includes the IPC source and message content
 
-这意味着 Claude Code 可以向 OpenClaw 发送消息并收到回复——全部通过同一套 `ipc_send` / `ipc_sessions` 接口。
+这意味着 Claude Code 可以向 OpenClaw 实时推送消息——全部通过同一套 `ipc_send` / `ipc_sessions` 接口。OpenClaw 收到 wake 后可在主会话中处理并通过 `ipc_send` 回复。
 
-This means Claude Code can send a message to OpenClaw and receive the reply — all through the same `ipc_send` / `ipc_sessions` interface.
+This means Claude Code can push messages to OpenClaw in real-time — all through the same `ipc_send` / `ipc_sessions` interface. OpenClaw receives the wake event in its main session and can reply back via `ipc_send`.
 
 ---
 
@@ -433,11 +434,17 @@ Jianmu is not Claude-specific. Any tool that can send HTTP requests or open a We
 
 ## WSL2 支持 / WSL2 Support
 
-在 WSL2 内运行时，MCP server 和 Channel server 会自动从 `/etc/resolv.conf` 检测 Windows 宿主 IP，并连接到 Windows 侧运行的 Hub，无需手动配置。
+在 WSL2 内运行时，MCP server 会自动从 `/etc/resolv.conf` 读取 `nameserver` 行检测 Windows 宿主 IP，并连接到 Windows 侧运行的 Hub，无需手动配置。
 
-When running inside WSL2, the MCP server and channel server automatically detect the Windows host IP from `/etc/resolv.conf` and connect to the hub running on the Windows side. No manual configuration needed.
+When running inside WSL2, the MCP server automatically reads the `nameserver` line from `/etc/resolv.conf` to detect the Windows host IP and connect to the hub running on the Windows side. No manual configuration needed.
 
 覆盖方式 / To override: `export IPC_HUB_HOST=172.x.x.x`
+
+**`ipc_spawn` 交互模式在 WSL2 中的行为 / `ipc_spawn` interactive mode on WSL2:**
+
+- 优先使用 `wt.exe`（Windows Terminal）打开新标签页，回退到 `powershell.exe` / Prefers `wt.exe` (Windows Terminal) to open a new tab; falls back to `powershell.exe`
+- 生成临时 `.ps1` 脚本文件并写入 UTF-8 BOM（`\uFEFF`），避免 PowerShell 乱码 / Writes a temp `.ps1` script file with UTF-8 BOM (`\uFEFF`) to prevent PowerShell encoding issues
+- WSL 路径自动转换为 Windows 路径（`/mnt/c/` → `C:\`）/ WSL paths are automatically converted to Windows paths (`/mnt/c/` → `C:\`)
 
 ---
 

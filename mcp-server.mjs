@@ -305,7 +305,12 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
 
       if (isWSL2) {
         // WSL2: open a new Windows Terminal tab (preferred) or PowerShell window
-        const psCommand = `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
+        // Convert WSL paths to Windows paths for use inside PowerShell
+        const wslToWin = (p) => p.replace(/^\/mnt\/([a-z])\//, '$1:\\').replace(/\//g, '\\');
+        const patchScriptWin = wslToWin(join(PROJECT_DIR, 'bin', 'patch-channels.mjs'));
+        // claude is installed via npm on Windows side
+        const claudeCmd = 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\claude.ps1';
+        const psCommand = `$env:IPC_NAME='${sessionName}'; node '${patchScriptWin}'; & '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
 
         // Try wt.exe (Windows Terminal) first — cleaner UX
         let wtAvailable = false;

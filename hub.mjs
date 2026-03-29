@@ -354,39 +354,31 @@ function isOpenClawSession(name) {
 }
 
 async function deliverToOpenClaw(msg) {
-  // Inject message as a cron systemEvent into the main session.
-  // This wakes the main agent which can then reply back through the configured channels (Feishu, etc.)
-  const content = `[IPC from ${msg.from}] ${msg.content}`;
+  // Use /hooks/wake to immediately inject a system event into the main session.
+  // This is a real-time push — no polling, no cron delay.
+  const text = `[IPC from ${msg.from}] ${msg.content}`;
 
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (OPENCLAW_TOKEN) headers['Authorization'] = `Bearer ${OPENCLAW_TOKEN}`;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), 10000);
 
-    // Use cron one-shot systemEvent to inject into the main session
-    const res = await fetch(`${OPENCLAW_URL}/v1/cron`, {
+    const res = await fetch(`${OPENCLAW_URL}/hooks/wake`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        name: `ipc-${msg.from}-${Date.now()}`,
-        schedule: { kind: 'at', at: new Date(Date.now() + 500).toISOString() },
-        sessionTarget: 'main',
-        payload: { kind: 'systemEvent', text: content },
-        delivery: { mode: 'none' },
-      }),
+      body: JSON.stringify({ text, mode: 'now' }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
 
     if (res.ok) {
-      const data = await res.json();
-      stderr(`[ipc-hub] openclaw adapter: injected systemEvent via cron (id=${data.id})`);
+      stderr(`[ipc-hub] openclaw adapter: pushed to /hooks/wake (from=${msg.from})`);
       return true;
     } else {
-      const text = await res.text();
-      stderr(`[ipc-hub] openclaw adapter: cron API error ${res.status}: ${text.substring(0, 200)}`);
+      const body = await res.text();
+      stderr(`[ipc-hub] openclaw adapter: /hooks/wake error ${res.status}: ${body.substring(0, 200)}`);
       return false;
     }
   } catch (err) {

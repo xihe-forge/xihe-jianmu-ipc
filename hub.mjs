@@ -424,26 +424,21 @@ function routeMessage(msg, senderSession) {
   } else if (to && to !== '*') {
     // Direct message — skip if already delivered via topic
     if (!delivered.has(to)) {
-      const target = sessions.get(to);
-      if (target) {
-        if (target.ws && target.ws.readyState === target.ws.OPEN) {
-          send(target.ws, msg);
-        } else {
-          pushInbox(target, msg);
-          // Try OpenClaw adapter for openclaw sessions
-          if (isOpenClawSession(to)) {
-            deliverToOpenClaw(msg);
-          }
-          stderr(`[ipc-hub] ${senderSession.name} → ${to}: session offline, buffered`);
-        }
+      // OpenClaw sessions: always use /hooks/wake for real-time delivery
+      // (WebSocket connection is just the MCP client, not the main agent session)
+      if (isOpenClawSession(to)) {
+        deliverToOpenClaw(msg);
+        stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to OpenClaw /hooks/wake`);
       } else {
-        // Unknown target
-        if (isOpenClawSession(to)) {
-          // Don't create stub, try OpenClaw adapter directly
-          deliverToOpenClaw(msg);
-          stderr(`[ipc-hub] ${senderSession.name} → ${to}: routing to OpenClaw adapter`);
+        const target = sessions.get(to);
+        if (target) {
+          if (target.ws && target.ws.readyState === target.ws.OPEN) {
+            send(target.ws, msg);
+          } else {
+            pushInbox(target, msg);
+            stderr(`[ipc-hub] ${senderSession.name} → ${to}: session offline, buffered`);
+          }
         } else {
-          // Create stub for non-OpenClaw targets
           const stub = {
             name: to,
             ws: null,

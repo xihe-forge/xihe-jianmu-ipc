@@ -132,7 +132,11 @@ Session 2 (worker):
 
 第一个 MCP 会话连接时 Hub 自动启动（`IPC_HUB_AUTOSTART=true` 为默认值）。也可手动启动：
 
-The hub starts automatically when the first MCP session connects (`IPC_HUB_AUTOSTART=true` by default). Or start it manually:
+The hub starts automatically when the first MCP session connects (`IPC_HUB_AUTOSTART=true` by default). When auto-starting, the MCP server passes `OPENCLAW_URL` and `OPENCLAW_TOKEN` from its own environment to the hub process. This means if these variables are configured in `.mcp.json` or `openclaw.json`, the hub will automatically have access to them. The `.env` file serves as a fallback for manually started hubs.
+
+当 MCP server 自动启动 Hub 时，会将 `OPENCLAW_URL` 和 `OPENCLAW_TOKEN` 环境变量透传给 Hub 进程。如果这些变量在 `.mcp.json` 或 `openclaw.json` 中配置了，Hub 会自动获取。`.env` 文件作为手动启动 Hub 时的兜底配置。
+
+Or start it manually:
 
 ```bash
 node hub.mjs

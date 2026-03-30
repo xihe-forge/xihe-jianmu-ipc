@@ -444,6 +444,81 @@ const openclawRetryTimer = setInterval(async () => {
 openclawRetryTimer.unref();
 
 // ---------------------------------------------------------------------------
+// Feishu adapter — push messages directly to Feishu Bot API (0 LLM tokens)
+// ---------------------------------------------------------------------------
+const FEISHU_APP_ID = process.env.FEISHU_APP_ID || '';
+const FEISHU_APP_SECRET = process.env.FEISHU_APP_SECRET || '';
+const FEISHU_TARGET_OPEN_ID = process.env.FEISHU_TARGET_OPEN_ID || '';
+
+let feishuAccessToken = '';
+let feishuTokenExpiry = 0;
+
+async function getFeishuAccessToken() {
+  // Return cached token if still valid (with 60s buffer)
+  if (feishuAccessToken && Date.now() < feishuTokenExpiry - 60000) {
+    return feishuAccessToken;
+  }
+
+  try {
+    const res = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: FEISHU_APP_ID, app_secret: FEISHU_APP_SECRET }),
+    });
+    const data = await res.json();
+    if (data.code === 0) {
+      feishuAccessToken = data.tenant_access_token;
+      feishuTokenExpiry = Date.now() + (data.expire - 60) * 1000; // expire is in seconds
+      stderr(`[ipc-hub] feishu: got access token (expires in ${data.expire}s)`);
+      return feishuAccessToken;
+    } else {
+      stderr(`[ipc-hub] feishu: token error: ${data.msg}`);
+      return null;
+    }
+  } catch (err) {
+    stderr(`[ipc-hub] feishu: token fetch failed: ${err?.message ?? err}`);
+    return null;
+  }
+}
+
+async function deliverToFeishu(msg) {
+  if (!FEISHU_APP_ID || !FEISHU_APP_SECRET || !FEISHU_TARGET_OPEN_ID) {
+    return false; // Feishu not configured
+  }
+
+  const token = await getFeishuAccessToken();
+  if (!token) return false;
+
+  const text = `[IPC] ${msg.from} → ${msg.to}\n${msg.content}`;
+
+  try {
+    const res = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        receive_id: FEISHU_TARGET_OPEN_ID,
+        msg_type: 'text',
+        content: JSON.stringify({ text }),
+      }),
+    });
+    const data = await res.json();
+    if (data.code === 0) {
+      stderr(`[ipc-hub] feishu: pushed message from ${msg.from}`);
+      return true;
+    } else {
+      stderr(`[ipc-hub] feishu: send error ${data.code}: ${data.msg}`);
+      return false;
+    }
+  } catch (err) {
+    stderr(`[ipc-hub] feishu: send failed: ${err?.message ?? err}`);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Message routing
 // ---------------------------------------------------------------------------
 function routeMessage(msg, senderSession) {
@@ -486,7 +561,8 @@ function routeMessage(msg, senderSession) {
         deliverToOpenClaw(msg).then(ok => {
           if (!ok) enqueueOpenClawRetry(msg);
         });
-        stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to OpenClaw /hooks/wake`);
+        deliverToFeishu(msg); // parallel push to Feishu (0 tokens)
+        stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to OpenClaw /hooks/wake + Feishu`);
       } else {
         const target = sessions.get(to);
         if (target) {

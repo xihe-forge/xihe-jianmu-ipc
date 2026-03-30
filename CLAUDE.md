@@ -7,7 +7,6 @@
 ```
 hub.mjs              — WebSocket hub (localhost:3179)
 mcp-server.mjs       — MCP server (Claude Code / OpenClaw 通过stdio加载)
-channel-server.mjs   — 独立接收端 (POST到webhook)
 lib/constants.mjs    — 端口、超时常量
 lib/protocol.mjs     — 消息格式、校验
 bin/jianmu.mjs       — CLI (jianmu hub / jianmu status)

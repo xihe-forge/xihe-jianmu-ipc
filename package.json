@@ -8,7 +8,6 @@
   "files": [
     "hub.mjs",
     "mcp-server.mjs",
-    "channel-server.mjs",
     "lib/",
     "bin/jianmu.mjs",
     "bin/install.ps1",

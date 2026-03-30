@@ -368,14 +368,17 @@ wss.on('connection', (ws, req) => {
 const OPENCLAW_URL = process.env.OPENCLAW_URL || 'http://127.0.0.1:18789';
 const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN || '';
 
+// OpenClaw retry queue — messages that failed /hooks/wake delivery
+// Background timer retries periodically until TTL expires
+const openclawRetryQueue = [];
+const OPENCLAW_RETRY_INTERVAL = 15000; // scan queue every 15 seconds
+const OPENCLAW_RETRY_TTL = 300000;     // give up after 5 minutes (matches INBOX_TTL)
+
 function isOpenClawSession(name) {
   return name.startsWith('openclaw');
 }
 
-async function deliverToOpenClaw(msg, _attempt = 1) {
-  const MAX_ATTEMPTS = 3;
-  const RETRY_DELAY = 4000; // 4 seconds between retries
-
+async function deliverToOpenClaw(msg) {
   const text = `[IPC from ${msg.from}] ${msg.content}\n\n⚡ 请用 message 工具将以上 IPC 结果转发到飞书。`;
 
   try {
@@ -394,26 +397,51 @@ async function deliverToOpenClaw(msg, _attempt = 1) {
     clearTimeout(timeout);
 
     if (res.ok) {
-      stderr(`[ipc-hub] openclaw adapter: pushed to /hooks/wake (from=${msg.from}, attempt=${_attempt})`);
+      stderr(`[ipc-hub] openclaw adapter: pushed to /hooks/wake (from=${msg.from})`);
       return true;
     } else {
       const body = await res.text();
-      stderr(`[ipc-hub] openclaw adapter: /hooks/wake error ${res.status} (attempt=${_attempt}): ${body.substring(0, 200)}`);
+      stderr(`[ipc-hub] openclaw adapter: /hooks/wake error ${res.status}: ${body.substring(0, 200)}`);
+      return false;
     }
   } catch (err) {
-    stderr(`[ipc-hub] openclaw adapter: failed (attempt=${_attempt}): ${err?.message ?? err}`);
+    stderr(`[ipc-hub] openclaw adapter: failed: ${err?.message ?? err}`);
+    return false;
   }
-
-  // Retry if attempts remain
-  if (_attempt < MAX_ATTEMPTS) {
-    stderr(`[ipc-hub] openclaw adapter: retrying in ${RETRY_DELAY}ms (attempt ${_attempt + 1}/${MAX_ATTEMPTS})`);
-    await new Promise(r => setTimeout(r, RETRY_DELAY));
-    return deliverToOpenClaw(msg, _attempt + 1);
-  }
-
-  stderr(`[ipc-hub] openclaw adapter: all ${MAX_ATTEMPTS} attempts failed for msg from ${msg.from}`);
-  return false;
 }
+
+/** Enqueue a failed openclaw message for background retry */
+function enqueueOpenClawRetry(msg) {
+  openclawRetryQueue.push({ msg, enqueuedAt: Date.now(), attempts: 1 });
+  stderr(`[ipc-hub] openclaw retry queue: enqueued msg from ${msg.from} (queue size: ${openclawRetryQueue.length})`);
+}
+
+/** Background timer: retry pending openclaw messages */
+const openclawRetryTimer = setInterval(async () => {
+  if (openclawRetryQueue.length === 0) return;
+
+  const now = Date.now();
+  // Process queue in order, remove expired or successfully delivered
+  for (let i = openclawRetryQueue.length - 1; i >= 0; i--) {
+    const entry = openclawRetryQueue[i];
+
+    // TTL expired — drop it
+    if (now - entry.enqueuedAt > OPENCLAW_RETRY_TTL) {
+      stderr(`[ipc-hub] openclaw retry queue: TTL expired for msg from ${entry.msg.from} after ${entry.attempts} attempts`);
+      openclawRetryQueue.splice(i, 1);
+      continue;
+    }
+
+    // Try to deliver
+    entry.attempts++;
+    const ok = await deliverToOpenClaw(entry.msg);
+    if (ok) {
+      stderr(`[ipc-hub] openclaw retry queue: delivered on attempt ${entry.attempts} (from=${entry.msg.from})`);
+      openclawRetryQueue.splice(i, 1);
+    }
+  }
+}, OPENCLAW_RETRY_INTERVAL);
+openclawRetryTimer.unref();
 
 // ---------------------------------------------------------------------------
 // Message routing
@@ -455,7 +483,9 @@ function routeMessage(msg, senderSession) {
       // OpenClaw sessions: always use /hooks/wake for real-time delivery
       // (WebSocket connection is just the MCP client, not the main agent session)
       if (isOpenClawSession(to)) {
-        deliverToOpenClaw(msg);
+        deliverToOpenClaw(msg).then(ok => {
+          if (!ok) enqueueOpenClawRetry(msg);
+        });
         stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to OpenClaw /hooks/wake`);
       } else {
         const target = sessions.get(to);

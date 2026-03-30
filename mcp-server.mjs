@@ -246,6 +246,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'ipc_spawn requires "name" and "task"' }], isError: true };
     }
 
+    // Check if session name is already taken
+    try {
+      const sessions = await httpGet(`http://${HOST}:${IPC_PORT}/sessions`);
+      const existing = Array.isArray(sessions) && sessions.find(s => s.name === sessionName);
+      if (existing) {
+        return { content: [{ type: 'text', text: `Session "${sessionName}" is already online. Use a different name or wait for it to disconnect.` }], isError: true };
+      }
+    } catch {
+      // Hub unreachable — proceed anyway, Hub will reject duplicate on connect
+    }
+
     try {
       const result = await spawnSession({ name: sessionName, task, interactive: !!interactive, model });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };

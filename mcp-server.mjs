@@ -445,10 +445,15 @@ function pushChannelNotification(msg) {
 function autostartHub() {
   process.stderr.write('[ipc] attempting to autostart hub...\n');
   try {
+    // Forward OpenClaw config to Hub so /hooks/wake works out of the box
+    const hubEnv = { ...process.env };
+    if (process.env.OPENCLAW_URL) hubEnv.OPENCLAW_URL = process.env.OPENCLAW_URL;
+    if (process.env.OPENCLAW_TOKEN) hubEnv.OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN;
     const child = spawn(process.execPath, [join(PROJECT_DIR, 'hub.mjs')], {
       cwd: PROJECT_DIR,
       detached: true,
       stdio: 'ignore',
+      env: hubEnv,
     });
     child.unref();
     process.stderr.write(`[ipc] hub spawned (pid ${child.pid})\n`);

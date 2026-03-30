@@ -128,6 +128,8 @@ Session 2 (worker):
 }
 ```
 
+> **需要 OpenClaw 集成？/ Need OpenClaw integration?** 项目提供了 `.env.example` 文件，复制为 `.env` 并填入 `OPENCLAW_TOKEN` 即可。详见下方 OpenClaw 用户章节。/ A `.env.example` file is provided. Copy it to `.env` and fill in your `OPENCLAW_TOKEN`. See the OpenClaw Users section below for details.
+
 **3. Hub 自动启动 / The hub starts automatically**
 
 第一个 MCP 会话连接时 Hub 自动启动（`IPC_HUB_AUTOSTART=true` 为默认值）。也可手动启动：
@@ -176,17 +178,17 @@ ipc worker
 npm install xihe-jianmu-ipc
 ```
 
-**2. 配置 `.env` 文件（可选，用于 OpenClaw 集成）/ Configure `.env` file (optional, for OpenClaw integration)**
-
-在 `hub.mjs` 所在目录创建 `.env` 文件，替代环境变量配置：
-
-Create a `.env` file in the same directory as `hub.mjs` as an alternative to environment variables:
+**2. 配置 `.env` 文件（仅手动启动 Hub 时需要）/ Configure `.env` (only needed when starting Hub manually)**
 
 ```bash
-# .env (放在 hub.mjs 同目录 / place in the same directory as hub.mjs)
-OPENCLAW_URL=http://127.0.0.1:18789
-OPENCLAW_TOKEN=your-openclaw-token
+cp .env.example .env
+# 填入你的 OPENCLAW_TOKEN（从 OpenClaw 配置 hooks.token 获取）
+# Fill in your OPENCLAW_TOKEN (get it from your OpenClaw config: hooks.token)
 ```
+
+如果 OpenClaw 通过 `openclaw.json` 加载 MCP server 并在 `env` 字段中配置了环境变量，MCP server 自动启动 Hub 时会将这些变量透传给 Hub——此时不需要 `.env` 文件。`.env` 仅在手动运行 `node hub.mjs` 时作为兜底配置。
+
+If OpenClaw loads the MCP server via `openclaw.json` with env vars configured in the `env` field, the MCP server will pass them to the Hub automatically on autostart — no `.env` needed. The `.env` file is only needed when starting Hub manually via `node hub.mjs`.
 
 **3. 添加到 `openclaw.json` / Add to `openclaw.json`**
 

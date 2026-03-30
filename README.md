@@ -136,6 +136,10 @@ The hub starts automatically when the first MCP session connects (`IPC_HUB_AUTOS
 
 ```bash
 node hub.mjs
+
+# Linux / WSL2: 使用 setsid 防止父 shell 退出时 Hub 被 SIGTERM 杀死
+# Linux / WSL2: use setsid to prevent SIGTERM from killing Hub when the parent shell exits
+setsid node hub.mjs &
 ```
 
 **4. 发送消息 / Send messages**
@@ -168,7 +172,19 @@ ipc worker
 npm install xihe-jianmu-ipc
 ```
 
-**2. 添加到 `openclaw.json` / Add to `openclaw.json`**
+**2. 配置 `.env` 文件（可选，用于 OpenClaw 集成）/ Configure `.env` file (optional, for OpenClaw integration)**
+
+在 `hub.mjs` 所在目录创建 `.env` 文件，替代环境变量配置：
+
+Create a `.env` file in the same directory as `hub.mjs` as an alternative to environment variables:
+
+```bash
+# .env (放在 hub.mjs 同目录 / place in the same directory as hub.mjs)
+OPENCLAW_URL=http://127.0.0.1:18789
+OPENCLAW_TOKEN=your-openclaw-token
+```
+
+**3. 添加到 `openclaw.json` / Add to `openclaw.json`**
 
 ```json
 {
@@ -189,7 +205,7 @@ npm install xihe-jianmu-ipc
 }
 ```
 
-**3. 在 OpenClaw 中使用 IPC 工具 / Use IPC tools from within OpenClaw**
+**4. 在 OpenClaw 中使用 IPC 工具 / Use IPC tools from within OpenClaw**
 
 OpenClaw can now reach any connected session:
 
@@ -198,7 +214,7 @@ ipc_send(to="claude-main", content="Login failure detected, need attention")
 ipc_sessions()  // see what tools are connected
 ```
 
-**4. ClawHub 可用性 / ClawHub availability**
+**5. ClawHub 可用性 / ClawHub availability**
 
 `xihe-jianmu-ipc` skill 已在 ClawHub 上线。在 OpenClaw 内搜索 `xihe-jianmu-ipc` 即可安装。由于包含网络通信代码，安装时可能需要确认安全提示。
 
@@ -454,6 +470,7 @@ When running inside WSL2, the MCP server automatically reads the `nameserver` li
 - **无结构化 agent 生命周期 / No structured agent lifecycle**: OpenClaw 有更丰富的 agent 编排原语。建木只处理原始消息路由，不管理 agent 状态、重试策略或任务队列。/ OpenClaw has richer agent orchestration primitives. Jianmu handles raw message routing — it does not manage agent state, retry policies, or task queues.
 - **基础认证 / Basic auth**: 认证方式为共享 token（`IPC_AUTH_TOKEN`），不提供 per-session 身份验证或 ACL。/ Authentication is a shared token (`IPC_AUTH_TOKEN`). There is no per-session identity verification or ACL.
 - **单 Hub / Single hub**: 不支持多 Hub 联邦。所有 session 必须连接到同一 Hub 实例。跨机器部署需要反向代理或隧道。/ No multi-hub federation. All sessions must connect to the same hub instance. Cross-machine setups require a reverse proxy or tunnel.
+- **OpenClaw `.env` 配置 / OpenClaw `.env` configuration**: OpenClaw adapter 需要 `OPENCLAW_URL` 和 `OPENCLAW_TOKEN` 才能工作。可以在 `hub.mjs` 同目录放置 `.env` 文件，也可以设置环境变量。/ The OpenClaw adapter requires `OPENCLAW_URL` and `OPENCLAW_TOKEN` to function. Place a `.env` file in the same directory as `hub.mjs`, or set them as environment variables.
 
 ---
 

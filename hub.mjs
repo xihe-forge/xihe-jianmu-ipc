@@ -372,9 +372,10 @@ function isOpenClawSession(name) {
   return name.startsWith('openclaw');
 }
 
-async function deliverToOpenClaw(msg) {
-  // Use /hooks/wake to inject into main session as a system event.
-  // The wake text instructs the agent to forward the IPC result to Feishu via message tool.
+async function deliverToOpenClaw(msg, _attempt = 1) {
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAY = 4000; // 4 seconds between retries
+
   const text = `[IPC from ${msg.from}] ${msg.content}\n\n⚡ 请用 message 工具将以上 IPC 结果转发到飞书。`;
 
   try {
@@ -393,17 +394,25 @@ async function deliverToOpenClaw(msg) {
     clearTimeout(timeout);
 
     if (res.ok) {
-      stderr(`[ipc-hub] openclaw adapter: pushed to /hooks/wake (from=${msg.from})`);
+      stderr(`[ipc-hub] openclaw adapter: pushed to /hooks/wake (from=${msg.from}, attempt=${_attempt})`);
       return true;
     } else {
       const body = await res.text();
-      stderr(`[ipc-hub] openclaw adapter: /hooks/wake error ${res.status}: ${body.substring(0, 200)}`);
-      return false;
+      stderr(`[ipc-hub] openclaw adapter: /hooks/wake error ${res.status} (attempt=${_attempt}): ${body.substring(0, 200)}`);
     }
   } catch (err) {
-    stderr(`[ipc-hub] openclaw adapter: failed: ${err?.message ?? err}`);
-    return false;
+    stderr(`[ipc-hub] openclaw adapter: failed (attempt=${_attempt}): ${err?.message ?? err}`);
   }
+
+  // Retry if attempts remain
+  if (_attempt < MAX_ATTEMPTS) {
+    stderr(`[ipc-hub] openclaw adapter: retrying in ${RETRY_DELAY}ms (attempt ${_attempt + 1}/${MAX_ATTEMPTS})`);
+    await new Promise(r => setTimeout(r, RETRY_DELAY));
+    return deliverToOpenClaw(msg, _attempt + 1);
+  }
+
+  stderr(`[ipc-hub] openclaw adapter: all ${MAX_ATTEMPTS} attempts failed for msg from ${msg.from}`);
+  return false;
 }
 
 // ---------------------------------------------------------------------------

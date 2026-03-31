@@ -13,6 +13,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
+import * as Lark from '@larksuiteoapi/node-sdk';
 
 // Load .env from project root (no dotenv dependency needed)
 try {
@@ -519,6 +520,64 @@ async function deliverToFeishu(msg) {
 }
 
 // ---------------------------------------------------------------------------
+// Feishu incoming — receive messages via Lark SDK WSClient long connection
+// ---------------------------------------------------------------------------
+function startFeishuReceiver() {
+  if (!FEISHU_APP_ID || !FEISHU_APP_SECRET) {
+    stderr('[ipc-hub] feishu receiver: not configured (missing APP_ID/SECRET)');
+    return;
+  }
+
+  try {
+    const eventDispatcher = new Lark.EventDispatcher({}).register({
+      'im.message.receive_v1': async (data) => {
+        try {
+          const msg = data?.message;
+          if (!msg) return;
+
+          let text = '';
+          if (msg.message_type === 'text') {
+            try {
+              const content = JSON.parse(msg.content);
+              text = content.text || '';
+            } catch {
+              text = msg.content || '';
+            }
+          } else {
+            text = `[${msg.message_type} message]`;
+          }
+
+          stderr(`[ipc-hub] feishu receiver: "${text.substring(0, 80)}"`);
+
+          // Broadcast to all connected sessions
+          const ipcMsg = createMessage({
+            from: 'feishu',
+            to: '*',
+            content: text,
+          });
+          const fakeSender = { name: 'feishu' };
+          routeMessage(ipcMsg, fakeSender);
+        } catch (err) {
+          stderr(`[ipc-hub] feishu receiver: error: ${err?.message ?? err}`);
+        }
+      },
+    });
+
+    const wsClient = new Lark.WSClient({
+      appId: FEISHU_APP_ID,
+      appSecret: FEISHU_APP_SECRET,
+      eventDispatcher,
+      loggerLevel: Lark.LoggerLevel.info,
+    });
+    wsClient.start();
+
+    stderr('[ipc-hub] feishu receiver: WSClient started');
+  } catch (err) {
+    stderr(`[ipc-hub] feishu receiver: failed to start: ${err?.message ?? err}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Message routing
 // ---------------------------------------------------------------------------
 function routeMessage(msg, senderSession) {
@@ -561,8 +620,8 @@ function routeMessage(msg, senderSession) {
         deliverToOpenClaw(msg).then(ok => {
           if (!ok) enqueueOpenClawRetry(msg);
         });
-        deliverToFeishu(msg); // parallel push to Feishu (0 tokens)
-        stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to OpenClaw /hooks/wake + Feishu`);
+        // Don't push to hub's Feishu bot — OpenClaw will forward to its own Feishu chat
+        stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to OpenClaw /hooks/wake`);
       } else {
         const target = sessions.get(to);
         if (target) {
@@ -630,6 +689,7 @@ heartbeatInterval.unref(); // Don't block process exit
 httpServer.listen(PORT, DEFAULT_HOST, () => {
   stderr(`[ipc-hub] listening on :${PORT}`);
   stderr(`[ipc-hub] auth: ${AUTH_TOKEN ? 'enabled (token required)' : 'disabled (open access)'}`);
+  startFeishuReceiver();
 });
 
 httpServer.on('error', (err) => {

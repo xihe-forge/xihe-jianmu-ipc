@@ -4,7 +4,9 @@
   "description": "建木 — Real-time IPC hub for multi-AI-agent communication. WebSocket message routing between Claude Code, OpenClaw, Codex, and any HTTP client.",
   "type": "module",
   "main": "hub.mjs",
-  "bin": { "jianmu": "./bin/jianmu.mjs" },
+  "bin": {
+    "jianmu": "./bin/jianmu.mjs"
+  },
   "files": [
     "hub.mjs",
     "mcp-server.mjs",
@@ -36,6 +38,7 @@
   },
   "homepage": "https://github.com/xihe-forge/xihe-jianmu-ipc",
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.60.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "ws": "^8.18.0"
   },

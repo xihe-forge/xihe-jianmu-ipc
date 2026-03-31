@@ -566,7 +566,7 @@ function startFeishuReceivers() {
 
             const ipcMsg = createMessage({
               from: `feishu:${app.name}`,
-              to: '*',
+              to: 'openclaw',
               content: text,
             });
             const fakeSender = { name: `feishu:${app.name}` };
@@ -580,10 +580,9 @@ function startFeishuReceivers() {
       const wsClient = new Lark.WSClient({
         appId: app.appId,
         appSecret: app.appSecret,
-        eventDispatcher,
         loggerLevel: Lark.LoggerLevel.info,
       });
-      wsClient.start();
+      wsClient.start({ eventDispatcher });
 
       stderr(`[ipc-hub] feishu [${app.name}]: WSClient started`);
     } catch (err) {

@@ -39,6 +39,22 @@ The standard path for multi-agent coordination — routing messages through the 
 
 ---
 
+### 飞书直连：1 次 API 调用完成回复 / Feishu Direct: 1 API Call Per Reply
+
+标准路径：飞书消息 → Gateway LLM（加载 200K+ 上下文来"决定"调用消息工具）→ tool call（第 2 次 API 调用）→ 回复。成本：2 次 API 调用，每条消息 200K+ 缓存 token。
+
+Standard approach: Feishu message → Gateway LLM (loads 200K+ context to "decide" to call message tool) → tool call (2nd API call) → reply. Cost: 2 API calls, 200K+ cached tokens per message.
+
+建木路径：飞书消息 → Lark WSClient → Hub → Channel 通知 → Claude Code（1 次 API 调用）→ Stop hook 自动回复飞书。成本：1 次 API 调用，路由零额外 token。
+
+Jianmu approach: Feishu message → Lark WSClient → Hub → Channel notification → Claude Code (1 API call) → Stop hook auto-replies to Feishu. Cost: 1 API call, 0 extra tokens for routing.
+
+Stop hook 捕获 `last_assistant_message` 并 POST 到 Hub 的 `/feishu-reply` 端点，无需 tool call。
+
+The Stop hook captures `last_assistant_message` and POSTs it back to Hub's `/feishu-reply` endpoint. No tool call needed.
+
+---
+
 ## 架构 / Architecture
 
 ```
@@ -75,6 +91,15 @@ The standard path for multi-agent coordination — routing messages through the 
  │  (ALWAYS via HTTP, even if WS is connected)             │
  │  Inbound:  OpenClaw loads mcp-server.mjs via            │
  │  openclaw.json — ipc_send reaches any connected tool    │
+ └────────────────────────────────────────────────────────┘
+           │
+ ┌─────────▼──────────────────────────────────────────────┐
+ │  Feishu Adapter (飞书适配器)                            │
+ │  Outbound: Hub sends messages via Feishu Bot API       │
+ │  Inbound:  Lark SDK WSClient receives messages from    │
+ │  Feishu bots — no public IP needed                     │
+ │  Multi-app: feishu-apps.json configures any number     │
+ │  of Feishu bots with independent send/receive          │
  └────────────────────────────────────────────────────────┘
 ```
 
@@ -438,6 +463,38 @@ This means Claude Code can push messages to OpenClaw in real-time — all throug
 
 ---
 
+## 飞书集成细节 / Feishu Integration
+
+飞书适配器支持多应用，通过 `feishu-apps.json` 配置（已 gitignore，含密钥）。项目提供 `feishu-apps.example.json` 作为模板。
+
+The Feishu adapter supports multiple apps, configured via `feishu-apps.json` (gitignored, contains secrets). `feishu-apps.example.json` is provided as a template.
+
+**每个应用配置包含 / Each app entry contains:**
+
+| 字段 / Field | 说明 / Description |
+|---|---|
+| `name` | 应用显示名称 / App display name |
+| `appId` | 飞书应用 ID / Feishu App ID |
+| `appSecret` | 飞书应用密钥 / Feishu App Secret |
+| `targetOpenId` | 默认消息接收人 / Default message recipient |
+| `receive` | 接收方式：Lark SDK WSClient / Receive via Lark SDK WSClient |
+| `send` | 发送方式：Feishu Bot API / Send via Feishu Bot API |
+| `routeTo` | 目标 IPC session 名称 / Target IPC session name |
+
+**入站 / Inbound:** Lark SDK WSClient 长连接接收飞书消息，无需公网 IP、Webhook URL 或 SSL 证书。
+
+Inbound: Lark SDK WSClient receives messages via long-lived connection. No public IP, webhook URL, or SSL certificate required.
+
+**出站 / Outbound:** 通过 `POST /feishu-reply` 端点回复飞书，或在 IPC 中使用 `ipc_send(to="feishu:app-name")`。
+
+Outbound: Reply to Feishu via `POST /feishu-reply` endpoint, or use `ipc_send(to="feishu:app-name")` from any IPC session.
+
+**自动回复 / Auto-reply:** Stop hook（`bin/feishu-auto-reply.cjs`）在 Claude Code 响应结束时捕获 `last_assistant_message`，自动 POST 到 Hub 的 `/feishu-reply`，实现飞书消息的全自动回复，无需 tool call。
+
+Auto-reply: The Stop hook (`bin/feishu-auto-reply.cjs`) captures `last_assistant_message` when Claude Code finishes responding, and automatically POSTs it to Hub's `/feishu-reply`. Fully automatic Feishu replies with no tool call needed.
+
+---
+
 ## 跨 AI 支持 / Cross-AI Support
 
 建木并非 Claude 专属。任何能发 HTTP 请求或打开 WebSocket 的工具都可以接入：
@@ -450,6 +507,7 @@ Jianmu is not Claude-specific. Any tool that can send HTTP requests or open a We
 | OpenClaw | MCP Server via `openclaw.json` + OpenClaw adapter |
 | OpenAI Codex | HTTP API (`POST /send`) |
 | Custom scripts | HTTP API or raw WebSocket |
+| Feishu Bots | Lark SDK WSClient + Bot API (`feishu-apps.json`) |
 | Channel Server | `channel-server.mjs` — standalone receiver that POSTs to a webhook |
 
 ---
@@ -477,6 +535,7 @@ When running inside WSL2, the MCP server automatically reads the `nameserver` li
 - **基础认证 / Basic auth**: 认证方式为共享 token（`IPC_AUTH_TOKEN`），不提供 per-session 身份验证或 ACL。/ Authentication is a shared token (`IPC_AUTH_TOKEN`). There is no per-session identity verification or ACL.
 - **单 Hub / Single hub**: 不支持多 Hub 联邦。所有 session 必须连接到同一 Hub 实例。跨机器部署需要反向代理或隧道。/ No multi-hub federation. All sessions must connect to the same hub instance. Cross-machine setups require a reverse proxy or tunnel.
 - **OpenClaw `.env` 配置 / OpenClaw `.env` configuration**: OpenClaw adapter 需要 `OPENCLAW_URL` 和 `OPENCLAW_TOKEN` 才能工作。可以在 `hub.mjs` 同目录放置 `.env` 文件，也可以设置环境变量。/ The OpenClaw adapter requires `OPENCLAW_URL` and `OPENCLAW_TOKEN` to function. Place a `.env` file in the same directory as `hub.mjs`, or set them as environment variables.
+- **飞书自动回复仅限 Claude Code / Feishu auto-reply is Claude Code only**: Stop hook（`bin/feishu-auto-reply.cjs`）依赖 Claude Code 的 hook 机制，不适用于 OpenClaw 或其他工具。/ The Stop hook (`bin/feishu-auto-reply.cjs`) relies on Claude Code's hook mechanism and does not work with OpenClaw or other tools.
 
 ---
 
@@ -487,12 +546,15 @@ xihe-jianmu-ipc/
 ├── hub.mjs              # WebSocket hub server
 ├── mcp-server.mjs       # MCP server (Claude Code + OpenClaw adapter)
 ├── channel-server.mjs   # Standalone channel receiver
+├── feishu-apps.example.json  # Feishu multi-app config template
 ├── SKILL.md             # OpenClaw ClawHub skill manifest
 ├── lib/
 │   ├── constants.mjs    # Shared constants (ports, timeouts, etc.)
 │   └── protocol.mjs     # Message schema and validation
 ├── bin/
 │   ├── jianmu.mjs       # CLI entry point
+│   ├── feishu-auto-reply.cjs  # Stop hook: auto-reply to Feishu
+│   ├── feishu-reply.sh  # Shell shortcut for Feishu reply
 │   ├── install.ps1      # PowerShell profile installer
 │   ├── ipc-claude.ps1   # PowerShell helper for Claude Code sessions
 │   └── patch-channels.mjs  # Claude Code channel patch helper

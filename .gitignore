@@ -1,6 +1,7 @@
 node_modules/
 *.log
 .env
+feishu-apps.json
 .clawhub/
 local/
 skills/

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "my-bot",
+    "appId": "cli_xxx",
+    "appSecret": "your-app-secret",
+    "targetOpenId": "ou_xxx",
+    "receive": true,
+    "send": true
+  }
+]

@@ -12,6 +12,8 @@ lib/protocol.mjs     — 消息格式、校验
 bin/jianmu.mjs       — CLI (jianmu hub / jianmu status)
 bin/install.ps1      — PowerShell alias安装
 bin/patch-channels.mjs — Claude Code Channel弹窗补丁
+feishu-apps.json     — 飞书多应用配置（含密钥，已gitignore）
+feishu-apps.example.json — 飞书配置模板
 SKILL.md             — OpenClaw ClawHub skill清单
 ```
 
@@ -41,6 +43,8 @@ SKILL.md             — OpenClaw ClawHub skill清单
 | `IPC_AUTH_TOKEN` | — | 认证token，不设则不认证 |
 | `OPENCLAW_URL` | `http://127.0.0.1:18789` | OpenClaw Gateway地址 |
 | `OPENCLAW_TOKEN` | — | OpenClaw API token |
+
+飞书配置已从环境变量迁移到 `feishu-apps.json`，支持多应用。见 `feishu-apps.example.json`。
 
 ## 开发规范
 

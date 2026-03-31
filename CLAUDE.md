@@ -12,6 +12,7 @@ lib/protocol.mjs     — 消息格式、校验
 bin/jianmu.mjs       — CLI (jianmu hub / jianmu status)
 bin/install.ps1      — PowerShell alias安装
 bin/patch-channels.mjs — Claude Code Channel弹窗补丁
+bin/feishu-reply.sh  — 飞书快捷回复脚本（读stdin或参数，POST到Hub）
 feishu-apps.json     — 飞书多应用配置（含密钥，已gitignore）
 feishu-apps.example.json — 飞书配置模板
 SKILL.md             — OpenClaw ClawHub skill清单
@@ -28,6 +29,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 ## HTTP API
 
 - `POST /send` — `{from, to, content}` 发消息，返回 `{ok, id, online, buffered}`
+- `POST /feishu-reply` — `{app, content, from?}` 直接回复飞书，跳过IPC路由，返回 `{ok, app}`
 - `GET /health` — Hub状态 + session列表
 - `GET /sessions` — 仅session列表
 

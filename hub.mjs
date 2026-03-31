@@ -215,6 +215,84 @@ const httpServer = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: true, id: msg.id, online: !!online, buffered: !online }));
       stderr(`[ipc-hub] HTTP POST /send: ${msg.from} → ${msg.to}`);
     });
+  } else if (req.method === 'POST' && req.url === '/feishu-reply') {
+    // Lightweight endpoint: send a reply directly to Feishu without full IPC routing.
+    // Body: { "app": "jianmu-pm", "content": "reply text" }
+    // Optionally "from" for logging.
+    let body = '';
+    let size = 0;
+    const MAX_BODY = 1024 * 1024;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'payload too large' }));
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', async () => {
+      let payload;
+      try {
+        payload = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+
+      const { app: appName, content, from } = payload;
+      if (!appName || !content) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'requires "app" and "content"' }));
+        return;
+      }
+
+      // Find the Feishu app by name — must have a targetOpenId to send to
+      const app = feishuApps.find(a => a.name === appName && a.targetOpenId);
+      if (!app) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `no Feishu app "${appName}" with targetOpenId configured` }));
+        return;
+      }
+
+      const token = await getFeishuToken(app);
+      if (!token) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'failed to get Feishu access token' }));
+        return;
+      }
+
+      try {
+        const feishuRes = await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            receive_id: app.targetOpenId,
+            msg_type: 'text',
+            content: JSON.stringify({ text: content }),
+          }),
+        });
+        const data = await feishuRes.json();
+        if (data.code === 0) {
+          stderr(`[ipc-hub] POST /feishu-reply: sent to [${app.name}] (from=${from || 'http'})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, app: app.name }));
+        } else {
+          stderr(`[ipc-hub] POST /feishu-reply: Feishu error ${data.code}: ${data.msg}`);
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: `Feishu error ${data.code}: ${data.msg}` }));
+        }
+      } catch (err) {
+        stderr(`[ipc-hub] POST /feishu-reply: fetch failed: ${err?.message ?? err}`);
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err?.message ?? 'fetch failed' }));
+      }
+    });
   } else if (req.method === 'GET' && req.url === '/sessions') {
     // Alias for /health — returns just sessions list
     const list = [];

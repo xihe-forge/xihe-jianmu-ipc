@@ -73,9 +73,9 @@ const HOST = detectHost();
 // ---------------------------------------------------------------------------
 let ws = null;
 let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_RECONNECT_ATTEMPTS = Infinity; // never give up
 const RECONNECT_BASE_DELAY = 3000;
-const RECONNECT_MAX_DELAY = 30000;
+const RECONNECT_MAX_DELAY = 60000;
 
 const pendingMessages = [];   // incoming messages (future use)
 const outgoingQueue = [];     // queued while disconnected

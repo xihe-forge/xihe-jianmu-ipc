@@ -658,6 +658,7 @@ function startFeishuReceivers() {
       const wsClient = new Lark.WSClient({
         appId: app.appId,
         appSecret: app.appSecret,
+        eventDispatcher,
         loggerLevel: Lark.LoggerLevel.info,
       });
       wsClient.start({ eventDispatcher }).then(() => {

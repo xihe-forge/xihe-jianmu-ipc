@@ -19,24 +19,24 @@ process.stdin.on('end', () => {
 
     const transcript = fs.readFileSync(transcriptPath, 'utf8');
 
-    // Find the last channel message from feishu
-    // Look for the pattern: from="feishu:xxx" in the last few thousand characters
-    const tail = transcript.slice(-5000);
-    const feishuMatch = tail.match(/from="feishu:([^"]+)"/g);
+    // Find the last channel message from feishu in transcript (JSONL format)
+    // In JSONL, quotes are escaped: from=\"feishu:xxx\" or from=\\"feishu:xxx\\"
+    const tail = transcript.slice(-20000);
+    const feishuMatch = tail.match(/feishu:([a-zA-Z0-9_-]+)/g);
     if (!feishuMatch) process.exit(0);
 
-    // Get the last feishu source
+    // Get the last feishu app name
     const lastMatch = feishuMatch[feishuMatch.length - 1];
-    const appName = lastMatch.match(/from="feishu:([^"]+)"/)?.[1];
+    const appName = lastMatch.replace('feishu:', '');
     if (!appName) process.exit(0);
 
-    // Check that the feishu message is recent (within last few messages, not old history)
-    // Simple heuristic: the feishu channel tag should appear after the last "Human:" or user turn
-    const lastHumanIdx = Math.max(tail.lastIndexOf('Human:'), tail.lastIndexOf('"role":"user"'));
+    // Check the last feishu mention is in the last user message (not in tool calls/old history)
+    // Find last "role":"user" that contains "feishu:" — that's the channel notification turn
+    const lastUserFeishuIdx = tail.lastIndexOf('"role":"user"');
     const lastFeishuIdx = tail.lastIndexOf(`feishu:${appName}`);
 
-    // If the feishu message is not in the most recent turn, skip
-    if (lastFeishuIdx < lastHumanIdx && lastHumanIdx > 0) process.exit(0);
+    // feishu mention must be near the last user turn (within a few hundred chars)
+    if (lastUserFeishuIdx < 0 || lastFeishuIdx < lastUserFeishuIdx) process.exit(0);
 
     // Send reply to Hub
     const body = JSON.stringify({ app: appName, content: msg, from: 'auto-reply' });

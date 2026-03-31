@@ -650,7 +650,7 @@ function startFeishuReceivers() {
             const fakeSender = { name: `feishu:${app.name}` };
             routeMessage(ipcMsg, fakeSender);
           } catch (err) {
-            stderr(`[ipc-hub] feishu [${app.name}]: receiver error: ${err?.message ?? err}`);
+            stderr(`[ipc-hub] feishu [${app.name}]: receiver error: ${err?.stack ?? err?.message ?? err}`);
           }
         },
       });
@@ -660,9 +660,13 @@ function startFeishuReceivers() {
         appSecret: app.appSecret,
         loggerLevel: Lark.LoggerLevel.info,
       });
-      wsClient.start({ eventDispatcher });
+      wsClient.start({ eventDispatcher }).then(() => {
+        stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected`);
+      }).catch(err => {
+        stderr(`[ipc-hub] feishu [${app.name}]: WSClient start FAILED: ${err?.stack ?? err?.message ?? err}`);
+      });
 
-      stderr(`[ipc-hub] feishu [${app.name}]: WSClient started`);
+      stderr(`[ipc-hub] feishu [${app.name}]: WSClient starting...`);
     } catch (err) {
       stderr(`[ipc-hub] feishu [${app.name}]: failed to start: ${err?.message ?? err}`);
     }
@@ -674,6 +678,7 @@ function startFeishuReceivers() {
 // ---------------------------------------------------------------------------
 function routeMessage(msg, senderSession) {
   const { to, topic } = msg;
+  stderr(`[ipc-hub] routeMessage: ${msg.from} → ${to} (sender=${senderSession.name})`);
   const delivered = new Set(); // Track who already received the message
 
   // Topic-based fanout (can combine with direct addressing)

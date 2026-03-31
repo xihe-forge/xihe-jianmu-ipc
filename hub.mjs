@@ -628,9 +628,37 @@ function routeMessage(msg, senderSession) {
   } else if (to && to !== '*') {
     // Direct message — skip if already delivered via topic
     if (!delivered.has(to)) {
+      // Feishu target: send via Feishu Bot API
+      if (to === 'feishu' || to.startsWith('feishu:')) {
+        // If to="feishu:jianmu-pm", find that specific app; otherwise use default send app
+        const appName = to.includes(':') ? to.split(':')[1] : null;
+        const app = appName
+          ? feishuApps.find(a => a.name === appName && a.targetOpenId)
+          : feishuApps.find(a => a.send && a.targetOpenId);
+        if (app) {
+          getFeishuToken(app).then(token => {
+            if (!token) return;
+            const text = msg.content;
+            fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({
+                receive_id: app.targetOpenId,
+                msg_type: 'text',
+                content: JSON.stringify({ text }),
+              }),
+            }).then(r => r.json()).then(data => {
+              if (data.code === 0) stderr(`[ipc-hub] feishu [${app.name}]: sent reply from ${senderSession.name}`);
+              else stderr(`[ipc-hub] feishu [${app.name}]: reply error ${data.code}: ${data.msg}`);
+            }).catch(err => stderr(`[ipc-hub] feishu [${app.name}]: reply failed: ${err?.message ?? err}`));
+          });
+          stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to Feishu [${app.name}]`);
+        } else {
+          stderr(`[ipc-hub] ${senderSession.name} → ${to}: no matching Feishu app found`);
+        }
       // OpenClaw sessions: always use /hooks/wake for real-time delivery
       // (WebSocket connection is just the MCP client, not the main agent session)
-      if (isOpenClawSession(to)) {
+      } else if (isOpenClawSession(to)) {
         deliverToOpenClaw(msg).then(ok => {
           if (!ok) enqueueOpenClawRetry(msg);
         });

@@ -191,8 +191,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       topic: topic ?? null,
     });
 
-    wsSend(message);
-    return { content: [{ type: 'text', text: JSON.stringify({ delivered: true, id: message.id }) }] };
+    // Try WebSocket first; if disconnected, fallback to HTTP POST /send
+    if (ws?.readyState === 1 /* OPEN */) {
+      ws.send(JSON.stringify(message));
+      return { content: [{ type: 'text', text: JSON.stringify({ delivered: true, id: message.id, via: 'ws' }) }] };
+    }
+
+    // WS not connected — use HTTP fallback
+    try {
+      const result = await httpPost(`http://${HOST}:${IPC_PORT}/send`, {
+        from: IPC_NAME,
+        to,
+        content: String(content),
+      });
+      return { content: [{ type: 'text', text: JSON.stringify({ delivered: result?.ok ?? false, id: result?.id ?? message.id, via: 'http', online: result?.online }) }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ delivered: false, error: err?.message ?? String(err), via: 'http_failed' }) }],
+        isError: true,
+      };
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -672,6 +690,27 @@ function httpGet(url) {
   });
 }
 
+function httpPost(url, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) };
+    if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
+    const parsed = new URL(url);
+    const req = http.request({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname, method: 'POST', headers }, (res) => {
+      let buf = '';
+      res.on('data', (chunk) => { buf += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(buf)); }
+        catch { reject(new Error(`invalid JSON from ${url}: ${buf}`)); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => { req.destroy(new Error('timeout')); });
+    req.write(data);
+    req.end();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket send (with queueing on disconnect)
 // ---------------------------------------------------------------------------
@@ -679,14 +718,28 @@ function wsSend(payload) {
   const serialized = typeof payload === 'string' ? payload : JSON.stringify(payload);
   if (ws?.readyState === 1 /* OPEN */) {
     ws.send(serialized);
-  } else {
-    outgoingQueue.push(serialized);
-    if (outgoingQueue.length > 100) {
-      outgoingQueue.shift(); // Drop oldest
-      process.stderr.write('[ipc] outgoing queue full, dropped oldest message\n');
-    }
-    process.stderr.write('[ipc] hub not connected, message queued\n');
+    return true;
   }
+  // WS not connected — try HTTP fallback
+  const msg = typeof payload === 'object' ? payload : null;
+  if (msg?.type === 'message' && msg.from && msg.to && msg.content) {
+    httpPost(`http://${HOST}:${IPC_PORT}/send`, {
+      from: msg.from, to: msg.to, content: msg.content, topic: msg.topic ?? null,
+    }).then(res => {
+      process.stderr.write(`[ipc] HTTP fallback: ${res?.ok ? 'sent' : 'failed'} (${msg.from} → ${msg.to})\n`);
+    }).catch(err => {
+      process.stderr.write(`[ipc] HTTP fallback failed: ${err?.message ?? err}\n`);
+    });
+    return false; // delivered via HTTP async, not guaranteed
+  }
+  // Non-message payloads (subscribe, etc) — queue for later
+  outgoingQueue.push(serialized);
+  if (outgoingQueue.length > 100) {
+    outgoingQueue.shift();
+    process.stderr.write('[ipc] outgoing queue full, dropped oldest message\n');
+  }
+  process.stderr.write('[ipc] hub not connected, message queued\n');
+  return false;
 }
 
 // ---------------------------------------------------------------------------

@@ -39,19 +39,16 @@ The standard path for multi-agent coordination — routing messages through the 
 
 ---
 
-### 飞书直连：1 次 API 调用完成回复 / Feishu Direct: 1 API Call Per Reply
+### 飞书集成 / Feishu Integration
 
-标准路径：飞书消息 → Gateway LLM（加载 200K+ 上下文来"决定"调用消息工具）→ tool call（第 2 次 API 调用）→ 回复。成本：2 次 API 调用，每条消息 200K+ 缓存 token。
+Hub 通过飞书 Lark SDK WSClient 长连接接收消息，通过 Bot API 发送消息。支持多应用配置（feishu-apps.json），每个应用独立控制收发。
 
-Standard approach: Feishu message → Gateway LLM (loads 200K+ context to "decide" to call message tool) → tool call (2nd API call) → reply. Cost: 2 API calls, 200K+ cached tokens per message.
+Hub receives Feishu messages via Lark SDK WSClient (no public IP needed) and sends via Bot API. Multi-app support through feishu-apps.json.
 
-建木路径：飞书消息 → Lark WSClient → Hub → Channel 通知 → Claude Code（1 次 API 调用）→ Stop hook 自动回复飞书。成本：1 次 API 调用，路由零额外 token。
-
-Jianmu approach: Feishu message → Lark WSClient → Hub → Channel notification → Claude Code (1 API call) → Stop hook auto-replies to Feishu. Cost: 1 API call, 0 extra tokens for routing.
-
-Stop hook 捕获 `last_assistant_message` 并 POST 到 Hub 的 `/feishu-reply` 端点，无需 tool call。
-
-The Stop hook captures `last_assistant_message` and POSTs it back to Hub's `/feishu-reply` endpoint. No tool call needed.
+- 接收：WSClient 长连接，无需公网 IP / Receive: WSClient, no public IP needed
+- 发送：Bot API 直推或 POST /feishu-reply / Send: Bot API or POST /feishu-reply
+- 自动回复：Claude Code Stop hook 捕获响应自动发回飞书 / Auto-reply: Stop hook captures response
+- 多应用：feishu-apps.json 配置任意数量飞书机器人 / Multi-app: any number of bots
 
 ---
 

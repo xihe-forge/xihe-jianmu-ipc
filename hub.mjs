@@ -535,6 +535,13 @@ function startFeishuReceiver() {
           const msg = data?.message;
           if (!msg) return;
 
+          // Only process direct messages (p2p) to the bot, ignore group chats
+          const chatType = msg.chat_type;
+          if (chatType !== 'p2p') {
+            stderr(`[ipc-hub] feishu receiver: ignored ${chatType} message`);
+            return;
+          }
+
           let text = '';
           if (msg.message_type === 'text') {
             try {
@@ -547,9 +554,9 @@ function startFeishuReceiver() {
             text = `[${msg.message_type} message]`;
           }
 
-          stderr(`[ipc-hub] feishu receiver: "${text.substring(0, 80)}"`);
+          stderr(`[ipc-hub] feishu receiver: p2p "${text.substring(0, 80)}"`);
 
-          // Broadcast to all connected sessions
+          // Route to all connected sessions
           const ipcMsg = createMessage({
             from: 'feishu',
             to: '*',
@@ -566,10 +573,9 @@ function startFeishuReceiver() {
     const wsClient = new Lark.WSClient({
       appId: FEISHU_APP_ID,
       appSecret: FEISHU_APP_SECRET,
-      eventDispatcher,
       loggerLevel: Lark.LoggerLevel.info,
     });
-    wsClient.start();
+    wsClient.start({ eventDispatcher });
 
     stderr('[ipc-hub] feishu receiver: WSClient started');
   } catch (err) {

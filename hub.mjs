@@ -566,7 +566,7 @@ function startFeishuReceivers() {
 
             const ipcMsg = createMessage({
               from: `feishu:${app.name}`,
-              to: 'openclaw',
+              to: app.routeTo || app.name,
               content: text,
             });
             const fakeSender = { name: `feishu:${app.name}` };

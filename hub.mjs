@@ -631,12 +631,6 @@ function startFeishuReceivers() {
             const msg = data?.message;
             if (!msg) return;
 
-            // Debug: log full message structure to find reply/quote fields
-            stderr(`[ipc-hub] feishu [${app.name}]: raw msg keys: ${JSON.stringify(Object.keys(msg))}`);
-            if (msg.parent_id || msg.root_id || msg.upper_message_id) {
-              stderr(`[ipc-hub] feishu [${app.name}]: reply msg parent_id=${msg.parent_id} root_id=${msg.root_id} upper=${msg.upper_message_id}`);
-            }
-
             if (msg.chat_type !== 'p2p') {
               stderr(`[ipc-hub] feishu [${app.name}]: ignored ${msg.chat_type} message`);
               return;
@@ -652,6 +646,34 @@ function startFeishuReceivers() {
               }
             } else {
               text = `[${msg.message_type} message]`;
+            }
+
+            // Fetch quoted/replied message content if this is a reply
+            let quotedText = '';
+            if (msg.parent_id) {
+              try {
+                const token = await getFeishuToken(app);
+                if (token) {
+                  const qRes = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${msg.parent_id}`, {
+                    headers: { 'Authorization': `Bearer ${token}` },
+                  });
+                  const qData = await qRes.json();
+                  if (qData.code === 0 && qData.data?.items?.[0]?.body?.content) {
+                    try {
+                      const qContent = JSON.parse(qData.data.items[0].body.content);
+                      quotedText = qContent.text || '';
+                    } catch {
+                      quotedText = qData.data.items[0].body.content;
+                    }
+                  }
+                }
+              } catch (err) {
+                stderr(`[ipc-hub] feishu [${app.name}]: failed to fetch quoted msg: ${err?.message ?? err}`);
+              }
+            }
+
+            if (quotedText) {
+              text = `[引用: ${quotedText}]\n${text}`;
             }
 
             stderr(`[ipc-hub] feishu [${app.name}]: p2p "${text.substring(0, 80)}"`);

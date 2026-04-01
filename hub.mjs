@@ -694,10 +694,9 @@ function startFeishuReceivers() {
       const wsClient = new Lark.WSClient({
         appId: app.appId,
         appSecret: app.appSecret,
-        eventDispatcher,
         loggerLevel: Lark.LoggerLevel.info,
       });
-      wsClient.start().then(() => {
+      wsClient.start({ eventDispatcher }).then(() => {
         stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected`);
       }).catch(err => {
         stderr(`[ipc-hub] feishu [${app.name}]: WSClient start FAILED: ${err?.stack ?? err?.message ?? err}`);

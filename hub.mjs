@@ -698,7 +698,7 @@ function startFeishuInProcess(app) {
     const wsClient = new Lark.WSClient({
       appId: app.appId,
       appSecret: app.appSecret,
-      loggerLevel: Lark.LoggerLevel.info,
+      loggerLevel: Lark.LoggerLevel.debug,
     });
     wsClient.start({ eventDispatcher }).then(() => {
       stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected`);

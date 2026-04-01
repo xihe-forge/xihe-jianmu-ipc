@@ -697,7 +697,7 @@ function startFeishuReceivers() {
         eventDispatcher,
         loggerLevel: Lark.LoggerLevel.info,
       });
-      wsClient.start({ eventDispatcher }).then(() => {
+      wsClient.start().then(() => {
         stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected`);
       }).catch(err => {
         stderr(`[ipc-hub] feishu [${app.name}]: WSClient start FAILED: ${err?.stack ?? err?.message ?? err}`);

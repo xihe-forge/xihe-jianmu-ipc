@@ -31,6 +31,7 @@ process.on('uncaughtException', (err) => {
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fork } from 'node:child_process';
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import * as Lark from '@larksuiteoapi/node-sdk';
@@ -626,7 +627,8 @@ async function deliverToFeishu(msg) {
 }
 
 // ---------------------------------------------------------------------------
-// Feishu incoming — receive messages via Lark SDK WSClient long connection
+// Feishu incoming — each app runs in a separate fork() to avoid Lark SDK
+// global state interference between multiple WSClient instances.
 // ---------------------------------------------------------------------------
 function startFeishuReceivers() {
   const receiveApps = feishuApps.filter(a => a.receive);
@@ -635,90 +637,100 @@ function startFeishuReceivers() {
     return;
   }
 
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+
   for (const app of receiveApps) {
-    try {
-      const eventDispatcher = new Lark.EventDispatcher({}).register({
-        'im.message.receive_v1': async (data) => {
-          try {
-            const msg = data?.message;
-            if (!msg) return;
+    startFeishuWorker(app, __dirname);
+  }
+}
 
-            if (msg.chat_type !== 'p2p') {
-              stderr(`[ipc-hub] feishu [${app.name}]: ignored ${msg.chat_type} message`);
-              return;
+function startFeishuWorker(app, workerDir) {
+  if (!workerDir) workerDir = dirname(fileURLToPath(import.meta.url));
+
+  try {
+    const child = fork(join(workerDir, 'lib', 'feishu-worker.mjs'), [], {
+      env: { ...process.env, FEISHU_APP_CONFIG: JSON.stringify(app) },
+      stdio: ['pipe', 'pipe', 'inherit', 'ipc'],
+    });
+
+    child.on('message', (msg) => {
+      if (msg.type === 'connected') {
+        stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected (worker pid=${child.pid})`);
+        return;
+      }
+
+      if (msg.type === 'feishu_message') {
+        try {
+          const data = msg.data;
+          const feishuMsg = data?.message;
+          if (!feishuMsg) return;
+
+          if (feishuMsg.chat_type !== 'p2p') {
+            stderr(`[ipc-hub] feishu [${app.name}]: ignored ${feishuMsg.chat_type} message`);
+            return;
+          }
+
+          let text = '';
+          if (feishuMsg.message_type === 'text') {
+            try {
+              const content = JSON.parse(feishuMsg.content);
+              text = content.text || '';
+            } catch {
+              text = feishuMsg.content || '';
             }
+          } else {
+            text = `[${feishuMsg.message_type} message]`;
+          }
 
-            let text = '';
-            if (msg.message_type === 'text') {
-              try {
-                const content = JSON.parse(msg.content);
-                text = content.text || '';
-              } catch {
-                text = msg.content || '';
-              }
-            } else {
-              text = `[${msg.message_type} message]`;
-            }
-
-            // Fetch quoted/replied message content if this is a reply
-            let quotedText = '';
-            if (msg.parent_id) {
-              try {
-                const token = await getFeishuToken(app);
-                if (token) {
-                  const qRes = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${msg.parent_id}`, {
-                    headers: { 'Authorization': `Bearer ${token}` },
-                  });
-                  const qData = await qRes.json();
-                  if (qData.code === 0 && qData.data?.items?.[0]?.body?.content) {
-                    try {
-                      const qContent = JSON.parse(qData.data.items[0].body.content);
-                      quotedText = qContent.text || '';
-                    } catch {
-                      quotedText = qData.data.items[0].body.content;
-                    }
+          // Fetch quoted message if this is a reply
+          if (feishuMsg.parent_id) {
+            getFeishuToken(app).then(token => {
+              if (!token) { routeFeishuMessage(app, text); return; }
+              fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${feishuMsg.parent_id}`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+              }).then(r => r.json()).then(qData => {
+                if (qData.code === 0 && qData.data?.items?.[0]?.body?.content) {
+                  try {
+                    const qContent = JSON.parse(qData.data.items[0].body.content);
+                    text = `[引用: ${qContent.text || ''}]\n${text}`;
+                  } catch {
+                    text = `[引用: ${qData.data.items[0].body.content}]\n${text}`;
                   }
                 }
-              } catch (err) {
-                stderr(`[ipc-hub] feishu [${app.name}]: failed to fetch quoted msg: ${err?.message ?? err}`);
-              }
-            }
-
-            if (quotedText) {
-              text = `[引用: ${quotedText}]\n${text}`;
-            }
-
-            stderr(`[ipc-hub] feishu [${app.name}]: p2p "${text.substring(0, 80)}"`);
-
-            const ipcMsg = createMessage({
-              from: `feishu:${app.name}`,
-              to: app.routeTo || app.name,
-              content: text,
-            });
-            const fakeSender = { name: `feishu:${app.name}` };
-            routeMessage(ipcMsg, fakeSender);
-          } catch (err) {
-            stderr(`[ipc-hub] feishu [${app.name}]: receiver error: ${err?.stack ?? err?.message ?? err}`);
+                routeFeishuMessage(app, text);
+              }).catch(() => routeFeishuMessage(app, text));
+            }).catch(() => routeFeishuMessage(app, text));
+          } else {
+            routeFeishuMessage(app, text);
           }
-        },
-      });
+        } catch (err) {
+          stderr(`[ipc-hub] feishu [${app.name}]: receiver error: ${err?.stack ?? err?.message ?? err}`);
+        }
+      }
+    });
 
-      const wsClient = new Lark.WSClient({
-        appId: app.appId,
-        appSecret: app.appSecret,
-        loggerLevel: Lark.LoggerLevel.warn,
-      });
-      wsClient.start({ eventDispatcher }).then(() => {
-        stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected`);
-      }).catch(err => {
-        stderr(`[ipc-hub] feishu [${app.name}]: WSClient start FAILED: ${err?.stack ?? err?.message ?? err}`);
-      });
+    child.on('exit', (code) => {
+      stderr(`[ipc-hub] feishu [${app.name}]: worker exited (code=${code}), restarting in 5s...`);
+      setTimeout(() => startFeishuWorker(app, workerDir), 5000);
+    });
 
-      stderr(`[ipc-hub] feishu [${app.name}]: WSClient starting...`);
-    } catch (err) {
-      stderr(`[ipc-hub] feishu [${app.name}]: failed to start: ${err?.message ?? err}`);
-    }
+    child.stdout?.on('data', () => {}); // drain stdout
+
+    stderr(`[ipc-hub] feishu [${app.name}]: WSClient starting (worker pid=${child.pid})...`);
+  } catch (err) {
+    stderr(`[ipc-hub] feishu [${app.name}]: failed to start worker: ${err?.message ?? err}`);
   }
+}
+
+function routeFeishuMessage(app, text) {
+  stderr(`[ipc-hub] feishu [${app.name}]: p2p "${text.substring(0, 80)}"`);
+  const ipcMsg = createMessage({
+    from: `feishu:${app.name}`,
+    to: app.routeTo || app.name,
+    content: text,
+  });
+  const fakeSender = { name: `feishu:${app.name}` };
+  routeMessage(ipcMsg, fakeSender);
 }
 
 // ---------------------------------------------------------------------------

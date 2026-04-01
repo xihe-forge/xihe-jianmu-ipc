@@ -8,6 +8,14 @@
  * Env:   IPC_PORT (overrides DEFAULT_PORT)
  */
 
+// Prevent EPIPE crashes (Lark SDK writes to stdout via console.info)
+process.stdout.on('error', () => {});
+process.stderr.on('error', () => {});
+process.on('uncaughtException', (err) => {
+  if (err.code === 'EPIPE') return; // ignore broken pipe
+  process.stderr.write(`[ipc-hub] uncaught: ${err.stack ?? err.message ?? err}\n`);
+});
+
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -8,10 +8,10 @@
  * Env:   IPC_PORT (overrides DEFAULT_PORT)
  */
 
-// Prevent EPIPE crashes — Lark SDK writes to stdout via console.log/info.
-// When hub runs detached (setsid) and the launching terminal closes, stdout
-// becomes a broken pipe. process.stdout.on('error') only handles async errors;
-// console.log → stdout.write can throw SYNCHRONOUSLY, so we must patch write().
+// Prevent EPIPE crashes when hub runs detached (setsid) and the launching
+// terminal closes — stdout becomes a broken pipe. process.stdout.on('error')
+// only handles async errors; stdout.write can throw SYNCHRONOUSLY, so we
+// must patch write().
 for (const stream of [process.stdout, process.stderr]) {
   const origWrite = stream.write.bind(stream);
   stream.write = function (...args) {
@@ -33,7 +33,6 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
-import * as Lark from '@larksuiteoapi/node-sdk';
 
 // Load .env from project root (no dotenv dependency needed)
 try {
@@ -626,104 +625,6 @@ async function deliverToFeishu(msg) {
 }
 
 // ---------------------------------------------------------------------------
-// Feishu incoming — single app WSClient in main process
-// Multi-app will be handled by separate feishu-bridge process (TODO)
-// ---------------------------------------------------------------------------
-function startFeishuReceivers() {
-  // Only start the first receive-enabled app to avoid SDK global state conflict
-  const app = feishuApps.find(a => a.receive);
-  if (!app) {
-    stderr('[ipc-hub] feishu receiver: no apps configured for receiving');
-    return;
-  }
-
-  startFeishuInProcess(app);
-}
-
-function startFeishuInProcess(app) {
-  try {
-    const eventDispatcher = new Lark.EventDispatcher({}).register({
-      'im.message.receive_v1': async (data) => {
-        try {
-          const feishuMsg = data?.message;
-          if (!feishuMsg) return;
-
-          if (feishuMsg.chat_type !== 'p2p') {
-            stderr(`[ipc-hub] feishu [${app.name}]: ignored ${feishuMsg.chat_type} message`);
-            return;
-          }
-
-          let text = '';
-          if (feishuMsg.message_type === 'text') {
-            try {
-              const content = JSON.parse(feishuMsg.content);
-              text = content.text || '';
-            } catch {
-              text = feishuMsg.content || '';
-            }
-          } else {
-            text = `[${feishuMsg.message_type} message]`;
-          }
-
-          // Fetch quoted message if this is a reply
-          if (feishuMsg.parent_id) {
-            try {
-              const token = await getFeishuToken(app);
-              if (token) {
-                const qRes = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${feishuMsg.parent_id}`, {
-                  headers: { 'Authorization': `Bearer ${token}` },
-                });
-                const qData = await qRes.json();
-                if (qData.code === 0 && qData.data?.items?.[0]?.body?.content) {
-                  try {
-                    const qContent = JSON.parse(qData.data.items[0].body.content);
-                    text = `[引用: ${qContent.text || ''}]\n${text}`;
-                  } catch {
-                    text = `[引用: ${qData.data.items[0].body.content}]\n${text}`;
-                  }
-                }
-              }
-            } catch (err) {
-              stderr(`[ipc-hub] feishu [${app.name}]: quote fetch failed: ${err?.message ?? err}`);
-            }
-          }
-
-          routeFeishuMessage(app, text);
-        } catch (err) {
-          stderr(`[ipc-hub] feishu [${app.name}]: receiver error: ${err?.stack ?? err?.message ?? err}`);
-        }
-      },
-    });
-
-    const wsClient = new Lark.WSClient({
-      appId: app.appId,
-      appSecret: app.appSecret,
-      loggerLevel: Lark.LoggerLevel.debug,
-    });
-    wsClient.start({ eventDispatcher }).then(() => {
-      stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected`);
-    }).catch(err => {
-      stderr(`[ipc-hub] feishu [${app.name}]: WSClient FAILED: ${err?.stack ?? err?.message ?? err}`);
-    });
-
-    stderr(`[ipc-hub] feishu [${app.name}]: WSClient starting...`);
-  } catch (err) {
-    stderr(`[ipc-hub] feishu [${app.name}]: failed to start: ${err?.message ?? err}`);
-  }
-}
-
-function routeFeishuMessage(app, text) {
-  stderr(`[ipc-hub] feishu [${app.name}]: p2p "${text.substring(0, 80)}"`);
-  const ipcMsg = createMessage({
-    from: `feishu:${app.name}`,
-    to: app.routeTo || app.name,
-    content: text,
-  });
-  const fakeSender = { name: `feishu:${app.name}` };
-  routeMessage(ipcMsg, fakeSender);
-}
-
-// ---------------------------------------------------------------------------
 // Message routing
 // ---------------------------------------------------------------------------
 function routeMessage(msg, senderSession) {
@@ -864,7 +765,7 @@ heartbeatInterval.unref(); // Don't block process exit
 httpServer.listen(PORT, DEFAULT_HOST, () => {
   stderr(`[ipc-hub] listening on :${PORT}`);
   stderr(`[ipc-hub] auth: ${AUTH_TOKEN ? 'enabled (token required)' : 'disabled (open access)'}`);
-  startFeishuReceivers();
+
 });
 
 httpServer.on('error', (err) => {

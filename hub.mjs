@@ -8,12 +8,24 @@
  * Env:   IPC_PORT (overrides DEFAULT_PORT)
  */
 
-// Prevent EPIPE crashes (Lark SDK writes to stdout via console.info)
-process.stdout.on('error', () => {});
-process.stderr.on('error', () => {});
+// Prevent EPIPE crashes — Lark SDK writes to stdout via console.log/info.
+// When hub runs detached (setsid) and the launching terminal closes, stdout
+// becomes a broken pipe. process.stdout.on('error') only handles async errors;
+// console.log → stdout.write can throw SYNCHRONOUSLY, so we must patch write().
+for (const stream of [process.stdout, process.stderr]) {
+  const origWrite = stream.write.bind(stream);
+  stream.write = function (...args) {
+    try { return origWrite(...args); }
+    catch (err) {
+      if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return true;
+      throw err;
+    }
+  };
+  stream.on('error', () => {});
+}
 process.on('uncaughtException', (err) => {
-  if (err.code === 'EPIPE') return; // ignore broken pipe
-  process.stderr.write(`[ipc-hub] uncaught: ${err.stack ?? err.message ?? err}\n`);
+  if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return;
+  try { process.stderr.write(`[ipc-hub] uncaught: ${err.stack ?? err.message ?? err}\n`); } catch {}
 });
 
 import { readFileSync, existsSync } from 'node:fs';
@@ -694,7 +706,7 @@ function startFeishuReceivers() {
       const wsClient = new Lark.WSClient({
         appId: app.appId,
         appSecret: app.appSecret,
-        loggerLevel: Lark.LoggerLevel.info,
+        loggerLevel: Lark.LoggerLevel.warn,
       });
       wsClient.start({ eventDispatcher }).then(() => {
         stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected`);

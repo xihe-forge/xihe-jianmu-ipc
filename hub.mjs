@@ -31,7 +31,6 @@ process.on('uncaughtException', (err) => {
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fork } from 'node:child_process';
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import * as Lark from '@larksuiteoapi/node-sdk';
@@ -627,41 +626,25 @@ async function deliverToFeishu(msg) {
 }
 
 // ---------------------------------------------------------------------------
-// Feishu incoming — each app runs in a separate fork() to avoid Lark SDK
-// global state interference between multiple WSClient instances.
+// Feishu incoming — single app WSClient in main process
+// Multi-app will be handled by separate feishu-bridge process (TODO)
 // ---------------------------------------------------------------------------
 function startFeishuReceivers() {
-  const receiveApps = feishuApps.filter(a => a.receive);
-  if (receiveApps.length === 0) {
+  // Only start the first receive-enabled app to avoid SDK global state conflict
+  const app = feishuApps.find(a => a.receive);
+  if (!app) {
     stderr('[ipc-hub] feishu receiver: no apps configured for receiving');
     return;
   }
 
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-
-  for (const app of receiveApps) {
-    startFeishuWorker(app, __dirname);
-  }
+  startFeishuInProcess(app);
 }
 
-function startFeishuWorker(app, workerDir) {
-  if (!workerDir) workerDir = dirname(fileURLToPath(import.meta.url));
-
+function startFeishuInProcess(app) {
   try {
-    const child = fork(join(workerDir, 'lib', 'feishu-worker.mjs'), [], {
-      env: { ...process.env, FEISHU_APP_CONFIG: JSON.stringify(app) },
-      stdio: ['pipe', 'pipe', 'inherit', 'ipc'],
-    });
-
-    child.on('message', (msg) => {
-      if (msg.type === 'connected') {
-        stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected (worker pid=${child.pid})`);
-        return;
-      }
-
-      if (msg.type === 'feishu_message') {
+    const eventDispatcher = new Lark.EventDispatcher({}).register({
+      'im.message.receive_v1': async (data) => {
         try {
-          const data = msg.data;
           const feishuMsg = data?.message;
           if (!feishuMsg) return;
 
@@ -684,11 +667,13 @@ function startFeishuWorker(app, workerDir) {
 
           // Fetch quoted message if this is a reply
           if (feishuMsg.parent_id) {
-            getFeishuToken(app).then(token => {
-              if (!token) { routeFeishuMessage(app, text); return; }
-              fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${feishuMsg.parent_id}`, {
-                headers: { 'Authorization': `Bearer ${token}` },
-              }).then(r => r.json()).then(qData => {
+            try {
+              const token = await getFeishuToken(app);
+              if (token) {
+                const qRes = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${feishuMsg.parent_id}`, {
+                  headers: { 'Authorization': `Bearer ${token}` },
+                });
+                const qData = await qRes.json();
                 if (qData.code === 0 && qData.data?.items?.[0]?.body?.content) {
                   try {
                     const qContent = JSON.parse(qData.data.items[0].body.content);
@@ -697,28 +682,33 @@ function startFeishuWorker(app, workerDir) {
                     text = `[引用: ${qData.data.items[0].body.content}]\n${text}`;
                   }
                 }
-                routeFeishuMessage(app, text);
-              }).catch(() => routeFeishuMessage(app, text));
-            }).catch(() => routeFeishuMessage(app, text));
-          } else {
-            routeFeishuMessage(app, text);
+              }
+            } catch (err) {
+              stderr(`[ipc-hub] feishu [${app.name}]: quote fetch failed: ${err?.message ?? err}`);
+            }
           }
+
+          routeFeishuMessage(app, text);
         } catch (err) {
           stderr(`[ipc-hub] feishu [${app.name}]: receiver error: ${err?.stack ?? err?.message ?? err}`);
         }
-      }
+      },
     });
 
-    child.on('exit', (code) => {
-      stderr(`[ipc-hub] feishu [${app.name}]: worker exited (code=${code}), restarting in 5s...`);
-      setTimeout(() => startFeishuWorker(app, workerDir), 5000);
+    const wsClient = new Lark.WSClient({
+      appId: app.appId,
+      appSecret: app.appSecret,
+      loggerLevel: Lark.LoggerLevel.info,
+    });
+    wsClient.start({ eventDispatcher }).then(() => {
+      stderr(`[ipc-hub] feishu [${app.name}]: WSClient connected`);
+    }).catch(err => {
+      stderr(`[ipc-hub] feishu [${app.name}]: WSClient FAILED: ${err?.stack ?? err?.message ?? err}`);
     });
 
-    child.stdout?.on('data', () => {}); // drain stdout
-
-    stderr(`[ipc-hub] feishu [${app.name}]: WSClient starting (worker pid=${child.pid})...`);
+    stderr(`[ipc-hub] feishu [${app.name}]: WSClient starting...`);
   } catch (err) {
-    stderr(`[ipc-hub] feishu [${app.name}]: failed to start worker: ${err?.message ?? err}`);
+    stderr(`[ipc-hub] feishu [${app.name}]: failed to start: ${err?.message ?? err}`);
   }
 }
 

@@ -177,11 +177,11 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
 
       } else if (msg.chat_type === 'group') {
         // --- Group: only process if bot is @mentioned ---
-        const botMention = mentions.find(m => m.id?.open_id === data?.event?.message?.chat_id ? false : m.name === receiveApp.botName || m.key?.startsWith('@_'));
-        // Simpler: check if any mention has tenant_key matching our bot
-        const isBotMentioned = mentions.some(m => m.id?.open_id && m.name);
+        // Debug: log full event structure to understand mentions format
+        log(`[${receiveApp.name}] group raw mentions: ${JSON.stringify(mentions)}`);
+        log(`[${receiveApp.name}] group raw msg keys: ${JSON.stringify(Object.keys(msg))}`);
 
-        if (!isBotMentioned && mentions.length === 0) {
+        if (mentions.length === 0) {
           // No mentions at all, skip
           return;
         }

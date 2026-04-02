@@ -61,6 +61,21 @@
 - [ ] 敏感信息过滤（不转发包含密码/token的消息）
 - [ ] 操作审计日志
 
+## Phase 8: Agent协作协议
+- [ ] 结构化消息格式：`{ action, target, deadline, priority }`
+- [ ] Dashboard解析和追踪任务委派
+- [ ] 任务状态跟踪（pending/running/done/failed）
+
+## Phase 9: Agent状态广播
+- [ ] Agent定期广播状态到群：忙碌/空闲/错误
+- [ ] Dashboard实时显示每个agent当前任务
+- [ ] 任务分配时自动选空闲agent
+
+## Phase 10: 团队知识共享
+- [ ] Agent发现的问题/解决方案通过群消息共享
+- [ ] 知识索引和搜索
+- [ ] 避免重复踩坑
+
 ## 其他待考虑
 - [ ] 消息去重：群消息被多个bot收到时避免重复处理
 - [ ] 消息优先级：紧急消息优先投递

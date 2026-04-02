@@ -39,6 +39,26 @@ if (!receiveApp) {
   process.exit(1);
 }
 
+// Bot identity (open_id) — needed to detect @mentions in groups
+let botOpenId = '';
+
+async function fetchBotOpenId() {
+  const token = await getToken();
+  if (!token) return;
+  try {
+    const res = await fetch('https://open.feishu.cn/open-apis/bot/v3/info', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (data.code === 0 && data.bot?.open_id) {
+      botOpenId = data.bot.open_id;
+      log(`[${receiveApp.name}] bot open_id: ${botOpenId}`);
+    }
+  } catch (err) {
+    log(`[${receiveApp.name}] failed to fetch bot info: ${err.message}`);
+  }
+}
+
 // Token cache for fetching quoted messages
 let tokenCache = { token: '', expiry: 0 };
 
@@ -177,26 +197,28 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
 
       } else if (msg.chat_type === 'group') {
         // --- Group: only process if bot is @mentioned ---
-        // Debug: log full event structure to understand mentions format
-        log(`[${receiveApp.name}] group raw mentions: ${JSON.stringify(mentions)}`);
-        log(`[${receiveApp.name}] group raw msg keys: ${JSON.stringify(Object.keys(msg))}`);
+        // Check if bot is mentioned (same logic as openclaw)
+        const isBotMentioned = botOpenId && (
+          (msg.content ?? '').includes('@_all') ||
+          mentions.some(m => m.id?.open_id === botOpenId)
+        );
 
-        if (mentions.length === 0) {
-          // No mentions at all, skip
-          return;
-        }
+        if (!isBotMentioned) return;
 
-        // Clean @mentions from text (飞书 uses @_user_X placeholders)
+        // Strip bot @mention from text, keep other mentions
         let cleanText = text;
         for (const m of mentions) {
-          cleanText = cleanText.replace(new RegExp(`@_user_\\d+`, 'g'), '').trim();
+          if (m.id?.open_id === botOpenId && m.key) {
+            cleanText = cleanText.replace(new RegExp(m.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '').trim();
+          }
         }
         if (!cleanText) return;
 
-        // Determine sender info
-        const senderName = data?.event?.sender?.sender_id?.open_id || 'unknown';
+        // Sender info
+        const senderOpenId = data?.event?.sender?.sender_id?.open_id || 'unknown';
+        const senderName = mentions.find(m => m.id?.open_id === senderOpenId)?.name || senderOpenId;
 
-        log(`[${receiveApp.name}] group: "${cleanText.substring(0, 80)}" (from=${senderName})`);
+        log(`[${receiveApp.name}] group @: "${cleanText.substring(0, 80)}" (from=${senderName})`);
 
         // Ping in group
         const trimmedGroup = cleanText.trim().toLowerCase();
@@ -206,7 +228,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
           return;
         }
 
-        // Forward to Hub — from identifies the sender, to is this bot's routeTo
+        // Forward to Hub
         const target = receiveApp.routeTo || receiveApp.name;
         try {
           const result = await sendToHub(`feishu-group:${senderName}`, target, cleanText);
@@ -230,8 +252,9 @@ const wsClient = new Lark.WSClient({
   loggerLevel: Lark.LoggerLevel.info,
 });
 
-wsClient.start({ eventDispatcher }).then(() => {
+wsClient.start({ eventDispatcher }).then(async () => {
   log(`[${receiveApp.name}] WSClient connected`);
+  await fetchBotOpenId();
 }).catch(err => {
   log(`[${receiveApp.name}] WSClient FAILED: ${err.stack || err.message}`);
   process.exit(1);

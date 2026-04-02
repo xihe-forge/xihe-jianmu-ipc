@@ -131,11 +131,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       const msg = data?.message;
       if (!msg) return;
 
-      if (msg.chat_type !== 'p2p') {
-        log(`[${receiveApp.name}] ignored ${msg.chat_type} message`);
-        return;
-      }
-
+      // Extract text content
       let text = '';
       if (msg.message_type === 'text') {
         try {
@@ -155,23 +151,72 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         }
       }
 
-      log(`[${receiveApp.name}] p2p: "${text.substring(0, 80)}"`);
+      // Extract mentions (@user) from the message
+      const mentions = data?.event?.message?.mentions || [];
 
-      // Ping: auto-reply without Hub/LLM
-      const trimmed = text.trim().toLowerCase();
-      if (trimmed === 'ping' || trimmed === '/ping') {
-        await replyToFeishu(msg.chat_id, `pong (bridge: ${receiveApp.name}, hub: ${HUB_HOST}:${HUB_PORT})`);
-        log(`[${receiveApp.name}] ping → pong (direct)`);
-        return;
-      }
+      if (msg.chat_type === 'p2p') {
+        // --- P2P: direct message to bot ---
+        log(`[${receiveApp.name}] p2p: "${text.substring(0, 80)}"`);
 
-      // Forward to Hub
-      const target = receiveApp.routeTo || receiveApp.name;
-      try {
-        const result = await sendToHub(`feishu:${receiveApp.name}`, target, text);
-        log(`[${receiveApp.name}] → Hub: ${result.ok ? 'delivered' : 'failed'} (to=${target})`);
-      } catch (err) {
-        log(`[${receiveApp.name}] → Hub failed: ${err.message}`);
+        // Ping: auto-reply without Hub/LLM
+        const trimmed = text.trim().toLowerCase();
+        if (trimmed === 'ping' || trimmed === '/ping') {
+          await replyToFeishu(msg.chat_id, `pong (bridge: ${receiveApp.name}, hub: ${HUB_HOST}:${HUB_PORT})`);
+          log(`[${receiveApp.name}] ping → pong (direct)`);
+          return;
+        }
+
+        // Forward to Hub
+        const target = receiveApp.routeTo || receiveApp.name;
+        try {
+          const result = await sendToHub(`feishu:${receiveApp.name}`, target, text);
+          log(`[${receiveApp.name}] → Hub (p2p): ${result.ok ? 'delivered' : 'failed'} (to=${target})`);
+        } catch (err) {
+          log(`[${receiveApp.name}] → Hub failed: ${err.message}`);
+        }
+
+      } else if (msg.chat_type === 'group') {
+        // --- Group: only process if bot is @mentioned ---
+        const botMention = mentions.find(m => m.id?.open_id === data?.event?.message?.chat_id ? false : m.name === receiveApp.botName || m.key?.startsWith('@_'));
+        // Simpler: check if any mention has tenant_key matching our bot
+        const isBotMentioned = mentions.some(m => m.id?.open_id && m.name);
+
+        if (!isBotMentioned && mentions.length === 0) {
+          // No mentions at all, skip
+          return;
+        }
+
+        // Clean @mentions from text (飞书 uses @_user_X placeholders)
+        let cleanText = text;
+        for (const m of mentions) {
+          cleanText = cleanText.replace(new RegExp(`@_user_\\d+`, 'g'), '').trim();
+        }
+        if (!cleanText) return;
+
+        // Determine sender info
+        const senderName = data?.event?.sender?.sender_id?.open_id || 'unknown';
+
+        log(`[${receiveApp.name}] group: "${cleanText.substring(0, 80)}" (from=${senderName})`);
+
+        // Ping in group
+        const trimmedGroup = cleanText.trim().toLowerCase();
+        if (trimmedGroup === 'ping' || trimmedGroup === '/ping') {
+          await replyToFeishu(msg.chat_id, `pong (bridge: ${receiveApp.name}, hub: ${HUB_HOST}:${HUB_PORT})`);
+          log(`[${receiveApp.name}] group ping → pong`);
+          return;
+        }
+
+        // Forward to Hub — from identifies the sender, to is this bot's routeTo
+        const target = receiveApp.routeTo || receiveApp.name;
+        try {
+          const result = await sendToHub(`feishu-group:${senderName}`, target, cleanText);
+          log(`[${receiveApp.name}] → Hub (group): ${result.ok ? 'delivered' : 'failed'} (to=${target})`);
+        } catch (err) {
+          log(`[${receiveApp.name}] → Hub failed: ${err.message}`);
+        }
+
+      } else {
+        log(`[${receiveApp.name}] ignored ${msg.chat_type} message`);
       }
     } catch (err) {
       log(`[${receiveApp.name}] error: ${err.stack || err.message}`);

@@ -58,9 +58,33 @@ import {
   IDLE_SHUTDOWN_DELAY,
 } from './lib/constants.mjs';
 import { createMessage, createSystemEvent, validateMessage } from './lib/protocol.mjs';
+import { saveMessage, getMessages, getMessageCount, cleanup, close } from './lib/db.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
+const __hubDir = dirname(fileURLToPath(import.meta.url));
+
+// ---------------------------------------------------------------------------
+// Message history ring buffer (for dashboard)
+// ---------------------------------------------------------------------------
+const MESSAGE_HISTORY_MAX = 200;
+const messageHistory = [];
+let totalMessageCount = 0;
+
+function recordMessage(msg) {
+  totalMessageCount++;
+  messageHistory.push({
+    id: msg.id ?? `msg-${totalMessageCount}`,
+    ts: msg.ts ?? Date.now(),
+    from: msg.from,
+    to: msg.to,
+    content: msg.content,
+    topic: msg.topic ?? null,
+  });
+  if (messageHistory.length > MESSAGE_HISTORY_MAX) {
+    messageHistory.shift();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Auth helper
@@ -185,6 +209,8 @@ const httpServer = http.createServer((req, res) => {
       ok: true,
       sessions: sessionList,
       uptime: process.uptime(),
+      totalMessages: totalMessageCount,
+      messageCount: getMessageCount(),
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(body);
@@ -329,6 +355,32 @@ const httpServer = http.createServer((req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(list));
+  } else if (req.method === 'GET' && req.url?.startsWith('/messages')) {
+    // Message history endpoint — backed by SQLite for persistence across restarts
+    const url = new URL(req.url, 'http://localhost');
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
+    const peer = url.searchParams.get('peer');
+    const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+    const messages = getMessages({ from, to, peer, limit });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(messages));
+  } else if (req.method === 'GET' && (req.url === '/' || req.url === '/dashboard' || req.url?.startsWith('/dashboard/'))) {
+    // Serve dashboard static files
+    const filePath = (req.url === '/' || req.url === '/dashboard' || req.url === '/dashboard/')
+      ? join(__hubDir, 'dashboard', 'index.html')
+      : join(__hubDir, 'dashboard', req.url.replace('/dashboard/', ''));
+
+    try {
+      const content = readFileSync(filePath, 'utf8');
+      const ext = filePath.split('.').pop();
+      const mimeTypes = { html: 'text/html', css: 'text/css', js: 'application/javascript', json: 'application/json', svg: 'image/svg+xml' };
+      res.writeHead(200, { 'Content-Type': (mimeTypes[ext] || 'text/plain') + '; charset=utf-8' });
+      res.end(content);
+    } catch {
+      res.writeHead(404);
+      res.end('Not Found');
+    }
   } else {
     res.writeHead(404);
     res.end('Not Found');
@@ -639,6 +691,8 @@ async function deliverToFeishu(msg) {
 function routeMessage(msg, senderSession) {
   const { to, topic } = msg;
   stderr(`[ipc-hub] routeMessage: ${msg.from} → ${to} (sender=${senderSession.name})`);
+  recordMessage(msg);
+  if (msg.type === 'message') saveMessage(msg);
   const delivered = new Set(); // Track who already received the message
 
   // Topic-based fanout (can combine with direct addressing)
@@ -795,6 +849,10 @@ const heartbeatInterval = setInterval(() => {
 
 heartbeatInterval.unref(); // Don't block process exit
 
+// Periodic cleanup: delete persisted messages older than 7 days
+const cleanupInterval = setInterval(() => cleanup(), 60 * 60 * 1000);
+cleanupInterval.unref();
+
 // ---------------------------------------------------------------------------
 // Start listening
 // ---------------------------------------------------------------------------
@@ -818,11 +876,13 @@ httpServer.on('error', (err) => {
 process.on('SIGTERM', () => {
   stderr('[ipc-hub] SIGTERM received, shutting down');
   clearInterval(heartbeatInterval);
+  close();
   wss.close(() => httpServer.close(() => process.exit(0)));
 });
 
 process.on('SIGINT', () => {
   stderr('[ipc-hub] SIGINT received, shutting down');
   clearInterval(heartbeatInterval);
+  close();
   wss.close(() => httpServer.close(() => process.exit(0)));
 });

@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>建木 IPC Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #12121a;
+      --surface: #1a1a2e;
+      --surface-hover: #22223a;
+      --border: #2a2a44;
+      --text: #e0e0e8;
+      --text-dim: #8888a0;
+      --accent: #6c63ff;
+      --green: #4ade80;
+      --blue: #60a5fa;
+      --orange: #fb923c;
+      --red: #f87171;
+      --radius: 10px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    #stats {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 80px;
+    }
+
+    .stat-value {
+      font-size: 22px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 16px;
+      padding: 16px 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    @media (max-width: 860px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .panel-header h2 {
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+    }
+
+    .badge {
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+
+    /* Sessions table */
+    #sessions-panel table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    #sessions-panel th {
+      text-align: left;
+      padding: 8px 12px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-dim);
+      background: var(--bg);
+    }
+
+    #sessions-panel td {
+      padding: 8px 12px;
+      font-size: 13px;
+      border-top: 1px solid var(--border);
+    }
+
+    #sessions-panel tr:hover td {
+      background: var(--surface-hover);
+    }
+
+    .session-name {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+    }
+
+    .topic-tag {
+      display: inline-block;
+      background: var(--border);
+      color: var(--text-dim);
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-right: 4px;
+    }
+
+    .empty-state {
+      padding: 32px 16px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    /* Messages panel */
+    #search {
+      width: 100%;
+      padding: 10px 16px;
+      background: var(--bg);
+      border: none;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+
+    #search::placeholder { color: var(--text-dim); }
+    #search:focus { background: #15152a; }
+
+    #messages-list {
+      max-height: 600px;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+    }
+
+    .msg-entry {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+
+    .msg-entry:hover { background: var(--surface-hover); }
+
+    .msg-entry.new {
+      animation: flash 0.6s ease;
+    }
+
+    @keyframes flash {
+      0% { background: rgba(108, 99, 255, 0.15); }
+      100% { background: transparent; }
+    }
+
+    .msg-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 2px;
+    }
+
+    .msg-time {
+      font-size: 11px;
+      color: var(--text-dim);
+      min-width: 56px;
+    }
+
+    .msg-route {
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .msg-route .arrow { color: var(--text-dim); margin: 0 4px; }
+
+    .msg-content {
+      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      font-size: 12px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+
+    /* Color coding by session name pattern */
+    .color-feishu { color: var(--blue); }
+    .color-ipc { color: var(--green); }
+    .color-openclaw { color: var(--orange); }
+    .color-default { color: var(--text); }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+    /* Footer / refresh indicator */
+    #refresh-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--accent);
+      transform-origin: left;
+      animation: countdown 5s linear infinite;
+    }
+
+    @keyframes countdown {
+      from { transform: scaleX(1); }
+      to { transform: scaleX(0); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>&#x1F333; 建木 IPC Dashboard</h1>
+    <div id="stats">
+      <div class="stat">
+        <span class="stat-value" id="uptime">-</span>
+        <span class="stat-label">Uptime</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="msg-count">-</span>
+        <span class="stat-label">Messages</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="msg-rate">-</span>
+        <span class="stat-label">msg/min</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="session-count">-</span>
+        <span class="stat-label">Sessions</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel" id="sessions-panel">
+      <div class="panel-header">
+        <h2>Online Sessions</h2>
+        <span class="badge" id="sessions-badge">0</span>
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Connected</th><th>Topics</th></tr></thead>
+        <tbody id="sessions-tbody"></tbody>
+      </table>
+      <div class="empty-state" id="sessions-empty">No active sessions</div>
+    </section>
+
+    <section class="panel" id="messages-panel">
+      <div class="panel-header">
+        <h2>Message Flow</h2>
+        <span class="badge" id="messages-badge">0</span>
+      </div>
+      <input type="text" id="search" placeholder="Search messages..." autocomplete="off" />
+      <div id="messages-list"></div>
+      <div class="empty-state" id="messages-empty">No messages yet</div>
+    </section>
+  </main>
+
+  <div id="refresh-bar"></div>
+
+  <script>
+    const REFRESH_INTERVAL = 5000;
+    let lastMessageIds = new Set();
+    let allMessages = [];
+
+    // -- Helpers --
+
+    function relativeTime(ts) {
+      const diff = Math.max(0, Date.now() - ts);
+      const sec = Math.floor(diff / 1000);
+      if (sec < 60) return sec + 's ago';
+      const min = Math.floor(sec / 60);
+      if (min < 60) return min + 'm ago';
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return hr + 'h ago';
+      return Math.floor(hr / 24) + 'd ago';
+    }
+
+    function formatUptime(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      if (h > 0) return h + 'h ' + m + 'm';
+      if (m > 0) return m + 'm ' + s + 's';
+      return s + 's';
+    }
+
+    function colorClass(name) {
+      if (!name) return 'color-default';
+      const n = name.toLowerCase();
+      if (n.includes('feishu')) return 'color-feishu';
+      if (n.includes('openclaw')) return 'color-openclaw';
+      if (n.includes('ipc') || n.includes('jianmu')) return 'color-ipc';
+      return 'color-default';
+    }
+
+    function escapeHtml(str) {
+      const el = document.createElement('span');
+      el.textContent = str;
+      return el.innerHTML;
+    }
+
+    // -- API Fetchers --
+
+    async function fetchJSON(url) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) return null;
+        return await r.json();
+      } catch { return null; }
+    }
+
+    // -- Updaters --
+
+    function updateHealth(data) {
+      if (!data) return;
+      document.getElementById('uptime').textContent = formatUptime(data.uptime);
+      document.getElementById('session-count').textContent = data.sessions ? data.sessions.length : 0;
+      document.getElementById('msg-count').textContent = data.totalMessages ?? '-';
+    }
+
+    function updateSessions(list) {
+      const tbody = document.getElementById('sessions-tbody');
+      const empty = document.getElementById('sessions-empty');
+      const badge = document.getElementById('sessions-badge');
+
+      if (!list || list.length === 0) {
+        tbody.innerHTML = '';
+        empty.style.display = '';
+        badge.textContent = '0';
+        return;
+      }
+
+      empty.style.display = 'none';
+      badge.textContent = list.length;
+
+      tbody.innerHTML = list.map(s => {
+        const topics = (s.topics || []).map(t => '<span class="topic-tag">' + escapeHtml(t) + '</span>').join('');
+        return '<tr>' +
+          '<td><div class="session-name"><span class="dot"></span><span class="' + colorClass(s.name) + '">' + escapeHtml(s.name) + '</span></div></td>' +
+          '<td>' + relativeTime(s.connectedAt) + '</td>' +
+          '<td>' + (topics || '<span style="color:var(--text-dim)">-</span>') + '</td>' +
+          '</tr>';
+      }).join('');
+    }
+
+    function updateMessages(list) {
+      const container = document.getElementById('messages-list');
+      const empty = document.getElementById('messages-empty');
+      const badge = document.getElementById('messages-badge');
+
+      if (!list || list.length === 0) {
+        if (allMessages.length === 0) {
+          container.innerHTML = '';
+          empty.style.display = '';
+          badge.textContent = '0';
+        }
+        return;
+      }
+
+      empty.style.display = 'none';
+
+      // Merge new messages
+      const newIds = new Set();
+      const existingIds = new Set(allMessages.map(m => m.id));
+      for (const m of list) {
+        if (m.id && !existingIds.has(m.id)) {
+          allMessages.push(m);
+          newIds.add(m.id);
+        }
+      }
+
+      // Keep only last 50
+      if (allMessages.length > 50) {
+        allMessages = allMessages.slice(allMessages.length - 50);
+      }
+
+      badge.textContent = allMessages.length;
+
+      // Apply search filter
+      const query = document.getElementById('search').value.toLowerCase().trim();
+      const filtered = query
+        ? allMessages.filter(m =>
+            (m.from || '').toLowerCase().includes(query) ||
+            (m.to || '').toLowerCase().includes(query) ||
+            (m.content || '').toLowerCase().includes(query))
+        : allMessages;
+
+      const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+
+      container.innerHTML = filtered.map(m => {
+        const isNew = newIds.has(m.id);
+        const preview = (m.content || '').substring(0, 80);
+        const ts = m.ts || m.timestamp || Date.now();
+        return '<div class="msg-entry' + (isNew ? ' new' : '') + '">' +
+          '<div class="msg-meta">' +
+            '<span class="msg-time">' + relativeTime(ts) + '</span>' +
+            '<span class="msg-route">' +
+              '<span class="' + colorClass(m.from) + '">' + escapeHtml(m.from || '?') + '</span>' +
+              '<span class="arrow">&rarr;</span>' +
+              '<span class="' + colorClass(m.to) + '">' + escapeHtml(m.to || '?') + '</span>' +
+            '</span>' +
+          '</div>' +
+          '<div class="msg-content">' + escapeHtml(preview) + '</div>' +
+          '</div>';
+      }).join('');
+
+      if (wasAtBottom) {
+        container.scrollTop = container.scrollHeight;
+      }
+
+      lastMessageIds = new Set(allMessages.map(m => m.id));
+    }
+
+    function updateMsgRate(list) {
+      if (!list || list.length === 0) {
+        document.getElementById('msg-rate').textContent = '0';
+        return;
+      }
+      const now = Date.now();
+      const fiveMinAgo = now - 5 * 60 * 1000;
+      const recent = list.filter(m => (m.ts || m.timestamp || 0) > fiveMinAgo);
+      const elapsed = Math.min(5, (now - Math.min(...list.map(m => m.ts || m.timestamp || now))) / 60000);
+      const rate = elapsed > 0 ? (recent.length / Math.max(1, elapsed)).toFixed(1) : '0';
+      document.getElementById('msg-rate').textContent = rate;
+    }
+
+    // -- Main refresh loop --
+
+    async function refresh() {
+      const [health, sessions, messages] = await Promise.all([
+        fetchJSON('/health'),
+        fetchJSON('/sessions'),
+        fetchJSON('/messages?limit=50'),
+      ]);
+
+      updateHealth(health);
+      updateSessions(sessions);
+      updateMessages(messages);
+      updateMsgRate(allMessages);
+
+      // Restart countdown animation
+      const bar = document.getElementById('refresh-bar');
+      bar.style.animation = 'none';
+      bar.offsetHeight; // trigger reflow
+      bar.style.animation = '';
+    }
+
+    // Initial load + interval
+    refresh();
+    setInterval(refresh, REFRESH_INTERVAL);
+
+    // Re-filter on search input
+    document.getElementById('search').addEventListener('input', () => {
+      updateMessages([]);
+    });
+  </script>
+</body>
+</html>

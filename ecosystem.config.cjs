@@ -1,0 +1,32 @@
+module.exports = {
+  apps: [
+    {
+      name: 'jianmu-hub',
+      script: 'hub.mjs',
+      cwd: '/mnt/d/workspace/ai/research/xiheAi/xihe-jianmu-ipc',
+      interpreter: 'node',
+      env: {},
+      env_file: '.env',
+      error_file: '/tmp/jianmu-hub-error.log',
+      out_file: '/tmp/jianmu-hub-out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      autorestart: true,
+      max_restarts: 50,
+      restart_delay: 3000,
+      watch: false,
+    },
+    {
+      name: 'feishu-bridge',
+      script: 'feishu-bridge.mjs',
+      cwd: '/mnt/d/workspace/ai/research/xiheAi/xihe-jianmu-ipc',
+      interpreter: 'node',
+      error_file: '/tmp/feishu-bridge-error.log',
+      out_file: '/tmp/feishu-bridge-out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      autorestart: true,
+      max_restarts: 50,
+      restart_delay: 5000,
+      watch: false,
+    },
+  ],
+};

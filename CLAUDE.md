@@ -9,6 +9,7 @@ hub.mjs              — WebSocket hub (localhost:3179)
 mcp-server.mjs       — MCP server (Claude Code / OpenClaw 通过stdio加载)
 lib/constants.mjs    — 端口、超时常量
 lib/protocol.mjs     — 消息格式、校验
+lib/db.mjs           — SQLite消息持久化（better-sqlite3）
 bin/jianmu.mjs       — CLI (jianmu hub / jianmu status)
 bin/install.ps1      — PowerShell alias安装
 bin/patch-channels.mjs — Claude Code Channel弹窗补丁
@@ -30,8 +31,9 @@ SKILL.md             — OpenClaw ClawHub skill清单
 
 - `POST /send` — `{from, to, content}` 发消息，返回 `{ok, id, online, buffered}`
 - `POST /feishu-reply` — `{app, content, from?}` 直接回复飞书，跳过IPC路由，返回 `{ok, app}`
-- `GET /health` — Hub状态 + session列表
+- `GET /health` — Hub状态 + session列表 + messageCount
 - `GET /sessions` — 仅session列表
+- `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
 
 ## 环境变量
 
@@ -45,6 +47,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 | `IPC_AUTH_TOKEN` | — | 认证token，不设则不认证 |
 | `OPENCLAW_URL` | `http://127.0.0.1:18789` | OpenClaw Gateway地址 |
 | `OPENCLAW_TOKEN` | — | OpenClaw API token |
+| `IPC_DB_PATH` | `data/messages.db` | SQLite数据库路径 |
 
 飞书配置已从环境变量迁移到 `feishu-apps.json`，支持多应用。见 `feishu-apps.example.json`。
 
@@ -54,4 +57,4 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - 提交不加AI署名
 - 推送到 xihe-forge org
 - 纯JS (.mjs)，不用TypeScript
-- 依赖: `ws` + `@modelcontextprotocol/sdk`
+- 依赖: `ws` + `@modelcontextprotocol/sdk` + `better-sqlite3`

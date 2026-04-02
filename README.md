@@ -41,12 +41,14 @@ The standard path for multi-agent coordination — routing messages through the 
 
 ### 飞书集成 / Feishu Integration
 
-Hub 通过飞书 Lark SDK WSClient 长连接接收消息，通过 Bot API 发送消息。支持多应用配置（feishu-apps.json），每个应用独立控制收发。
+飞书接收由独立的 feishu-bridge 进程处理（不在 Hub 内），避免 Lark SDK WSClient 全局状态冲突。bridge 读取 feishu-apps.json，通过 WSClient 接收消息后 HTTP POST /send 转发给 Hub（0 LLM tokens）。Hub 仅负责飞书发送（Bot API）。
 
-Hub receives Feishu messages via Lark SDK WSClient (no public IP needed) and sends via Bot API. Multi-app support through feishu-apps.json.
+Feishu receiving runs as a standalone feishu-bridge process (not inside Hub), avoiding Lark SDK WSClient global state conflicts. The bridge reads feishu-apps.json, receives messages via WSClient, and forwards them to Hub via HTTP POST /send (0 LLM tokens). Hub only handles Feishu sending (Bot API).
 
-- 接收：WSClient 长连接，无需公网 IP / Receive: WSClient, no public IP needed
-- 发送：Bot API 直推或 POST /feishu-reply / Send: Bot API or POST /feishu-reply
+- 接收：feishu-bridge 独立进程，WSClient 长连接，无需公网 IP / Receive: standalone feishu-bridge process, WSClient, no public IP needed
+- 发送：Hub 通过 Bot API 直推或 POST /feishu-reply / Send: Hub via Bot API or POST /feishu-reply
+- 回复/引用：bridge 自动获取 parent_id 原文 / Reply/quote: bridge fetches parent_id content
+- 内置 ping：飞书发 "ping" 给机器人，直接回复 "pong"，不经过 Hub/LLM / Built-in ping: send "ping" to bot, gets "pong" without Hub/LLM
 - 自动回复：Claude Code Stop hook 捕获响应自动发回飞书 / Auto-reply: Stop hook captures response
 - 多应用：feishu-apps.json 配置任意数量飞书机器人 / Multi-app: any number of bots
 
@@ -91,12 +93,18 @@ Hub receives Feishu messages via Lark SDK WSClient (no public IP needed) and sen
  └────────────────────────────────────────────────────────┘
            │
  ┌─────────▼──────────────────────────────────────────────┐
- │  Feishu Adapter (飞书适配器)                            │
+ │  Feishu Sending (Hub 内 / inside Hub)                   │
  │  Outbound: Hub sends messages via Feishu Bot API       │
- │  Inbound:  Lark SDK WSClient receives messages from    │
- │  Feishu bots — no public IP needed                     │
- │  Multi-app: feishu-apps.json configures any number     │
- │  of Feishu bots with independent send/receive          │
+ │  Endpoint: POST /feishu-reply                          │
+ └────────────────────────────────────────────────────────┘
+
+ ┌────────────────────────────────────────────────────────┐
+ │  feishu-bridge (独立进程 / standalone process)          │
+ │  Reads feishu-apps.json, connects via Lark SDK         │
+ │  WSClient — no public IP needed                        │
+ │  Forwards messages to Hub via HTTP POST /send          │
+ │  Built-in ping: "ping" → "pong" (0 LLM tokens)        │
+ │  Supports reply/quote (fetches parent_id content)      │
  └────────────────────────────────────────────────────────┘
 ```
 
@@ -462,9 +470,13 @@ This means Claude Code can push messages to OpenClaw in real-time — all throug
 
 ## 飞书集成细节 / Feishu Integration
 
-飞书适配器支持多应用，通过 `feishu-apps.json` 配置（已 gitignore，含密钥）。项目提供 `feishu-apps.example.json` 作为模板。
+飞书集成分为两个独立部分：**feishu-bridge**（接收）和 **Hub**（发送）。bridge 是独立进程，避免了 Lark SDK WSClient 在同进程多实例时的全局状态冲突。
 
-The Feishu adapter supports multiple apps, configured via `feishu-apps.json` (gitignored, contains secrets). `feishu-apps.example.json` is provided as a template.
+Feishu integration is split into two independent parts: **feishu-bridge** (receiving) and **Hub** (sending). The bridge runs as a standalone process, avoiding Lark SDK WSClient global state conflicts when multiple instances run in the same process.
+
+多应用通过 `feishu-apps.json` 配置（已 gitignore，含密钥）。项目提供 `feishu-apps.example.json` 作为模板。
+
+Multi-app support via `feishu-apps.json` (gitignored, contains secrets). `feishu-apps.example.json` is provided as a template.
 
 **每个应用配置包含 / Each app entry contains:**
 
@@ -478,13 +490,19 @@ The Feishu adapter supports multiple apps, configured via `feishu-apps.json` (gi
 | `send` | 发送方式：Feishu Bot API / Send via Feishu Bot API |
 | `routeTo` | 目标 IPC session 名称 / Target IPC session name |
 
-**入站 / Inbound:** Lark SDK WSClient 长连接接收飞书消息，无需公网 IP、Webhook URL 或 SSL 证书。
+**入站 / Inbound（feishu-bridge 独立进程）:**
 
-Inbound: Lark SDK WSClient receives messages via long-lived connection. No public IP, webhook URL, or SSL certificate required.
+feishu-bridge 读取 `feishu-apps.json`，为每个应用启动 Lark SDK WSClient 长连接。收到飞书消息后通过 HTTP `POST /send` 转发给 Hub，全程 0 LLM tokens。bridge 在独立进程中运行，彻底解决了 WSClient 全局状态冲突问题。支持回复/引用消息（自动获取 parent_id 原文）。
 
-**出站 / Outbound:** 通过 `POST /feishu-reply` 端点回复飞书，或在 IPC 中使用 `ipc_send(to="feishu:app-name")`。
+The feishu-bridge reads `feishu-apps.json` and starts a Lark SDK WSClient for each app. Incoming Feishu messages are forwarded to Hub via HTTP `POST /send` — 0 LLM tokens. Running in a separate process eliminates WSClient global state conflicts entirely. Supports reply/quote messages (fetches parent_id content automatically).
 
-Outbound: Reply to Feishu via `POST /feishu-reply` endpoint, or use `ipc_send(to="feishu:app-name")` from any IPC session.
+**内置 ping / Built-in ping:** 飞书发 "ping" 给机器人，bridge 直接回复 "pong"，不经过 Hub 或 LLM，用于快速验证链路。
+
+Send "ping" to the bot in Feishu, bridge replies "pong" directly without Hub or LLM — useful for quick link testing.
+
+**出站 / Outbound（Hub 内）:** 通过 `POST /feishu-reply` 端点回复飞书，或在 IPC 中使用 `ipc_send(to="feishu:app-name")`。Hub 通过 Bot API 发送。
+
+Outbound (inside Hub): Reply to Feishu via `POST /feishu-reply` endpoint, or use `ipc_send(to="feishu:app-name")` from any IPC session. Hub sends via Bot API.
 
 **自动回复 / Auto-reply:** Stop hook（`bin/feishu-auto-reply.cjs`）在 Claude Code 响应结束时捕获 `last_assistant_message`，自动 POST 到 Hub 的 `/feishu-reply`，实现飞书消息的全自动回复，无需 tool call。
 
@@ -504,7 +522,7 @@ Jianmu is not Claude-specific. Any tool that can send HTTP requests or open a We
 | OpenClaw | MCP Server via `openclaw.json` + OpenClaw adapter |
 | OpenAI Codex | HTTP API (`POST /send`) |
 | Custom scripts | HTTP API or raw WebSocket |
-| Feishu Bots | Lark SDK WSClient + Bot API (`feishu-apps.json`) |
+| Feishu Bots | feishu-bridge (WSClient receiving) + Hub Bot API (sending) |
 | Channel Server | `channel-server.mjs` — standalone receiver that POSTs to a webhook |
 
 ---
@@ -540,14 +558,15 @@ When running inside WSL2, the MCP server automatically reads the `nameserver` li
 
 ```
 xihe-jianmu-ipc/
-├── hub.mjs              # WebSocket hub server
+├── hub.mjs              # WebSocket hub server (Feishu sending only)
 ├── mcp-server.mjs       # MCP server (Claude Code + OpenClaw adapter)
-├── channel-server.mjs   # Standalone channel receiver
+├── feishu-bridge.mjs    # Standalone Feishu receiving process
 ├── feishu-apps.example.json  # Feishu multi-app config template
 ├── SKILL.md             # OpenClaw ClawHub skill manifest
 ├── lib/
 │   ├── constants.mjs    # Shared constants (ports, timeouts, etc.)
-│   └── protocol.mjs     # Message schema and validation
+│   ├── protocol.mjs     # Message schema and validation
+│   └── feishu-worker.mjs  # Per-app WSClient worker for feishu-bridge
 ├── bin/
 │   ├── jianmu.mjs       # CLI entry point
 │   ├── feishu-auto-reply.cjs  # Stop hook: auto-reply to Feishu

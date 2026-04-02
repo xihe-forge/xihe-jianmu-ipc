@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat: standalone feishu-bridge relay process (0 LLM tokens)
+- feat: ping auto-reply in feishu-bridge for link testing
 - feat: Feishu Bot API direct push (0 LLM tokens per notification)
 - feat: Feishu message receiving via Lark SDK WSClient (no public IP needed)
 - feat: Multi-app Feishu adapter with feishu-apps.json config
@@ -17,11 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: Stop hook auto-replies to Feishu (1 API call, no tool call needed)
 - feat: ipc_spawn checks for duplicate session name before spawning
 
+### Changed
+
+- refactor: removed Feishu WSClient receiver from Hub (moved to feishu-bridge)
+- refactor: Feishu receiving is now a separate process, Hub only handles sending
+- chore: removed unused channel-server.mjs, moved local files to local/
+- chore: multi-app Feishu config replaces single FEISHU_APP_ID env vars
+
 ### Fixed
 
+- fix: Lark SDK WSClient global state conflict when multiple instances in same process
+- fix: EPIPE crash prevention with synchronous stdout.write patch
+- fix: eventDispatcher must be passed to WSClient.start() not constructor (SDK confirmed)
 - fix: wsSend returns real delivery status, HTTP fallback for disconnected sessions
 - fix: MAX_RECONNECT_ATTEMPTS changed to Infinity (never give up reconnecting)
-- fix: eventDispatcher must be in WSClient constructor (not just start parameter)
 - fix: Feishu receiver only forwards p2p messages, ignores group chats
 - fix: Feishu messages route to app-specific session via routeTo config
 - deliverToOpenClaw changed from /v1/chat/completions to /hooks/wake for real-time push
@@ -32,11 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WSL2 spawn prefers wt.exe (Windows Terminal), falls back to powershell.exe
 - Inject --mcp-config with ipc server into spawned CC session
 - Patch trust dialog (C2) so spawn does not require manual confirmation
-
-### Changed
-
-- chore: removed unused channel-server.mjs, moved local files to local/
-- chore: multi-app Feishu config replaces single FEISHU_APP_ID env vars
 
 ## [0.1.0] - 2026-03-28
 

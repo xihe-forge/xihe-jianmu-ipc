@@ -85,6 +85,21 @@ async function fetchQuotedText(parentId) {
   return '';
 }
 
+// Reply directly to Feishu (for ping, no Hub/LLM needed)
+async function replyToFeishu(chatId, text) {
+  const token = await getToken();
+  if (!token) return;
+  try {
+    await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) }),
+    });
+  } catch (err) {
+    log(`reply failed: ${err.message}`);
+  }
+}
+
 // Send to Hub via HTTP POST /send
 function sendToHub(from, to, content) {
   return new Promise((resolve, reject) => {
@@ -141,6 +156,14 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       }
 
       log(`[${receiveApp.name}] p2p: "${text.substring(0, 80)}"`);
+
+      // Ping: auto-reply without Hub/LLM
+      const trimmed = text.trim().toLowerCase();
+      if (trimmed === 'ping' || trimmed === '/ping') {
+        await replyToFeishu(msg.chat_id, `pong (bridge: ${receiveApp.name}, hub: ${HUB_HOST}:${HUB_PORT})`);
+        log(`[${receiveApp.name}] ping → pong (direct)`);
+        return;
+      }
 
       // Forward to Hub
       const target = receiveApp.routeTo || receiveApp.name;

@@ -151,6 +151,8 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       const msg = data?.message;
       if (!msg) return;
 
+      log(`[${receiveApp.name}] event: chat_type=${msg.chat_type} msg_type=${msg.message_type} msg_id=${msg.message_id}`);
+
       // Extract text content
       let text = '';
       if (msg.message_type === 'text') {
@@ -172,7 +174,8 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       }
 
       // Extract mentions (@user) from the message
-      const mentions = data?.event?.message?.mentions || [];
+      // SDK v2 event parse spreads event fields to top level, so mentions are at data.message.mentions
+      const mentions = msg?.mentions || [];
 
       if (msg.chat_type === 'p2p') {
         // --- P2P: direct message to bot ---
@@ -203,7 +206,10 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
           mentions.some(m => m.id?.open_id === botOpenId)
         );
 
-        if (!isBotMentioned) return;
+        if (!isBotMentioned) {
+          log(`[${receiveApp.name}] group: no bot mention (mentions=${mentions.length}, botOpenId=${botOpenId || 'unset'})`);
+          return;
+        }
 
         // Strip bot @mention from text, keep other mentions
         let cleanText = text;
@@ -214,8 +220,8 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         }
         if (!cleanText) return;
 
-        // Sender info
-        const senderOpenId = data?.event?.sender?.sender_id?.open_id || 'unknown';
+        // Sender info (SDK spreads event fields to top level)
+        const senderOpenId = data?.sender?.sender_id?.open_id || 'unknown';
         const senderName = mentions.find(m => m.id?.open_id === senderOpenId)?.name || senderOpenId;
 
         log(`[${receiveApp.name}] group @: "${cleanText.substring(0, 80)}" (from=${senderName})`);

@@ -33,6 +33,8 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
+import { redactSensitive } from './lib/redact.mjs';
+import { audit } from './lib/audit.mjs';
 
 // Load .env from project root (no dotenv dependency needed)
 try {
@@ -65,6 +67,17 @@ const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
 const __hubDir = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
+// Per-session auth tokens (auth-tokens.json)
+// ---------------------------------------------------------------------------
+let authTokens = null;
+try {
+  const tokensPath = join(__hubDir, 'auth-tokens.json');
+  if (existsSync(tokensPath)) {
+    authTokens = JSON.parse(readFileSync(tokensPath, 'utf8'));
+  }
+} catch { /* auth-tokens.json not found or invalid, fall back to shared token */ }
+
+// ---------------------------------------------------------------------------
 // Message history ring buffer (for dashboard)
 // ---------------------------------------------------------------------------
 const MESSAGE_HISTORY_MAX = 200;
@@ -78,7 +91,7 @@ function recordMessage(msg) {
     ts: msg.ts ?? Date.now(),
     from: msg.from,
     to: msg.to,
-    content: msg.content,
+    content: redactSensitive(msg.content),
     topic: msg.topic ?? null,
   });
   if (messageHistory.length > MESSAGE_HISTORY_MAX) {
@@ -87,11 +100,20 @@ function recordMessage(msg) {
 }
 
 // ---------------------------------------------------------------------------
-// Auth helper
+// Auth helper — per-session tokens with fallback to shared token
 // ---------------------------------------------------------------------------
-function checkAuth(providedToken) {
-  if (!AUTH_TOKEN) return true; // Auth disabled
-  return providedToken === AUTH_TOKEN;
+function checkAuth(providedToken, sessionName = null) {
+  // 1. Per-session tokens from auth-tokens.json
+  if (authTokens) {
+    const expected = (sessionName && authTokens[sessionName]) || authTokens['*'];
+    if (expected) return providedToken === expected;
+    // auth-tokens.json exists but no matching key and no wildcard — deny
+    return false;
+  }
+  // 2. Shared token from IPC_AUTH_TOKEN env
+  if (AUTH_TOKEN) return providedToken === AUTH_TOKEN;
+  // 3. No auth configured — allow all
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,10 +206,11 @@ function scheduleInboxCleanup(session) {
 // ---------------------------------------------------------------------------
 const httpServer = http.createServer((req, res) => {
   // Auth check for all routes except /health
-  if (AUTH_TOKEN) {
+  if (AUTH_TOKEN || authTokens) {
     const authHeader = req.headers.authorization;
     const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     if (req.url !== '/health' && !checkAuth(providedToken)) {
+      audit('http_auth_fail', { url: req.url, method: req.method });
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
@@ -258,6 +281,7 @@ const httpServer = http.createServer((req, res) => {
       const online = target?.ws?.readyState === target?.ws?.OPEN;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, id: msg.id, online: !!online, buffered: !online }));
+      audit('http_send', { from: msg.from, to: msg.to, id: msg.id });
       stderr(`[ipc-hub] HTTP POST /send: ${msg.from} → ${msg.to}`);
     });
   } else if (req.method === 'POST' && req.url === '/feishu-reply') {
@@ -334,6 +358,7 @@ const httpServer = http.createServer((req, res) => {
         const data = await feishuRes.json();
         if (data.code === 0) {
           stderr(`[ipc-hub] POST /feishu-reply: sent to [${app.name}] (from=${from || 'http'})`);
+          audit('http_feishu_reply', { app: app.name, from: from || 'http' });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, app: app.name }));
         } else {
@@ -398,7 +423,8 @@ wss.on('connection', (ws, req) => {
   const name = url.searchParams.get('name');
   const token = url.searchParams.get('token');
 
-  if (!checkAuth(token)) {
+  if (!checkAuth(token, name)) {
+    audit('ws_auth_fail', { name: name || '<none>', ip: req.socket.remoteAddress });
     ws.close(4003, 'unauthorized');
     return;
   }
@@ -437,6 +463,7 @@ wss.on('connection', (ws, req) => {
   // Cancel idle timer — we have a live session now
   resetIdleTimer();
 
+  audit('session_connect', { name, total: countLive() });
   stderr(`[ipc-hub] session connected: ${name} (total: ${countLive()})`);
 
   // Notify other sessions
@@ -503,6 +530,7 @@ wss.on('connection', (ws, req) => {
   // ---------------------------------------------------------------------------
   ws.on('close', () => {
     session.ws = null;
+    audit('session_disconnect', { name, inboxSize: session.inbox.length });
     stderr(`[ipc-hub] session disconnected: ${name} (inbox: ${session.inbox.length} msgs)`);
 
     broadcast(createSystemEvent({ event: 'session_left', session: name }), name);
@@ -691,6 +719,7 @@ async function deliverToFeishu(msg) {
 function routeMessage(msg, senderSession) {
   const { to, topic } = msg;
   stderr(`[ipc-hub] routeMessage: ${msg.from} → ${to} (sender=${senderSession.name})`);
+  audit('message_route', { from: msg.from, to, id: msg.id });
   recordMessage(msg);
   if (msg.type === 'message') saveMessage(msg);
   const delivered = new Set(); // Track who already received the message
@@ -858,7 +887,7 @@ cleanupInterval.unref();
 // ---------------------------------------------------------------------------
 httpServer.listen(PORT, DEFAULT_HOST, () => {
   stderr(`[ipc-hub] listening on :${PORT}`);
-  stderr(`[ipc-hub] auth: ${AUTH_TOKEN ? 'enabled (token required)' : 'disabled (open access)'}`);
+  stderr(`[ipc-hub] auth: ${authTokens ? 'per-session tokens (auth-tokens.json)' : AUTH_TOKEN ? 'shared token (IPC_AUTH_TOKEN)' : 'disabled (open access)'}`);
 
 });
 

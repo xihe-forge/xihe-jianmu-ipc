@@ -3,6 +3,7 @@ node_modules/
 .env
 data/
 feishu-apps.json
+auth-tokens.json
 .clawhub/
 local/
 skills/

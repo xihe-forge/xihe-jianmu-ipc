@@ -10,11 +10,13 @@ mcp-server.mjs       — MCP server (Claude Code / OpenClaw 通过stdio加载)
 lib/constants.mjs    — 端口、超时常量
 lib/protocol.mjs     — 消息格式、校验
 lib/db.mjs           — SQLite消息持久化（better-sqlite3）
+lib/feishu-worker-thread.mjs — 飞书WSClient worker_thread（每app独立线程，避免Lark SDK全局状态冲突）
 bin/jianmu.mjs       — CLI (jianmu hub / jianmu status)
 bin/install.ps1      — PowerShell alias安装
 bin/patch-channels.mjs — Claude Code Channel弹窗补丁
 bin/feishu-reply.sh  — 飞书快捷回复脚本（读stdin或参数，POST到Hub）
-feishu-apps.json     — 飞书多应用配置（含密钥，已gitignore）
+feishu-bridge.mjs    — 飞书多app编排器（worker_thread管理 + 热重载 + Hub转发）
+feishu-apps.json     — 飞书多应用配置（含密钥，已gitignore，修改后自动热重载）
 feishu-apps.example.json — 飞书配置模板
 SKILL.md             — OpenClaw ClawHub skill清单
 ```

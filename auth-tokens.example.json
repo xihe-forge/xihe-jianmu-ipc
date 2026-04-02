@@ -1,0 +1,6 @@
+{
+  "jianmu-pm": "token-for-jianmu",
+  "openclaw": "token-for-openclaw",
+  "tech-worker": "token-for-tech",
+  "*": "default-shared-token"
+}

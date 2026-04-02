@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 /**
- * feishu-bridge.mjs — Standalone Feishu message relay
+ * feishu-bridge.mjs — Multi-app Feishu message relay (orchestrator)
  *
- * Receives Feishu messages via Lark SDK WSClient and forwards
- * to Hub via HTTP POST /send. No LLM involved, 0 token cost.
+ * For each receive-enabled app in feishu-apps.json, spawns a dedicated
+ * worker_thread running lib/feishu-worker-thread.mjs. This avoids Lark SDK
+ * global state conflicts between multiple WSClient instances.
+ *
+ * Watches feishu-apps.json for changes and hot-reloads: adds new apps,
+ * removes deleted apps, restarts changed apps, keeps unchanged ones running.
  *
  * Usage: node feishu-bridge.mjs
- * Config: feishu-apps.json (same format as Hub uses)
+ * Config: feishu-apps.json
  */
 
-import * as Lark from '@larksuiteoapi/node-sdk';
+import { Worker } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
+import { watch } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -18,256 +23,239 @@ import http from 'node:http';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HUB_HOST = process.env.IPC_HUB_HOST || '127.0.0.1';
 const HUB_PORT = process.env.IPC_PORT || '3179';
+const CONFIG_PATH = resolve(__dirname, 'feishu-apps.json');
+const WORKER_PATH = new URL('./lib/feishu-worker-thread.mjs', import.meta.url);
 
 function log(...args) {
   process.stderr.write(`[feishu-bridge] ${args.join(' ')}\n`);
 }
 
-// Load feishu-apps.json
-let apps = [];
-try {
-  apps = JSON.parse(readFileSync(resolve(__dirname, 'feishu-apps.json'), 'utf8'));
-  log(`loaded ${apps.length} app(s) from feishu-apps.json`);
-} catch (err) {
-  log(`failed to load feishu-apps.json: ${err.message}`);
-  process.exit(1);
-}
+// ---------------------------------------------------------------------------
+//  Hub communication
+// ---------------------------------------------------------------------------
 
-const receiveApp = apps.find(a => a.receive);
-if (!receiveApp) {
-  log('no app with receive=true');
-  process.exit(1);
-}
-
-// Bot identity (open_id) — needed to detect @mentions in groups
-let botOpenId = '';
-
-async function fetchBotOpenId() {
-  const token = await getToken();
-  if (!token) return;
-  try {
-    const res = await fetch('https://open.feishu.cn/open-apis/bot/v3/info', {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-    const data = await res.json();
-    if (data.code === 0 && data.bot?.open_id) {
-      botOpenId = data.bot.open_id;
-      log(`[${receiveApp.name}] bot open_id: ${botOpenId}`);
-    }
-  } catch (err) {
-    log(`[${receiveApp.name}] failed to fetch bot info: ${err.message}`);
-  }
-}
-
-// Token cache for fetching quoted messages
-let tokenCache = { token: '', expiry: 0 };
-
-async function getToken() {
-  if (tokenCache.token && Date.now() < tokenCache.expiry - 60000) return tokenCache.token;
-  try {
-    const res = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: receiveApp.appId, app_secret: receiveApp.appSecret }),
-    });
-    const data = await res.json();
-    if (data.code === 0) {
-      tokenCache = { token: data.tenant_access_token, expiry: Date.now() + (data.expire - 60) * 1000 };
-      return tokenCache.token;
-    }
-    log(`token error: ${data.msg}`);
-    return null;
-  } catch (err) {
-    log(`token fetch failed: ${err.message}`);
-    return null;
-  }
-}
-
-// Fetch quoted message content
-async function fetchQuotedText(parentId) {
-  try {
-    const token = await getToken();
-    if (!token) return '';
-    const res = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${parentId}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-    const data = await res.json();
-    if (data.code === 0 && data.data?.items?.[0]?.body?.content) {
-      try {
-        return JSON.parse(data.data.items[0].body.content).text || '';
-      } catch {
-        return data.data.items[0].body.content;
-      }
-    }
-  } catch (err) {
-    log(`quote fetch failed: ${err.message}`);
-  }
-  return '';
-}
-
-// Reply directly to Feishu (for ping, no Hub/LLM needed)
-async function replyToFeishu(chatId, text) {
-  const token = await getToken();
-  if (!token) return;
-  try {
-    await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) }),
-    });
-  } catch (err) {
-    log(`reply failed: ${err.message}`);
-  }
-}
-
-// Send to Hub via HTTP POST /send
 function sendToHub(from, to, content) {
-  return new Promise((resolve, reject) => {
+  return new Promise((ok, fail) => {
     const body = JSON.stringify({ from, to, content });
-    const req = http.request({
-      hostname: HUB_HOST,
-      port: parseInt(HUB_PORT),
-      path: '/send',
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-    }, (res) => {
-      let buf = '';
-      res.on('data', c => buf += c);
-      res.on('end', () => {
-        try { resolve(JSON.parse(buf)); } catch { resolve({ ok: false }); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(5000, () => { req.destroy(new Error('timeout')); });
+    const req = http.request(
+      {
+        hostname: HUB_HOST,
+        port: parseInt(HUB_PORT),
+        path: '/send',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let buf = '';
+        res.on('data', (c) => (buf += c));
+        res.on('end', () => {
+          try {
+            ok(JSON.parse(buf));
+          } catch {
+            ok({ ok: false });
+          }
+        });
+      },
+    );
+    req.on('error', fail);
+    req.setTimeout(5000, () => req.destroy(new Error('timeout')));
     req.write(body);
     req.end();
   });
 }
 
-// Start WSClient
-const eventDispatcher = new Lark.EventDispatcher({}).register({
-  'im.message.receive_v1': async (data) => {
-    try {
-      const msg = data?.message;
-      if (!msg) return;
+// ---------------------------------------------------------------------------
+//  Worker lifecycle
+// ---------------------------------------------------------------------------
 
-      log(`[${receiveApp.name}] event: chat_type=${msg.chat_type} msg_type=${msg.message_type} msg_id=${msg.message_id}`);
+/** @type {Map<string, { worker: Worker, app: object }>} */
+const workers = new Map();
 
-      // Extract text content
-      let text = '';
-      if (msg.message_type === 'text') {
-        try {
-          text = JSON.parse(msg.content).text || '';
-        } catch {
-          text = msg.content || '';
-        }
-      } else {
-        text = `[${msg.message_type} message]`;
-      }
+/** Names we intentionally stopped — skip auto-restart */
+const suppressRestart = new Set();
 
-      // Handle reply/quote messages
-      if (msg.parent_id) {
-        const quoted = await fetchQuotedText(msg.parent_id);
-        if (quoted) {
-          text = `[引用: ${quoted}]\n${text}`;
-        }
-      }
+function startWorker(app) {
+  log(`[${app.name}] spawning worker_thread...`);
 
-      // Extract mentions (@user) from the message
-      // SDK v2 event parse spreads event fields to top level, so mentions are at data.message.mentions
-      const mentions = msg?.mentions || [];
+  const worker = new Worker(WORKER_PATH, {
+    workerData: { app, dataDir: __dirname },
+  });
 
-      if (msg.chat_type === 'p2p') {
-        // --- P2P: direct message to bot ---
-        log(`[${receiveApp.name}] p2p: "${text.substring(0, 80)}"`);
-
-        // Ping: auto-reply without Hub/LLM
-        const trimmed = text.trim().toLowerCase();
-        if (trimmed === 'ping' || trimmed === '/ping') {
-          await replyToFeishu(msg.chat_id, `pong (bridge: ${receiveApp.name}, hub: ${HUB_HOST}:${HUB_PORT})`);
-          log(`[${receiveApp.name}] ping → pong (direct)`);
-          return;
-        }
-
-        // Forward to Hub
-        const target = receiveApp.routeTo || receiveApp.name;
-        try {
-          const result = await sendToHub(`feishu:${receiveApp.name}`, target, text);
-          log(`[${receiveApp.name}] → Hub (p2p): ${result.ok ? 'delivered' : 'failed'} (to=${target})`);
-        } catch (err) {
-          log(`[${receiveApp.name}] → Hub failed: ${err.message}`);
-        }
-
-      } else if (msg.chat_type === 'group') {
-        // --- Group: only process if bot is @mentioned ---
-        // Check if bot is mentioned (same logic as openclaw)
-        const isBotMentioned = botOpenId && (
-          (msg.content ?? '').includes('@_all') ||
-          mentions.some(m => m.id?.open_id === botOpenId)
-        );
-
-        if (!isBotMentioned) {
-          log(`[${receiveApp.name}] group: no bot mention (mentions=${mentions.length}, botOpenId=${botOpenId || 'unset'})`);
-          return;
-        }
-
-        // Strip bot @mention from text, keep other mentions
-        let cleanText = text;
-        for (const m of mentions) {
-          if (m.id?.open_id === botOpenId && m.key) {
-            cleanText = cleanText.replace(new RegExp(m.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '').trim();
-          }
-        }
-        if (!cleanText) return;
-
-        // Sender info (SDK spreads event fields to top level)
-        const senderOpenId = data?.sender?.sender_id?.open_id || 'unknown';
-        const senderName = mentions.find(m => m.id?.open_id === senderOpenId)?.name || senderOpenId;
-
-        log(`[${receiveApp.name}] group @: "${cleanText.substring(0, 80)}" (from=${senderName})`);
-
-        // Ping in group
-        const trimmedGroup = cleanText.trim().toLowerCase();
-        if (trimmedGroup === 'ping' || trimmedGroup === '/ping') {
-          await replyToFeishu(msg.chat_id, `pong (bridge: ${receiveApp.name}, hub: ${HUB_HOST}:${HUB_PORT})`);
-          log(`[${receiveApp.name}] group ping → pong`);
-          return;
-        }
-
-        // Forward to Hub
-        const target = receiveApp.routeTo || receiveApp.name;
-        try {
-          const result = await sendToHub(`feishu-group:${msg.chat_id}`, target, cleanText);
-          log(`[${receiveApp.name}] → Hub (group): ${result.ok ? 'delivered' : 'failed'} (to=${target})`);
-        } catch (err) {
-          log(`[${receiveApp.name}] → Hub failed: ${err.message}`);
-        }
-
-      } else {
-        log(`[${receiveApp.name}] ignored ${msg.chat_type} message`);
-      }
-    } catch (err) {
-      log(`[${receiveApp.name}] error: ${err.stack || err.message}`);
+  worker.on('message', (msg) => {
+    switch (msg.type) {
+      case 'connected':
+        log(`[${msg.appName}] worker connected`);
+        break;
+      case 'bot_info':
+        log(`[${msg.appName}] bot open_id: ${msg.botOpenId}`);
+        break;
+      case 'feishu_message':
+        handleWorkerMessage(msg);
+        break;
+      default:
+        log(`[${app.name}] unknown worker msg: ${msg.type}`);
     }
-  },
-});
+  });
 
-const wsClient = new Lark.WSClient({
-  appId: receiveApp.appId,
-  appSecret: receiveApp.appSecret,
-  loggerLevel: Lark.LoggerLevel.info,
-});
+  worker.on('error', (err) => {
+    log(`[${app.name}] worker error: ${err.message}`);
+  });
 
-wsClient.start({ eventDispatcher }).then(async () => {
-  log(`[${receiveApp.name}] WSClient connected`);
-  await fetchBotOpenId();
-}).catch(err => {
-  log(`[${receiveApp.name}] WSClient FAILED: ${err.stack || err.message}`);
+  worker.on('exit', (code) => {
+    log(`[${app.name}] worker exited (code=${code})`);
+    workers.delete(app.name);
+
+    if (!suppressRestart.has(app.name)) {
+      log(`[${app.name}] restarting in 5s...`);
+      setTimeout(() => {
+        if (!suppressRestart.has(app.name) && !workers.has(app.name)) {
+          startWorker(app);
+        }
+      }, 5000);
+    }
+  });
+
+  workers.set(app.name, { worker, app });
+}
+
+async function stopWorker(appName) {
+  const entry = workers.get(appName);
+  if (!entry) return;
+  suppressRestart.add(appName);
+  log(`[${appName}] terminating worker...`);
+  try {
+    await entry.worker.terminate();
+  } catch (err) {
+    log(`[${appName}] terminate error: ${err.message}`);
+  }
+  workers.delete(appName);
+}
+
+async function handleWorkerMessage(msg) {
+  try {
+    const result = await sendToHub(msg.from, msg.to, msg.content);
+    log(
+      `[${msg.appName}] -> Hub (${msg.chatType}): ${result.ok ? 'delivered' : 'failed'} (to=${msg.to})`,
+    );
+  } catch (err) {
+    log(`[${msg.appName}] -> Hub failed: ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Config loading + hot-reload
+// ---------------------------------------------------------------------------
+
+function loadConfig() {
+  try {
+    return JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
+  } catch (err) {
+    log(`failed to load feishu-apps.json: ${err.message}`);
+    return null;
+  }
+}
+
+/** Fingerprint to detect config changes for an app */
+function appFingerprint(a) {
+  return JSON.stringify({
+    appId: a.appId,
+    appSecret: a.appSecret,
+    receive: a.receive,
+    routeTo: a.routeTo,
+  });
+}
+
+function applyConfig(apps) {
+  const receiveApps = apps.filter((a) => a.receive);
+
+  if (receiveApps.length === 0) {
+    log('warning: no app with receive=true');
+  }
+
+  const desired = new Map();
+  for (const a of receiveApps) desired.set(a.name, a);
+
+  // Stop removed or changed apps
+  for (const [name, entry] of workers) {
+    const newApp = desired.get(name);
+    if (!newApp) {
+      log(`[${name}] removed from config, stopping`);
+      stopWorker(name);
+      desired.delete(name);
+    } else if (appFingerprint(newApp) !== appFingerprint(entry.app)) {
+      log(`[${name}] config changed, restarting`);
+      stopWorker(name).then(() => {
+        suppressRestart.delete(name);
+        startWorker(newApp);
+      });
+      desired.delete(name);
+    } else {
+      // Unchanged
+      desired.delete(name);
+    }
+  }
+
+  // Start new apps
+  for (const [name, a] of desired) {
+    if (!workers.has(name)) {
+      suppressRestart.delete(name);
+      startWorker(a);
+    }
+  }
+}
+
+// Debounce (fs.watch fires multiple times on a single save)
+let reloadTimer = null;
+
+function reloadConfig() {
+  if (reloadTimer) return;
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null;
+    log('feishu-apps.json changed, reloading...');
+    const apps = loadConfig();
+    if (apps) {
+      log(`loaded ${apps.length} app(s), ${apps.filter((a) => a.receive).length} receive-enabled`);
+      applyConfig(apps);
+    }
+  }, 500);
+}
+
+// ---------------------------------------------------------------------------
+//  Startup
+// ---------------------------------------------------------------------------
+
+const initialApps = loadConfig();
+if (!initialApps) {
   process.exit(1);
+}
+log(
+  `loaded ${initialApps.length} app(s), ${initialApps.filter((a) => a.receive).length} receive-enabled`,
+);
+applyConfig(initialApps);
+
+// Watch config for hot-reload
+watch(CONFIG_PATH, { persistent: false }, (eventType) => {
+  if (eventType === 'change') reloadConfig();
 });
+log('watching feishu-apps.json for changes');
 
-log(`[${receiveApp.name}] starting...`);
+// ---------------------------------------------------------------------------
+//  Graceful shutdown
+// ---------------------------------------------------------------------------
 
-// Keep process alive
-process.on('SIGTERM', () => { log('SIGTERM'); process.exit(0); });
-process.on('SIGINT', () => { log('SIGINT'); process.exit(0); });
+async function shutdown(signal) {
+  log(`${signal} received, shutting down ${workers.size} worker(s)...`);
+  const promises = [];
+  for (const [name] of workers) {
+    promises.push(stopWorker(name));
+  }
+  await Promise.allSettled(promises);
+  log('all workers stopped');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

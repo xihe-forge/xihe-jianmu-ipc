@@ -237,7 +237,7 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
         // Forward to Hub
         const target = receiveApp.routeTo || receiveApp.name;
         try {
-          const result = await sendToHub(`feishu-group:${senderName}`, target, cleanText);
+          const result = await sendToHub(`feishu-group:${msg.chat_id}`, target, cleanText);
           log(`[${receiveApp.name}] → Hub (group): ${result.ok ? 'delivered' : 'failed'} (to=${target})`);
         } catch (err) {
           log(`[${receiveApp.name}] → Hub failed: ${err.message}`);

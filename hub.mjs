@@ -261,18 +261,23 @@ const httpServer = http.createServer((req, res) => {
         return;
       }
 
-      const { app: appName, content, from } = payload;
+      const { app: appName, content, from, chatId } = payload;
       if (!appName || !content) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'requires "app" and "content"' }));
         return;
       }
 
-      // Find the Feishu app by name — must have a targetOpenId to send to
-      const app = feishuApps.find(a => a.name === appName && a.targetOpenId);
+      // Find the Feishu app by name
+      // If chatId is provided (group reply), we don't need targetOpenId
+      const app = chatId
+        ? feishuApps.find(a => a.name === appName)
+        : feishuApps.find(a => a.name === appName && a.targetOpenId);
       if (!app) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `no Feishu app "${appName}" with targetOpenId configured` }));
+        res.end(JSON.stringify({ error: chatId
+          ? `no Feishu app "${appName}" configured`
+          : `no Feishu app "${appName}" with targetOpenId configured` }));
         return;
       }
 
@@ -283,15 +288,19 @@ const httpServer = http.createServer((req, res) => {
         return;
       }
 
+      // If chatId provided, send to group chat; otherwise send to p2p via targetOpenId
+      const receiveIdType = chatId ? 'chat_id' : 'open_id';
+      const receiveId = chatId || app.targetOpenId;
+
       try {
-        const feishuRes = await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id', {
+        const feishuRes = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`,
           },
           body: JSON.stringify({
-            receive_id: app.targetOpenId,
+            receive_id: receiveId,
             msg_type: 'text',
             content: JSON.stringify({ text: content }),
           }),
@@ -662,8 +671,35 @@ function routeMessage(msg, senderSession) {
   } else if (to && to !== '*') {
     // Direct message — skip if already delivered via topic
     if (!delivered.has(to)) {
-      // Feishu target: send via Feishu Bot API
-      if (to === 'feishu' || to.startsWith('feishu:')) {
+      // Feishu group target: send to group chat via chat_id
+      if (to.startsWith('feishu-group:')) {
+        const chatId = to.split(':')[1];
+        if (chatId) {
+          const sendApp = feishuApps.find(a => a.send && a.targetOpenId);
+          if (sendApp) {
+            getFeishuToken(sendApp).then(token => {
+              if (!token) return;
+              const text = msg.content;
+              fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({
+                  receive_id: chatId,
+                  msg_type: 'text',
+                  content: JSON.stringify({ text }),
+                }),
+              }).then(r => r.json()).then(data => {
+                if (data.code === 0) stderr(`[ipc-hub] feishu group: sent to chat ${chatId} from ${senderSession.name}`);
+                else stderr(`[ipc-hub] feishu group: error ${data.code}: ${data.msg}`);
+              }).catch(err => stderr(`[ipc-hub] feishu group: failed: ${err?.message ?? err}`));
+            });
+            stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to Feishu group`);
+          } else {
+            stderr(`[ipc-hub] ${senderSession.name} → ${to}: no send-enabled Feishu app found`);
+          }
+        }
+      // Feishu p2p target: send via Feishu Bot API
+      } else if (to === 'feishu' || to.startsWith('feishu:')) {
         // If to="feishu:jianmu-pm", find that specific app; otherwise use default send app
         const appName = to.includes(':') ? to.split(':')[1] : null;
         const app = appName

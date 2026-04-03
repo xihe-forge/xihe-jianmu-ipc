@@ -28,7 +28,7 @@ process.on('uncaughtException', (err) => {
   try { process.stderr.write(`[ipc-hub] uncaught: ${err.stack ?? err.message ?? err}\n`); } catch {}
 });
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, watch as fsWatch } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -927,6 +927,25 @@ heartbeatInterval.unref(); // Don't block process exit
 // Periodic cleanup: delete persisted messages older than 7 days
 const cleanupInterval = setInterval(() => cleanup(), 60 * 60 * 1000);
 cleanupInterval.unref();
+
+// ---------------------------------------------------------------------------
+// Watch source files for changes — exit to trigger auto-restart via run-forever.sh
+// ---------------------------------------------------------------------------
+const __hubWatchFiles = ['hub.mjs', 'lib/db.mjs', 'lib/protocol.mjs', 'lib/constants.mjs', 'lib/redact.mjs', 'lib/audit.mjs'];
+for (const file of __hubWatchFiles) {
+  try {
+    const filePath = join(__hubDir, file);
+    let debounce = null;
+    fsWatch(filePath, () => {
+      if (debounce) return;
+      debounce = setTimeout(() => {
+        stderr(`[ipc-hub] source file changed: ${file}, restarting...`);
+        process.exit(0);
+      }, 2000);
+    });
+  } catch {}
+}
+stderr('[ipc-hub] watching source files for auto-restart');
 
 // ---------------------------------------------------------------------------
 // Start listening

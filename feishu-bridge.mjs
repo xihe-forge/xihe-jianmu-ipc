@@ -350,6 +350,25 @@ watch(CONFIG_PATH, { persistent: false }, (eventType) => {
 log('watching feishu-apps.json for changes');
 
 // ---------------------------------------------------------------------------
+//  Watch source files for changes — exit to trigger auto-restart via run-forever.sh
+// ---------------------------------------------------------------------------
+const sourceWatchFiles = ['feishu-bridge.mjs', 'lib/feishu-worker-thread.mjs'];
+for (const file of sourceWatchFiles) {
+  try {
+    const filePath = resolve(__dirname, file);
+    let debounce = null;
+    watch(filePath, () => {
+      if (debounce) return;
+      debounce = setTimeout(() => {
+        log(`source file changed: ${file}, restarting...`);
+        process.exit(0); // run-forever.sh will restart us
+      }, 2000);
+    });
+  } catch {}
+}
+log('watching source files for auto-restart');
+
+// ---------------------------------------------------------------------------
 //  Graceful shutdown
 // ---------------------------------------------------------------------------
 

@@ -103,6 +103,17 @@ const sessions = new Map();
 // Pending ack tracking: messageId → { sender, ts }
 const ackPending = new Map();
 
+// Message deduplication: messageId → timestamp (prevents duplicate delivery)
+const deliveredMessageIds = new Map();
+
+// Cleanup expired dedup entries every 60 seconds
+setInterval(() => {
+  const cutoff = Date.now() - 300000; // 5 min TTL
+  for (const [id, ts] of deliveredMessageIds) {
+    if (ts < cutoff) deliveredMessageIds.delete(id);
+  }
+}, 60000).unref();
+
 // Cleanup stale ack entries every 30s (older than 60s)
 setInterval(() => {
   const cutoff = Date.now() - 60000;
@@ -171,6 +182,12 @@ function pushInbox(session, msg) {
 /** Flush buffered inbox to a newly connected session */
 function flushInbox(session) {
   if (session.inbox.length === 0) return;
+  // OpenClaw sessions use short-lived WS for MCP tool calls only;
+  // messages are delivered via /hooks/wake, so never flush inbox to them.
+  if (isOpenClawSession(session.name)) {
+    session.inbox.length = 0; // discard — already delivered via /hooks/wake
+    return;
+  }
   const messages = session.inbox.splice(0);
   send(session.ws, { type: 'inbox', messages });
 }
@@ -732,6 +749,14 @@ async function deliverToFeishu(msg) {
 function routeMessage(msg, senderSession) {
   const { to, topic } = msg;
   stderr(`[ipc-hub] routeMessage: ${msg.from} → ${to} (sender=${senderSession.name})`);
+
+  // Dedup: skip if this exact message was already routed
+  if (msg.id && deliveredMessageIds.has(msg.id)) {
+    stderr(`[ipc-hub] routeMessage: skipping duplicate ${msg.id}`);
+    return;
+  }
+  if (msg.id) deliveredMessageIds.set(msg.id, Date.now());
+
   audit('message_route', { from: msg.from, to, id: msg.id });
   if (msg.type === 'message') saveMessage(msg);
 
@@ -745,6 +770,8 @@ function routeMessage(msg, senderSession) {
   if (topic) {
     for (const [, s] of sessions) {
       if (s.name === senderSession.name) continue;
+      // Skip openclaw sessions — they receive messages only via /hooks/wake
+      if (isOpenClawSession(s.name)) continue;
       if (s.topics.has(topic)) {
         if (s.ws && s.ws.readyState === s.ws.OPEN) {
           send(s.ws, msg);
@@ -762,6 +789,8 @@ function routeMessage(msg, senderSession) {
     for (const [, s] of sessions) {
       if (s.name === senderSession.name) continue;
       if (delivered.has(s.name)) continue; // Skip if already got via topic
+      // Skip openclaw sessions — they receive messages only via /hooks/wake
+      if (isOpenClawSession(s.name)) continue;
       if (s.ws && s.ws.readyState === s.ws.OPEN) {
         send(s.ws, msg);
       } else {

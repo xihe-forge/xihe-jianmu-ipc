@@ -664,8 +664,8 @@ openclawRetryTimer.unref();
 // Feishu multi-app adapter
 // ---------------------------------------------------------------------------
 let feishuApps = [];
+const feishuConfigPath = join(dirname(fileURLToPath(import.meta.url)), 'feishu-apps.json');
 try {
-  const feishuConfigPath = join(dirname(fileURLToPath(import.meta.url)), 'feishu-apps.json');
   if (existsSync(feishuConfigPath)) {
     feishuApps = JSON.parse(readFileSync(feishuConfigPath, 'utf8'));
     stderr(`[ipc-hub] feishu: loaded ${feishuApps.length} app(s) from feishu-apps.json`);
@@ -673,6 +673,26 @@ try {
 } catch (err) {
   stderr(`[ipc-hub] feishu: failed to load feishu-apps.json: ${err?.message ?? err}`);
 }
+
+// Poll feishu-apps.json for config changes
+let lastFeishuConfigMtime = 0;
+try { lastFeishuConfigMtime = statSync(feishuConfigPath).mtimeMs; } catch {}
+
+setInterval(() => {
+  try {
+    const mtime = statSync(feishuConfigPath).mtimeMs;
+    if (mtime !== lastFeishuConfigMtime) {
+      lastFeishuConfigMtime = mtime;
+      try {
+        const newApps = JSON.parse(readFileSync(feishuConfigPath, 'utf8'));
+        feishuApps = newApps;
+        stderr(`[ipc-hub] feishu: reloaded ${feishuApps.length} app(s) from feishu-apps.json`);
+      } catch (err) {
+        stderr(`[ipc-hub] feishu: failed to reload config: ${err?.message ?? err}`);
+      }
+    }
+  } catch {}
+}, 10000);
 
 // Token cache per app: Map<appId, { token, expiry }>
 const feishuTokenCache = new Map();

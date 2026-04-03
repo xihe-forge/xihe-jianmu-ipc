@@ -14,7 +14,7 @@
  */
 
 import { Worker } from 'node:worker_threads';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { watch } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,6 +95,9 @@ function startWorker(app) {
       case 'feishu_message':
         handleWorkerMessage(msg);
         break;
+      case 'card_action':
+        handleCardAction(msg.data, msg.appName);
+        break;
       default:
         log(`[${app.name}] unknown worker msg: ${msg.type}`);
     }
@@ -142,6 +145,110 @@ async function handleWorkerMessage(msg) {
     );
   } catch (err) {
     log(`[${msg.appName}] -> Hub failed: ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Card action handler (bot setup form)
+// ---------------------------------------------------------------------------
+
+async function handleCardAction(data, appName) {
+  const action = data?.action || data;
+  const formData = action?.form_value || action?.value || {};
+
+  const appId = (formData.app_id || '').trim();
+  const appSecret = (formData.app_secret || '').trim();
+  const sessionName = (formData.session_name || '').trim();
+
+  if (!appId || !appSecret || !sessionName) {
+    log(`[${appName}] card action: missing fields (app_id=${!!appId}, app_secret=${!!appSecret}, session_name=${!!sessionName})`);
+    return;
+  }
+
+  log(`[${appName}] card action: add_bot app_id=${appId} session=${sessionName}`);
+
+  // Load current config
+  let apps = [];
+  try {
+    apps = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
+  } catch (err) {
+    log(`[${appName}] card action: failed to read config: ${err.message}`);
+    return;
+  }
+
+  // Check duplicate
+  if (apps.some((a) => a.appId === appId)) {
+    log(`[${appName}] card action: app ${appId} already configured, skipping`);
+    // Notify via Hub so the managing bot can reply
+    try {
+      await sendToHub('feishu-bridge', appName, `机器人 ${appId} 已存在，无需重复添加。`);
+    } catch {}
+    return;
+  }
+
+  if (apps.some((a) => a.name === sessionName)) {
+    log(`[${appName}] card action: session name "${sessionName}" already taken`);
+    try {
+      await sendToHub('feishu-bridge', appName, `Session名称 "${sessionName}" 已被占用，请换一个。`);
+    } catch {}
+    return;
+  }
+
+  // Check if target session is online
+  let sessionOnline = false;
+  try {
+    const res = await new Promise((ok, fail) => {
+      const req = http.get(`http://${HUB_HOST}:${parseInt(HUB_PORT)}/sessions`, (r) => {
+        let buf = '';
+        r.on('data', (c) => (buf += c));
+        r.on('end', () => {
+          try { ok(JSON.parse(buf)); } catch { ok([]); }
+        });
+      });
+      req.on('error', fail);
+      req.setTimeout(3000, () => req.destroy(new Error('timeout')));
+    });
+    sessionOnline = Array.isArray(res) && res.some((s) => s.name === sessionName);
+  } catch {}
+
+  // Append to config
+  const newApp = {
+    name: sessionName,
+    appId,
+    appSecret,
+    targetOpenId: '',
+    receive: true,
+    send: false,
+    routeTo: sessionName,
+  };
+  apps.push(newApp);
+
+  try {
+    writeFileSync(CONFIG_PATH, JSON.stringify(apps, null, 2));
+    log(`[${appName}] card action: wrote config, ${apps.length} apps total`);
+  } catch (err) {
+    log(`[${appName}] card action: write config failed: ${err.message}`);
+    return;
+  }
+
+  // Hot-reload via file watcher will pick up the change and start the new worker.
+  // If the target session is not online, request spawn through Hub.
+  if (!sessionOnline) {
+    try {
+      await sendToHub(
+        'feishu-bridge',
+        appName,
+        `新机器人 ${sessionName} (${appId}) 已添加到配置，Worker正在启动。如需对应的IPC session，请执行: ipc_spawn(name="${sessionName}", task="你是${sessionName}，通过IPC协作")`,
+      );
+    } catch {}
+  } else {
+    try {
+      await sendToHub(
+        'feishu-bridge',
+        appName,
+        `新机器人 ${sessionName} (${appId}) 已添加到配置，Worker正在启动，目标session已在线。`,
+      );
+    } catch {}
   }
 }
 

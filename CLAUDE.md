@@ -18,6 +18,8 @@ bin/feishu-reply.sh  — 飞书快捷回复脚本（读stdin或参数，POST到H
 feishu-bridge.mjs    — 飞书多app编排器（worker_thread管理 + 热重载 + Hub转发）
 feishu-apps.json     — 飞书多应用配置（含密钥，已gitignore，修改后自动热重载）
 feishu-apps.example.json — 飞书配置模板
+docs/feishu-permissions.json — 飞书应用权限模板（开发者后台批量导入）
+docs/feishu-events.md   — 飞书事件订阅配置说明
 SKILL.md             — OpenClaw ClawHub skill清单
 ```
 
@@ -36,6 +38,10 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `GET /health` — Hub状态 + session列表 + messageCount
 - `GET /sessions` — 仅session列表
 - `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
+
+## 飞书交互卡片
+
+P2P对话中发送 `新增机器人` 或 `/add-bot` 触发交互表单卡片，填写 App ID / App Secret / Session名称 后提交，bridge自动写入 feishu-apps.json 并热重载启动 Worker。
 
 ## 环境变量
 

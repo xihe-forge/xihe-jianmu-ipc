@@ -67,6 +67,38 @@ function sendToHub(from, to, content) {
 }
 
 // ---------------------------------------------------------------------------
+//  Feishu status reply via Hub's /feishu-reply endpoint
+// ---------------------------------------------------------------------------
+
+async function sendFeishuStatus(appName, chatId, text) {
+  if (!chatId) return;
+  const body = JSON.stringify({ app: appName, content: text, chatId });
+  return new Promise((ok) => {
+    const req = http.request(
+      {
+        hostname: HUB_HOST,
+        port: parseInt(HUB_PORT),
+        path: '/feishu-reply',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let buf = '';
+        res.on('data', (c) => (buf += c));
+        res.on('end', () => ok());
+      },
+    );
+    req.on('error', () => ok());
+    req.setTimeout(5000, () => { req.destroy(); ok(); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
 //  Worker lifecycle
 // ---------------------------------------------------------------------------
 
@@ -155,10 +187,25 @@ async function handleWorkerMessage(msg) {
   try {
     const result = await sendToHub(msg.from, msg.to, msg.content);
     log(
-      `[${msg.appName}] -> Hub (${msg.chatType}): ${result.ok ? 'delivered' : 'failed'} (to=${msg.to})`,
+      `[${msg.appName}] -> Hub (${msg.chatType}): ${result.ok || result.accepted ? 'delivered' : 'failed'} (to=${msg.to}, online=${result.online}, buffered=${result.buffered})`,
     );
+
+    // Send instant status reply to Feishu so user knows what happened
+    if (msg.chatId) {
+      if (result?.online) {
+        await sendFeishuStatus(msg.appName, msg.chatId, '⏳ 处理中...');
+      } else if (result?.buffered) {
+        await sendFeishuStatus(msg.appName, msg.chatId, '💤 离线，消息已缓存');
+      } else if (!result?.accepted) {
+        await sendFeishuStatus(msg.appName, msg.chatId, '⚠️ 发送失败');
+      }
+    }
   } catch (err) {
     log(`[${msg.appName}] -> Hub failed: ${err.message}`);
+    // Hub unreachable — notify user
+    if (msg.chatId) {
+      await sendFeishuStatus(msg.appName, msg.chatId, '⚠️ 发送失败，Hub可能不可达').catch(() => {});
+    }
   }
 }
 

@@ -77,7 +77,6 @@ const MAX_RECONNECT_ATTEMPTS = Infinity; // never give up
 const RECONNECT_BASE_DELAY = 3000;
 const RECONNECT_MAX_DELAY = 60000;
 
-const pendingMessages = [];   // incoming messages (future use)
 const outgoingQueue = [];     // queued while disconnected
 
 // ---------------------------------------------------------------------------
@@ -205,7 +204,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Try WebSocket first; if disconnected, fallback to HTTP POST /send
     if (ws?.readyState === 1 /* OPEN */) {
       ws.send(JSON.stringify(message));
-      return { content: [{ type: 'text', text: JSON.stringify({ delivered: true, id: message.id, via: 'ws' }) }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ sent: true, id: message.id, via: 'ws' }) }] };
     }
 
     // WS not connected — use HTTP fallback
@@ -215,7 +214,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         to,
         content: String(content),
       });
-      return { content: [{ type: 'text', text: JSON.stringify({ delivered: result?.ok ?? false, id: result?.id ?? message.id, via: 'http', online: result?.online }) }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ accepted: result?.accepted ?? false, id: result?.id ?? message.id, via: 'http', online: result?.online, buffered: result?.buffered }) }] };
     } catch (err) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ delivered: false, error: err?.message ?? String(err), via: 'http_failed' }) }],
@@ -253,6 +252,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'action must be "subscribe" or "unsubscribe"' }], isError: true };
     }
     // Send subscribe/unsubscribe to hub via WebSocket
+    if (ws?.readyState !== 1) {
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'hub not connected' }) }], isError: true };
+    }
     wsSend({ type: action, topic });
     return { content: [{ type: 'text', text: JSON.stringify({ action, topic, ok: true }) }] };
   }
@@ -376,9 +378,11 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
         const wslToWin = (p) => p.replace(/^\/mnt\/([a-z])\//, (_, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\');
         const patchScriptWin = wslToWin(join(PROJECT_DIR, 'bin', 'patch-channels.mjs'));
         const mcpServerWin = wslToWin(join(PROJECT_DIR, 'mcp-server.mjs'));
-        const claudeCmd = 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\claude.ps1';
+        const winHome = process.env.USERPROFILE || `C:\\Users\\${process.env.USERNAME || 'user'}`;
+        const claudeCmd = `${winHome}\\AppData\\Roaming\\npm\\claude.ps1`;
         // Write to Windows Temp dir so PowerShell can access it without UNC path issues
-        const winTempDir = '/mnt/c/Users/jolen/AppData/Local/Temp';
+        const winUser = process.env.USERNAME || process.env.USER || 'user';
+        const winTempDir = `/mnt/c/Users/${winUser}/AppData/Local/Temp`;
         const ts = Date.now();
         const tmpPs1Wsl = join(winTempDir, `ipc-spawn-${sessionName}-${ts}.ps1`);
         const tmpMcpWsl = join(winTempDir, `ipc-mcp-${sessionName}-${ts}.json`);
@@ -398,7 +402,7 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
         const mcpConfigJson = JSON.stringify(mcpConfig, null, 2);
         _wfs(tmpMcpWsl, mcpConfigJson, 'utf8');
         // Also write to CC's working dir (.mcp.json in home) for auto-load
-        const homeMcpWsl = '/mnt/c/Users/jolen/.mcp.json';
+        const homeMcpWsl = `/mnt/c/Users/${winUser}/.mcp.json`;
         _wfs(homeMcpWsl, mcpConfigJson, 'utf8');
         const ps1Content = [
           '\uFEFF', // UTF-8 BOM — prevents PowerShell from garbling non-ASCII
@@ -604,7 +608,13 @@ function handleWsMessage(event) {
     }
 
     pushChannelNotification(msg);
+    // Send ack back to Hub so the sender knows delivery succeeded
+    if (msg.id) {
+      wsSend({ type: 'ack', messageId: msg.id, from: IPC_NAME });
+    }
     process.stderr.write(`[ipc] pushed channel notification from ${msg.from ?? '(unknown)'}\n`);
+  } else if (msg.type === 'ack') {
+    process.stderr.write(`[ipc] delivery confirmed: ${msg.messageId} by ${msg.confirmedBy}\n`);
   } else if (msg.type === 'inbox') {
     const messages = Array.isArray(msg.messages) ? msg.messages : [];
     for (const m of messages) {
@@ -613,7 +623,6 @@ function handleWsMessage(event) {
     process.stderr.write(`[ipc] pushed ${messages.length} buffered messages\n`);
   }
 
-  pendingMessages.push(msg);
   process.stderr.write(`[ipc] received message from ${msg.from ?? '(unknown)'}\n`);
 }
 

@@ -33,7 +33,6 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
-import { redactSensitive } from './lib/redact.mjs';
 import { audit } from './lib/audit.mjs';
 
 // Load .env from project root (no dotenv dependency needed)
@@ -46,7 +45,7 @@ try {
     const eq = trimmed.indexOf('=');
     if (eq < 0) continue;
     const key = trimmed.slice(0, eq).trim();
-    const val = trimmed.slice(eq + 1).trim();
+    const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
     if (!process.env[key]) process.env[key] = val;  // don't override existing env
   }
 } catch { /* .env not found, use defaults */ }
@@ -78,28 +77,6 @@ try {
 } catch { /* auth-tokens.json not found or invalid, fall back to shared token */ }
 
 // ---------------------------------------------------------------------------
-// Message history ring buffer (for dashboard)
-// ---------------------------------------------------------------------------
-const MESSAGE_HISTORY_MAX = 200;
-const messageHistory = [];
-let totalMessageCount = 0;
-
-function recordMessage(msg) {
-  totalMessageCount++;
-  messageHistory.push({
-    id: msg.id ?? `msg-${totalMessageCount}`,
-    ts: msg.ts ?? Date.now(),
-    from: msg.from,
-    to: msg.to,
-    content: redactSensitive(msg.content),
-    topic: msg.topic ?? null,
-  });
-  if (messageHistory.length > MESSAGE_HISTORY_MAX) {
-    messageHistory.shift();
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Auth helper — per-session tokens with fallback to shared token
 // ---------------------------------------------------------------------------
 function checkAuth(providedToken, sessionName = null) {
@@ -122,6 +99,17 @@ function checkAuth(providedToken, sessionName = null) {
 // ---------------------------------------------------------------------------
 /** @type {Map<string, {name: string, ws: import('ws').WebSocket|null, connectedAt: number, topics: Set<string>, inbox: Array, inboxExpiry: ReturnType<typeof setTimeout>|null}>} */
 const sessions = new Map();
+
+// Pending ack tracking: messageId → { sender, ts }
+const ackPending = new Map();
+
+// Cleanup stale ack entries every 30s (older than 60s)
+setInterval(() => {
+  const cutoff = Date.now() - 60000;
+  for (const [id, entry] of ackPending) {
+    if (entry.ts < cutoff) ackPending.delete(id);
+  }
+}, 30000).unref();
 
 // ---------------------------------------------------------------------------
 // Idle shutdown timer
@@ -209,7 +197,7 @@ const httpServer = http.createServer((req, res) => {
   if (AUTH_TOKEN || authTokens) {
     const authHeader = req.headers.authorization;
     const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-    if (req.url !== '/health' && !checkAuth(providedToken)) {
+    if (!checkAuth(providedToken)) {
       audit('http_auth_fail', { url: req.url, method: req.method });
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
@@ -232,7 +220,6 @@ const httpServer = http.createServer((req, res) => {
       ok: true,
       sessions: sessionList,
       uptime: process.uptime(),
-      totalMessages: totalMessageCount,
       messageCount: getMessageCount(),
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -241,10 +228,12 @@ const httpServer = http.createServer((req, res) => {
     // HTTP API for sending messages — any tool (Codex, curl, scripts) can use this
     let body = '';
     let size = 0;
+    let aborted = false;
     const MAX_BODY = 1024 * 1024; // 1MB
     req.on('data', chunk => {
       size += chunk.length;
       if (size > MAX_BODY) {
+        aborted = true;
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'payload too large' }));
         req.destroy();
@@ -253,6 +242,7 @@ const httpServer = http.createServer((req, res) => {
       body += chunk;
     });
     req.on('end', () => {
+      if (aborted) return;
       let msg;
       try {
         msg = JSON.parse(body);
@@ -280,7 +270,7 @@ const httpServer = http.createServer((req, res) => {
       const target = sessions.get(msg.to);
       const online = target?.ws?.readyState === target?.ws?.OPEN;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, id: msg.id, online: !!online, buffered: !online }));
+      res.end(JSON.stringify({ accepted: true, id: msg.id, online: !!online, buffered: !online }));
       audit('http_send', { from: msg.from, to: msg.to, id: msg.id });
       stderr(`[ipc-hub] HTTP POST /send: ${msg.from} → ${msg.to}`);
     });
@@ -290,10 +280,12 @@ const httpServer = http.createServer((req, res) => {
     // Optionally "from" for logging.
     let body = '';
     let size = 0;
+    let aborted = false;
     const MAX_BODY = 1024 * 1024;
     req.on('data', chunk => {
       size += chunk.length;
       if (size > MAX_BODY) {
+        aborted = true;
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'payload too large' }));
         req.destroy();
@@ -302,6 +294,7 @@ const httpServer = http.createServer((req, res) => {
       body += chunk;
     });
     req.on('end', async () => {
+      if (aborted) return;
       let payload;
       try {
         payload = JSON.parse(body);
@@ -392,9 +385,16 @@ const httpServer = http.createServer((req, res) => {
     res.end(JSON.stringify(messages));
   } else if (req.method === 'GET' && (req.url === '/' || req.url === '/dashboard' || req.url?.startsWith('/dashboard/'))) {
     // Serve dashboard static files
-    const filePath = (req.url === '/' || req.url === '/dashboard' || req.url === '/dashboard/')
-      ? join(__hubDir, 'dashboard', 'index.html')
-      : join(__hubDir, 'dashboard', req.url.replace('/dashboard/', ''));
+    const dashboardDir = resolve(__hubDir, 'dashboard');
+    const relative = (req.url === '/' || req.url === '/dashboard' || req.url === '/dashboard/')
+      ? 'index.html'
+      : req.url.replace('/dashboard/', '');
+    const filePath = resolve(dashboardDir, relative);
+    if (!filePath.startsWith(dashboardDir)) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
 
     try {
       const content = readFileSync(filePath, 'utf8');
@@ -519,6 +519,19 @@ wss.on('connection', (ws, req) => {
       case 'message':
         routeMessage(msg, session);
         break;
+
+      case 'ack': {
+        const pending = ackPending.get(msg.messageId);
+        if (pending) {
+          ackPending.delete(msg.messageId);
+          const senderSession = sessions.get(pending.sender);
+          if (senderSession?.ws?.readyState === senderSession?.ws?.OPEN) {
+            send(senderSession.ws, { type: 'ack', messageId: msg.messageId, confirmedBy: session.name });
+          }
+          stderr(`[ipc-hub] ack: ${session.name} confirmed ${msg.messageId} → notified ${pending.sender}`);
+        }
+        break;
+      }
 
       default:
         send(ws, { type: 'error', error: `unknown message type: ${msg.type}` });
@@ -720,8 +733,12 @@ function routeMessage(msg, senderSession) {
   const { to, topic } = msg;
   stderr(`[ipc-hub] routeMessage: ${msg.from} → ${to} (sender=${senderSession.name})`);
   audit('message_route', { from: msg.from, to, id: msg.id });
-  recordMessage(msg);
   if (msg.type === 'message') saveMessage(msg);
+
+  // Track ack for direct messages from named senders
+  if (msg.id && senderSession.name) {
+    ackPending.set(msg.id, { sender: senderSession.name, ts: Date.now() });
+  }
   const delivered = new Set(); // Track who already received the message
 
   // Topic-based fanout (can combine with direct addressing)

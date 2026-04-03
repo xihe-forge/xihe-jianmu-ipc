@@ -2,7 +2,7 @@
 const fs = require('fs');
 const http = require('http');
 
-const HUB_HOST = process.env.IPC_HUB_HOST || '172.26.229.111';
+const HUB_HOST = process.env.IPC_HUB_HOST || '127.0.0.1';
 const HUB_PORT = process.env.IPC_PORT || '3179';
 
 let input = '';

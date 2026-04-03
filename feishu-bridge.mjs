@@ -14,8 +14,7 @@
  */
 
 import { Worker } from 'node:worker_threads';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { watch } from 'node:fs';
+import { readFileSync, writeFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -226,6 +225,9 @@ async function handleCardAction(data, appName) {
   try {
     writeFileSync(CONFIG_PATH, JSON.stringify(apps, null, 2));
     log(`[${appName}] card action: wrote config, ${apps.length} apps total`);
+    // Apply immediately instead of waiting for poll
+    lastConfigMtime = statSync(CONFIG_PATH).mtimeMs;
+    reloadConfig();
   } catch (err) {
     log(`[${appName}] card action: write config failed: ${err.message}`);
     return;
@@ -343,30 +345,43 @@ log(
 );
 applyConfig(initialApps);
 
-// Watch config for hot-reload
-watch(CONFIG_PATH, { persistent: false }, (eventType) => {
-  if (eventType === 'change') reloadConfig();
-});
-log('watching feishu-apps.json for changes');
+// Poll config for hot-reload (WSL2 inotify doesn't work for NTFS)
+let lastConfigMtime = 0;
+try { lastConfigMtime = statSync(CONFIG_PATH).mtimeMs; } catch {}
+
+setInterval(() => {
+  try {
+    const mtime = statSync(CONFIG_PATH).mtimeMs;
+    if (mtime !== lastConfigMtime) {
+      lastConfigMtime = mtime;
+      reloadConfig();
+    }
+  } catch {}
+}, 5000);
+log('polling feishu-apps.json for changes (5s interval)');
 
 // ---------------------------------------------------------------------------
-//  Watch source files for changes — exit to trigger auto-restart via run-forever.sh
+//  Poll source files for changes — exit to trigger auto-restart via run-forever.sh
+//  (WSL2 inotify doesn't work for NTFS)
 // ---------------------------------------------------------------------------
 const sourceWatchFiles = ['feishu-bridge.mjs', 'lib/feishu-worker-thread.mjs'];
-for (const file of sourceWatchFiles) {
-  try {
-    const filePath = resolve(__dirname, file);
-    let debounce = null;
-    watch(filePath, () => {
-      if (debounce) return;
-      debounce = setTimeout(() => {
-        log(`source file changed: ${file}, restarting...`);
-        process.exit(0); // run-forever.sh will restart us
-      }, 2000);
-    });
-  } catch {}
+const fileMtimes = new Map();
+for (const f of sourceWatchFiles) {
+  try { fileMtimes.set(f, statSync(resolve(__dirname, f)).mtimeMs); } catch {}
 }
-log('watching source files for auto-restart');
+
+setInterval(() => {
+  for (const [f, oldMtime] of fileMtimes) {
+    try {
+      const mtime = statSync(resolve(__dirname, f)).mtimeMs;
+      if (mtime !== oldMtime) {
+        log(`source file changed: ${f}, restarting...`);
+        process.exit(0); // run-forever.sh will restart us
+      }
+    } catch {}
+  }
+}, 10000);
+log('polling source files for auto-restart (10s interval)');
 
 // ---------------------------------------------------------------------------
 //  Graceful shutdown

@@ -28,7 +28,7 @@ process.on('uncaughtException', (err) => {
   try { process.stderr.write(`[ipc-hub] uncaught: ${err.stack ?? err.message ?? err}\n`); } catch {}
 });
 
-import { readFileSync, existsSync, watch as fsWatch } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -929,23 +929,27 @@ const cleanupInterval = setInterval(() => cleanup(), 60 * 60 * 1000);
 cleanupInterval.unref();
 
 // ---------------------------------------------------------------------------
-// Watch source files for changes — exit to trigger auto-restart via run-forever.sh
+// Poll source files for changes — exit to trigger auto-restart via run-forever.sh
+// (WSL2 inotify doesn't work for NTFS)
 // ---------------------------------------------------------------------------
 const __hubWatchFiles = ['hub.mjs', 'lib/db.mjs', 'lib/protocol.mjs', 'lib/constants.mjs', 'lib/redact.mjs', 'lib/audit.mjs'];
+const __hubFileMtimes = new Map();
 for (const file of __hubWatchFiles) {
-  try {
-    const filePath = join(__hubDir, file);
-    let debounce = null;
-    fsWatch(filePath, () => {
-      if (debounce) return;
-      debounce = setTimeout(() => {
+  try { __hubFileMtimes.set(file, statSync(join(__hubDir, file)).mtimeMs); } catch {}
+}
+
+setInterval(() => {
+  for (const [file, oldMtime] of __hubFileMtimes) {
+    try {
+      const mtime = statSync(join(__hubDir, file)).mtimeMs;
+      if (mtime !== oldMtime) {
         stderr(`[ipc-hub] source file changed: ${file}, restarting...`);
         process.exit(0);
-      }, 2000);
-    });
-  } catch {}
-}
-stderr('[ipc-hub] watching source files for auto-restart');
+      }
+    } catch {}
+  }
+}, 10000);
+stderr('[ipc-hub] polling source files for auto-restart (10s interval)');
 
 // ---------------------------------------------------------------------------
 // Start listening

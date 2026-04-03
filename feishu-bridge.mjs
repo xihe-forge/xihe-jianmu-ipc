@@ -137,6 +137,21 @@ async function stopWorker(appName) {
 }
 
 async function handleWorkerMessage(msg) {
+  // Persist chat_id to feishu-apps.json so Hub can use it for replies
+  if (msg.chatId && msg.chatType === 'p2p') {
+    try {
+      const apps = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
+      const appConfig = apps.find(a => a.name === msg.appName);
+      if (appConfig && appConfig.chatId !== msg.chatId) {
+        appConfig.chatId = msg.chatId;
+        writeFileSync(CONFIG_PATH, JSON.stringify(apps, null, 2));
+        log(`[${msg.appName}] saved chat_id: ${msg.chatId}`);
+      }
+    } catch (err) {
+      log(`[${msg.appName}] failed to persist chat_id: ${err.message}`);
+    }
+  }
+
   try {
     const result = await sendToHub(msg.from, msg.to, msg.content);
     log(

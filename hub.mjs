@@ -329,15 +329,15 @@ const httpServer = http.createServer((req, res) => {
       }
 
       // Find the Feishu app by name
-      // If chatId is provided (group reply), we don't need targetOpenId
+      // Accept app if it has chatId (from config) or targetOpenId, or if payload provides chatId
       const app = chatId
         ? feishuApps.find(a => a.name === appName)
-        : feishuApps.find(a => a.name === appName && a.targetOpenId);
+        : feishuApps.find(a => a.name === appName && (a.chatId || a.targetOpenId));
       if (!app) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: chatId
           ? `no Feishu app "${appName}" configured`
-          : `no Feishu app "${appName}" with targetOpenId configured` }));
+          : `no Feishu app "${appName}" with chatId or targetOpenId configured` }));
         return;
       }
 
@@ -348,9 +348,9 @@ const httpServer = http.createServer((req, res) => {
         return;
       }
 
-      // If chatId provided, send to group chat; otherwise send to p2p via targetOpenId
-      const receiveIdType = chatId ? 'chat_id' : 'open_id';
-      const receiveId = chatId || app.targetOpenId;
+      // Prefer chatId: payload > app config > fallback to targetOpenId (open_id)
+      const receiveId = chatId || app.chatId || app.targetOpenId;
+      const receiveIdType = (chatId || app.chatId) ? 'chat_id' : 'open_id';
 
       try {
         const feishuRes = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
@@ -728,30 +728,32 @@ async function getFeishuToken(app) {
 }
 
 async function deliverToFeishu(msg) {
-  const sendApp = feishuApps.find(a => a.send && a.targetOpenId);
+  const sendApp = feishuApps.find(a => a.send && (a.chatId || a.targetOpenId));
   if (!sendApp) return false;
 
   const token = await getFeishuToken(sendApp);
   if (!token) return false;
 
+  const receiveId = sendApp.chatId || sendApp.targetOpenId;
+  const receiveIdType = sendApp.chatId ? 'chat_id' : 'open_id';
   const text = `[IPC] ${msg.from} → ${msg.to}\n${msg.content}`;
 
   try {
-    const res = await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id', {
+    const res = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({
-        receive_id: sendApp.targetOpenId,
+        receive_id: receiveId,
         msg_type: 'text',
         content: JSON.stringify({ text }),
       }),
     });
     const data = await res.json();
     if (data.code === 0) {
-      stderr(`[ipc-hub] feishu [${sendApp.name}]: pushed message from ${msg.from}`);
+      stderr(`[ipc-hub] feishu [${sendApp.name}]: pushed message from ${msg.from} (${receiveIdType})`);
       return true;
     } else {
       stderr(`[ipc-hub] feishu [${sendApp.name}]: send error ${data.code}: ${data.msg}`);
@@ -852,26 +854,28 @@ function routeMessage(msg, senderSession) {
         // If to="feishu:jianmu-pm", find that specific app; otherwise use default send app
         const appName = to.includes(':') ? to.split(':')[1] : null;
         const app = appName
-          ? feishuApps.find(a => a.name === appName && a.targetOpenId)
-          : feishuApps.find(a => a.send && a.targetOpenId);
+          ? feishuApps.find(a => a.name === appName && (a.chatId || a.targetOpenId))
+          : feishuApps.find(a => a.send && (a.chatId || a.targetOpenId));
         if (app) {
+          const receiveId = app.chatId || app.targetOpenId;
+          const receiveIdType = app.chatId ? 'chat_id' : 'open_id';
           getFeishuToken(app).then(token => {
             if (!token) return;
             const text = msg.content;
-            fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id', {
+            fetch(`https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
               body: JSON.stringify({
-                receive_id: app.targetOpenId,
+                receive_id: receiveId,
                 msg_type: 'text',
                 content: JSON.stringify({ text }),
               }),
             }).then(r => r.json()).then(data => {
-              if (data.code === 0) stderr(`[ipc-hub] feishu [${app.name}]: sent reply from ${senderSession.name}`);
+              if (data.code === 0) stderr(`[ipc-hub] feishu [${app.name}]: sent reply from ${senderSession.name} (${receiveIdType})`);
               else stderr(`[ipc-hub] feishu [${app.name}]: reply error ${data.code}: ${data.msg}`);
             }).catch(err => stderr(`[ipc-hub] feishu [${app.name}]: reply failed: ${err?.message ?? err}`));
           });
-          stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to Feishu [${app.name}]`);
+          stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to Feishu [${app.name}] via ${receiveIdType}`);
         } else {
           stderr(`[ipc-hub] ${senderSession.name} → ${to}: no matching Feishu app found`);
         }

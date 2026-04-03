@@ -578,6 +578,31 @@ function handleWsMessage(event) {
   }
 
   if (msg.type === 'message') {
+    // Intercept feishu ping: reply directly without pushing to LLM (0 token)
+    const isFeishuPing = msg.from?.startsWith('feishu') &&
+      typeof msg.content === 'string' &&
+      (msg.content.trim().toLowerCase() === 'ping' || msg.content.trim().toLowerCase() === '/ping');
+
+    if (isFeishuPing) {
+      const replyTo = msg.from; // "feishu:jianmu-pm" or "feishu-group:oc_xxx"
+      const pong = `pong (full chain: feishu → bridge → hub → ${IPC_NAME} → hub → feishu)`;
+      const body = JSON.stringify(
+        replyTo.startsWith('feishu-group:')
+          ? { from: IPC_NAME, to: replyTo, content: pong }
+          : { app: replyTo.split(':')[1], content: pong }
+      );
+      const path = replyTo.startsWith('feishu-group:') ? '/send' : '/feishu-reply';
+      const req = http.request({
+        hostname: HOST, port: IPC_PORT, path, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, () => {});
+      req.on('error', () => {});
+      req.write(body);
+      req.end();
+      process.stderr.write(`[ipc] feishu ping intercepted from ${msg.from}, pong sent (0 token)\n`);
+      return; // Don't push to LLM
+    }
+
     pushChannelNotification(msg);
     process.stderr.write(`[ipc] pushed channel notification from ${msg.from ?? '(unknown)'}\n`);
   } else if (msg.type === 'inbox') {

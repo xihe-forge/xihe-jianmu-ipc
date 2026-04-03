@@ -33,9 +33,9 @@ const PROJECT_DIR = dirname(fileURLToPath(import.meta.url));
 // ---------------------------------------------------------------------------
 // Environment
 // ---------------------------------------------------------------------------
-// Priority: IPC_NAME (explicit, set by PowerShell/spawn) > auto-generated with pid
-const IPC_NAME = process.env.IPC_NAME || `session-${process.pid}`;
-if (!process.env.IPC_NAME) {
+// Priority: IPC_NAME (explicit) > IPC_DEFAULT_NAME (.mcp.json) > auto-generated
+let IPC_NAME = process.env.IPC_NAME || process.env.IPC_DEFAULT_NAME || `session-${process.pid}`;
+if (!process.env.IPC_NAME && !process.env.IPC_DEFAULT_NAME) {
   process.stderr.write(`[ipc] IPC_NAME not set, using auto-generated: ${IPC_NAME}\n`);
 }
 
@@ -166,6 +166,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['name', 'task'],
       },
     },
+    {
+      name: 'ipc_rename',
+      description: 'Change this session\'s IPC name. Disconnects and reconnects to Hub with the new name.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'New session name' },
+        },
+        required: ['name'],
+      },
+    },
   ],
 }));
 
@@ -281,6 +292,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (err) {
       return { content: [{ type: 'text', text: `Failed to spawn session: ${err?.message ?? err}` }], isError: true };
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // ipc_rename
+  // -------------------------------------------------------------------------
+  if (name === 'ipc_rename') {
+    const { name: newName } = args ?? {};
+    if (!newName) {
+      return { content: [{ type: 'text', text: 'ipc_rename requires "name"' }], isError: true };
+    }
+
+    const oldName = IPC_NAME;
+    IPC_NAME = newName;
+
+    // Disconnect current WebSocket
+    if (ws) {
+      try { ws.close(); } catch {}
+      ws = null;
+    }
+
+    // Reconnect with new name
+    reconnectAttempts = 0;
+    connect();
+
+    process.stderr.write(`[ipc] renamed: ${oldName} → ${newName}\n`);
+    return { content: [{ type: 'text', text: JSON.stringify({ renamed: true, from: oldName, to: newName }) }] };
   }
 
   return {

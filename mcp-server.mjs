@@ -33,9 +33,9 @@ const PROJECT_DIR = dirname(fileURLToPath(import.meta.url));
 // ---------------------------------------------------------------------------
 // Environment
 // ---------------------------------------------------------------------------
-// Priority: IPC_NAME (system env, set by PowerShell) > IPC_DEFAULT_NAME (.mcp.json) > auto-generated
-const IPC_NAME = process.env.IPC_NAME || process.env.IPC_DEFAULT_NAME || `session-${process.pid}`;
-if (!process.env.IPC_NAME && !process.env.IPC_DEFAULT_NAME) {
+// Priority: IPC_NAME (explicit, set by PowerShell/spawn) > auto-generated with pid
+const IPC_NAME = process.env.IPC_NAME || `session-${process.pid}`;
+if (!process.env.IPC_NAME) {
   process.stderr.write(`[ipc] IPC_NAME not set, using auto-generated: ${IPC_NAME}\n`);
 }
 

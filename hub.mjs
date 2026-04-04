@@ -28,7 +28,7 @@ process.on('uncaughtException', (err) => {
   try { process.stderr.write(`[ipc-hub] uncaught: ${err.stack ?? err.message ?? err}\n`); } catch {}
 });
 
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -883,7 +883,25 @@ function routeMessage(msg, senderSession) {
       // (WebSocket connection is just the MCP client, not the main agent session)
       } else if (isOpenClawSession(to)) {
         deliverToOpenClaw(msg).then(ok => {
-          if (!ok) enqueueOpenClawRetry(msg);
+          if (!ok) {
+            enqueueOpenClawRetry(msg);
+          } else {
+            // /hooks/wake succeeded — mark as "received" (stage 2) in pending cards
+            try {
+              const pcPath = join(dirname(fileURLToPath(import.meta.url)), 'data', 'pending-cards.json');
+              const pc = JSON.parse(readFileSync(pcPath, 'utf8'));
+              for (const [appName, info] of Object.entries(pc)) {
+                if (info.tasks) {
+                  for (const task of info.tasks) {
+                    if (task.stage < 2 && task.hubMessageId === msg.id) {
+                      task.stage = 2;
+                    }
+                  }
+                }
+              }
+              writeFileSync(pcPath, JSON.stringify(pc));
+            } catch {}
+          }
         });
         // Don't push to hub's Feishu bot — OpenClaw will forward to its own Feishu chat
         stderr(`[ipc-hub] ${senderSession.name} → ${to}: routed to OpenClaw /hooks/wake`);

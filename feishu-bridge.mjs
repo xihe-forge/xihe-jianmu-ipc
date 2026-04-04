@@ -14,8 +14,8 @@
  */
 
 import { Worker } from 'node:worker_threads';
-import { readFileSync, writeFileSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, writeFileSync, statSync, mkdirSync } from 'node:fs';
+import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 
@@ -96,6 +96,136 @@ async function sendFeishuStatus(appName, chatId, text) {
     req.write(body);
     req.end();
   });
+}
+
+// ---------------------------------------------------------------------------
+//  Interactive card status indicator
+// ---------------------------------------------------------------------------
+
+const PENDING_CARDS_FILE = resolve(__dirname, 'data', 'pending-cards.json');
+
+/** @type {Map<string, { cardMessageId: string, timer: NodeJS.Timeout }>} */
+const pendingCards = new Map();
+
+/** Load feishu-apps.json (needed for token retrieval in bridge) */
+let currentApps = [];
+try { currentApps = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch {}
+
+/** Token cache per app: Map<appId, { token, expiry }> */
+const bridgeTokenCache = new Map();
+
+async function getAppToken(app) {
+  const cached = bridgeTokenCache.get(app.appId);
+  if (cached && Date.now() < cached.expiry - 60000) return cached.token;
+  try {
+    const res = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: app.appId, app_secret: app.appSecret }),
+    });
+    const data = await res.json();
+    if (data.code === 0) {
+      bridgeTokenCache.set(app.appId, {
+        token: data.tenant_access_token,
+        expiry: Date.now() + (data.expire - 60) * 1000,
+      });
+      return data.tenant_access_token;
+    }
+    log(`[${app.name}] token error: ${data.msg}`);
+    return null;
+  } catch (err) {
+    log(`[${app.name}] token fetch failed: ${err.message}`);
+    return null;
+  }
+}
+
+async function sendStatusCard(appName, chatId, replyToMessageId, statusText) {
+  const app = currentApps.find(a => a.name === appName);
+  if (!app) return null;
+  const token = await getAppToken(app);
+  if (!token) return null;
+
+  const card = {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: statusText },
+      template: 'wathet',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: { tag: 'lark_md', content: '正在处理您的请求...' },
+      },
+    ],
+  };
+
+  try {
+    const body = {
+      receive_id: chatId,
+      msg_type: 'interactive',
+      content: JSON.stringify(card),
+    };
+    if (replyToMessageId) {
+      body.reply_to_message_id = replyToMessageId;
+    }
+
+    const res = await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.code === 0) {
+      return data.data?.message_id;
+    }
+    log(`[${appName}] send status card failed: ${data.msg}`);
+    return null;
+  } catch (err) {
+    log(`[${appName}] send status card error: ${err.message}`);
+    return null;
+  }
+}
+
+async function updateStatusCard(appName, cardMessageId, title, content, template) {
+  const app = currentApps.find(a => a.name === appName);
+  if (!app) return;
+  const token = await getAppToken(app);
+  if (!token) return;
+
+  const card = {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: title },
+      template: template || 'green',
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: { tag: 'lark_md', content: content },
+      },
+    ],
+  };
+
+  try {
+    await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${cardMessageId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ msg_type: 'interactive', content: JSON.stringify(card) }),
+    });
+  } catch {}
+}
+
+function savePendingCards() {
+  try {
+    const obj = {};
+    for (const [key, val] of pendingCards) {
+      obj[key] = { cardMessageId: val.cardMessageId, ts: Date.now() };
+    }
+    mkdirSync(dirname(PENDING_CARDS_FILE), { recursive: true });
+    writeFileSync(PENDING_CARDS_FILE, JSON.stringify(obj));
+  } catch (err) {
+    log(`save pending cards failed: ${err.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -190,21 +320,34 @@ async function handleWorkerMessage(msg) {
       `[${msg.appName}] -> Hub (${msg.chatType}): ${result.ok || result.accepted ? 'delivered' : 'failed'} (to=${msg.to}, online=${result.online}, buffered=${result.buffered})`,
     );
 
-    // Send instant status reply to Feishu so user knows what happened
+    // Send interactive card status indicator as reply to user's message
     if (msg.chatId) {
       if (result?.online) {
-        await sendFeishuStatus(msg.appName, msg.chatId, '⏳ 处理中...');
+        const cardMsgId = await sendStatusCard(msg.appName, msg.chatId, msg.messageId, '⏳ 处理中...');
+        if (cardMsgId) {
+          // Clear any previous pending card for this app
+          const prev = pendingCards.get(msg.appName);
+          if (prev?.timer) clearTimeout(prev.timer);
+
+          const timer = setTimeout(() => {
+            updateStatusCard(msg.appName, cardMsgId, '⏰ 处理超时', '请稍后重试或检查session状态', 'orange');
+            pendingCards.delete(msg.appName);
+            savePendingCards();
+          }, 60000);
+          pendingCards.set(msg.appName, { cardMessageId: cardMsgId, timer });
+          savePendingCards();
+        }
       } else if (result?.buffered) {
-        await sendFeishuStatus(msg.appName, msg.chatId, '💤 离线，消息已缓存');
+        await sendStatusCard(msg.appName, msg.chatId, msg.messageId, '💤 离线，消息已缓存');
       } else if (!result?.accepted) {
-        await sendFeishuStatus(msg.appName, msg.chatId, '⚠️ 发送失败');
+        await sendStatusCard(msg.appName, msg.chatId, msg.messageId, '⚠️ 发送失败');
       }
     }
   } catch (err) {
     log(`[${msg.appName}] -> Hub failed: ${err.message}`);
     // Hub unreachable — notify user
     if (msg.chatId) {
-      await sendFeishuStatus(msg.appName, msg.chatId, '⚠️ 发送失败，Hub可能不可达').catch(() => {});
+      await sendStatusCard(msg.appName, msg.chatId, msg.messageId, '⚠️ 发送失败，Hub可能不可达').catch(() => {});
     }
   }
 }
@@ -322,7 +465,9 @@ async function handleCardAction(data, appName) {
 
 function loadConfig() {
   try {
-    return JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
+    const apps = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
+    currentApps = apps; // Keep bridge's app list in sync for token retrieval
+    return apps;
   } catch (err) {
     log(`failed to load feishu-apps.json: ${err.message}`);
     return null;

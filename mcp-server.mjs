@@ -19,7 +19,7 @@ import {
   HUB_AUTOSTART_TIMEOUT,
   HUB_AUTOSTART_RETRY_INTERVAL,
 } from './lib/constants.mjs';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -611,6 +611,28 @@ function handleWsMessage(event) {
     // Send ack back to Hub so the sender knows delivery succeeded
     if (msg.id) {
       wsSend({ type: 'ack', messageId: msg.id, from: IPC_NAME });
+
+      // Update pending-cards.json so feishu-bridge can advance card to stage 2
+      try {
+        const pcPath = join(PROJECT_DIR, 'data', 'pending-cards.json');
+        if (existsSync(pcPath)) {
+          const pc = JSON.parse(readFileSync(pcPath, 'utf8'));
+          let changed = false;
+          for (const [, info] of Object.entries(pc)) {
+            // Match by messageId if available, otherwise mark any unacked card
+            if (!info.acked && (info.messageId === msg.id || !info.messageId)) {
+              info.acked = true;
+              info.ackedBy = IPC_NAME;
+              info.ackTs = Date.now();
+              changed = true;
+            }
+          }
+          if (changed) {
+            writeFileSync(pcPath, JSON.stringify(pc));
+            process.stderr.write(`[ipc] updated pending-cards.json: ACK from ${IPC_NAME} for ${msg.id}\n`);
+          }
+        }
+      } catch {}
     }
     process.stderr.write(`[ipc] pushed channel notification from ${msg.from ?? '(unknown)'}\n`);
   } else if (msg.type === 'ack') {

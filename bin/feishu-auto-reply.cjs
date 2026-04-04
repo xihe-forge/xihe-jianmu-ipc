@@ -47,24 +47,48 @@ function getFeishuToken(app) {
 }
 
 /**
+ * Build a progress card showing real delivery stages.
+ * @param {number} stage - 1=sent to Hub, 2=session received (ACK), 3=reply ready
+ * @param {string} [replyContent] - actual reply text (stage 3 only)
+ */
+function buildProgressCard(stage, replyContent) {
+  const stages = [
+    { label: '已送达 Hub', done: stage >= 1 },
+    { label: 'Session 已接收', done: stage >= 2 },
+    { label: '处理完成', done: stage >= 3 },
+  ];
+
+  const stageLines = stages.map(s => {
+    if (s.done) return `✅ ${s.label}`;
+    if (stages.indexOf(s) === stages.findIndex(x => !x.done)) return `🔄 ${s.label}...`;
+    return `⬜ ${s.label}`;
+  }).join('\n');
+
+  const elements = [
+    { tag: 'div', text: { tag: 'lark_md', content: stageLines } },
+  ];
+
+  if (replyContent) {
+    elements.push({ tag: 'hr' });
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: replyContent } });
+  }
+
+  const template = stage >= 3 ? 'green' : 'wathet';
+  const title = stage >= 3 ? '✅ 处理完成' : '⏳ 处理中...';
+
+  return {
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: title }, template },
+    elements,
+  };
+}
+
+/**
  * Update an interactive card via PATCH using https.
  */
-function updateCard(token, cardMessageId, title, content, template) {
+function updateCard(token, cardMessageId, cardObj) {
   const https = require('https');
-  const card = {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: 'plain_text', content: title },
-      template: template || 'green',
-    },
-    elements: [
-      {
-        tag: 'div',
-        text: { tag: 'lark_md', content: content },
-      },
-    ],
-  };
-  const body = JSON.stringify({ msg_type: 'interactive', content: JSON.stringify(card) });
+  const body = JSON.stringify({ msg_type: 'interactive', content: JSON.stringify(cardObj) });
 
   return new Promise((resolve) => {
     const req = https.request({
@@ -198,7 +222,7 @@ process.stdin.on('end', async () => {
         });
 
         if (token) {
-          const updated = await updateCard(token, pending.cardMessageId, '✅ 已回复', msg, 'green');
+          const updated = await updateCard(token, pending.cardMessageId, buildProgressCard(3, msg));
           if (updated) {
             // Remove from pending
             delete pendingCards[appName];

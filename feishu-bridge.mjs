@@ -104,8 +104,45 @@ async function sendFeishuStatus(appName, chatId, text) {
 
 const PENDING_CARDS_FILE = resolve(__dirname, 'data', 'pending-cards.json');
 
-/** @type {Map<string, { cardMessageId: string, timer: NodeJS.Timeout }>} */
+/** @type {Map<string, { cardMessageId: string, messageId?: string, stage: number }>} */
 const pendingCards = new Map();
+
+/**
+ * Build a progress card showing real delivery stages.
+ * @param {number} stage - 1=sent to Hub, 2=session received (ACK), 3=reply ready
+ * @param {string} [replyContent] - actual reply text (stage 3 only)
+ */
+function buildProgressCard(stage, replyContent) {
+  const stages = [
+    { label: '已送达 Hub', done: stage >= 1 },
+    { label: 'Session 已接收', done: stage >= 2 },
+    { label: '处理完成', done: stage >= 3 },
+  ];
+
+  const stageLines = stages.map(s => {
+    if (s.done) return `✅ ${s.label}`;
+    if (stages.indexOf(s) === stages.findIndex(x => !x.done)) return `🔄 ${s.label}...`;
+    return `⬜ ${s.label}`;
+  }).join('\n');
+
+  const elements = [
+    { tag: 'div', text: { tag: 'lark_md', content: stageLines } },
+  ];
+
+  if (replyContent) {
+    elements.push({ tag: 'hr' });
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: replyContent } });
+  }
+
+  const template = stage >= 3 ? 'green' : 'wathet';
+  const title = stage >= 3 ? '✅ 处理完成' : '⏳ 处理中...';
+
+  return {
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: title }, template },
+    elements,
+  };
+}
 
 /** Load feishu-apps.json (needed for token retrieval in bridge) */
 let currentApps = [];
@@ -139,25 +176,20 @@ async function getAppToken(app) {
   }
 }
 
-async function sendStatusCard(appName, chatId, replyToMessageId, statusText) {
+async function sendStatusCard(appName, chatId, replyToMessageId, statusTextOrCard) {
   const app = currentApps.find(a => a.name === appName);
   if (!app) return null;
   const token = await getAppToken(app);
   if (!token) return null;
 
-  const card = {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: 'plain_text', content: statusText },
-      template: 'wathet',
-    },
-    elements: [
-      {
-        tag: 'div',
-        text: { tag: 'lark_md', content: '正在处理您的请求...' },
-      },
-    ],
-  };
+  // Accept either a plain string (legacy) or a card object from buildProgressCard
+  const card = typeof statusTextOrCard === 'string'
+    ? {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: statusTextOrCard }, template: 'wathet' },
+        elements: [{ tag: 'div', text: { tag: 'lark_md', content: '正在处理您的请求...' } }],
+      }
+    : statusTextOrCard;
 
   try {
     const body = {
@@ -186,25 +218,20 @@ async function sendStatusCard(appName, chatId, replyToMessageId, statusText) {
   }
 }
 
-async function updateStatusCard(appName, cardMessageId, title, content, template) {
+async function updateStatusCard(appName, cardMessageId, titleOrCard, content, template) {
   const app = currentApps.find(a => a.name === appName);
   if (!app) return;
   const token = await getAppToken(app);
   if (!token) return;
 
-  const card = {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: 'plain_text', content: title },
-      template: template || 'green',
-    },
-    elements: [
-      {
-        tag: 'div',
-        text: { tag: 'lark_md', content: content },
-      },
-    ],
-  };
+  // Accept either (appName, id, cardObj) or (appName, id, title, content, template)
+  const card = typeof titleOrCard === 'object'
+    ? titleOrCard
+    : {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: titleOrCard }, template: template || 'green' },
+        elements: [{ tag: 'div', text: { tag: 'lark_md', content: content } }],
+      };
 
   try {
     await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${cardMessageId}`, {
@@ -219,7 +246,12 @@ function savePendingCards() {
   try {
     const obj = {};
     for (const [key, val] of pendingCards) {
-      obj[key] = { cardMessageId: val.cardMessageId, ts: Date.now() };
+      obj[key] = {
+        cardMessageId: val.cardMessageId,
+        messageId: val.messageId || null,
+        stage: val.stage || 1,
+        ts: Date.now(),
+      };
     }
     mkdirSync(dirname(PENDING_CARDS_FILE), { recursive: true });
     writeFileSync(PENDING_CARDS_FILE, JSON.stringify(obj));
@@ -323,18 +355,15 @@ async function handleWorkerMessage(msg) {
     // Send interactive card status indicator as reply to user's message
     if (msg.chatId) {
       if (result?.online) {
-        const cardMsgId = await sendStatusCard(msg.appName, msg.chatId, msg.messageId, '⏳ 处理中...');
+        const cardMsgId = await sendStatusCard(msg.appName, msg.chatId, msg.messageId, buildProgressCard(1));
         if (cardMsgId) {
           // Clear any previous pending card for this app
-          const prev = pendingCards.get(msg.appName);
-          if (prev?.timer) clearTimeout(prev.timer);
-
-          const timer = setTimeout(() => {
-            updateStatusCard(msg.appName, cardMsgId, '⏰ 处理超时', '请稍后重试或检查session状态', 'orange');
-            pendingCards.delete(msg.appName);
-            savePendingCards();
-          }, 60000);
-          pendingCards.set(msg.appName, { cardMessageId: cardMsgId, timer });
+          pendingCards.delete(msg.appName);
+          pendingCards.set(msg.appName, {
+            cardMessageId: cardMsgId,
+            messageId: result.id || null,
+            stage: 1,
+          });
           savePendingCards();
         }
       } else if (result?.buffered) {
@@ -458,6 +487,32 @@ async function handleCardAction(data, appName) {
     } catch {}
   }
 }
+
+// ---------------------------------------------------------------------------
+//  Poll pending-cards.json for ACK updates from mcp-server
+// ---------------------------------------------------------------------------
+
+setInterval(() => {
+  try {
+    const raw = readFileSync(PENDING_CARDS_FILE, 'utf8');
+    const pc = JSON.parse(raw);
+    let changed = false;
+    for (const [appName, info] of Object.entries(pc)) {
+      if (info.acked && !info.stage2Updated && info.cardMessageId) {
+        info.stage2Updated = true;
+        changed = true;
+        // Update the in-memory Map stage too
+        const mem = pendingCards.get(appName);
+        if (mem) mem.stage = 2;
+        updateStatusCard(appName, info.cardMessageId, buildProgressCard(2));
+        log(`[${appName}] card updated to stage 2 (session ACK received from ${info.ackedBy || 'unknown'})`);
+      }
+    }
+    if (changed) {
+      writeFileSync(PENDING_CARDS_FILE, JSON.stringify(pc));
+    }
+  } catch {}
+}, 3000);
 
 // ---------------------------------------------------------------------------
 //  Config loading + hot-reload

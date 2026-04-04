@@ -7,7 +7,6 @@
     "im:message.p2p_msg:readonly",
     "im:chat:readonly",
     "im:chat:member",
-    "im:resource",
-    "im:message.reaction:write"
+    "im:resource"
   ]
 }

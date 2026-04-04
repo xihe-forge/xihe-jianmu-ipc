@@ -67,77 +67,6 @@ function sendToHub(from, to, content) {
 }
 
 // ---------------------------------------------------------------------------
-//  Typing indicator via emoji reactions
-// ---------------------------------------------------------------------------
-
-const tokenCache = new Map(); // appName -> { token, expiry }
-const pendingReactions = new Map(); // appName -> { messageId, reactionId }
-
-async function getAppToken(app) {
-  const cached = tokenCache.get(app.name);
-  if (cached && Date.now() < cached.expiry - 60000) return cached.token;
-
-  try {
-    const res = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: app.appId, app_secret: app.appSecret }),
-    });
-    const data = await res.json();
-    if (data.code === 0) {
-      tokenCache.set(app.name, { token: data.tenant_access_token, expiry: Date.now() + (data.expire - 60) * 1000 });
-      return data.tenant_access_token;
-    }
-  } catch {}
-  return null;
-}
-
-async function addTypingReaction(appName, messageId) {
-  const apps = loadConfig();
-  if (!apps) return null;
-  const app = apps.find(a => a.name === appName);
-  if (!app) return null;
-
-  try {
-    const token = await getAppToken(app);
-    if (!token) return null;
-
-    const res = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/reactions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ reaction_type: { emoji_type: 'Typing' } }),
-    });
-    const data = await res.json();
-    if (data.code === 0) {
-      return data.data?.reaction_id || null;
-    }
-    log(`[${appName}] typing reaction failed: ${data.msg}`);
-    return null;
-  } catch (err) {
-    log(`[${appName}] typing reaction error: ${err.message}`);
-    return null;
-  }
-}
-
-async function removeTypingReaction(appName, messageId, reactionId) {
-  if (!reactionId) return;
-  const apps = loadConfig();
-  if (!apps) return;
-  const app = apps.find(a => a.name === appName);
-  if (!app) return;
-
-  try {
-    const token = await getAppToken(app);
-    if (!token) return;
-
-    await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/reactions/${reactionId}`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-  } catch {}
-}
-
-// ---------------------------------------------------------------------------
 //  Feishu status reply via Hub's /feishu-reply endpoint
 // ---------------------------------------------------------------------------
 
@@ -255,12 +184,6 @@ async function handleWorkerMessage(msg) {
     }
   }
 
-  // Add typing indicator reaction
-  let reactionId = null;
-  if (msg.messageId) {
-    reactionId = await addTypingReaction(msg.appName, msg.messageId);
-  }
-
   try {
     const result = await sendToHub(msg.from, msg.to, msg.content);
     log(
@@ -283,13 +206,6 @@ async function handleWorkerMessage(msg) {
     if (msg.chatId) {
       await sendFeishuStatus(msg.appName, msg.chatId, '⚠️ 发送失败，Hub可能不可达').catch(() => {});
     }
-  }
-
-  // Schedule typing reaction removal after 60s
-  if (reactionId && msg.messageId) {
-    setTimeout(() => {
-      removeTypingReaction(msg.appName, msg.messageId, reactionId);
-    }, 60000);
   }
 }
 

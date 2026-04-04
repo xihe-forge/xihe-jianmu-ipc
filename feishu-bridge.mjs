@@ -220,6 +220,33 @@ async function sendStatusCard(appName, chatId, replyToMessageId, statusTextOrCar
   }
 }
 
+async function pinMessage(appName, messageId) {
+  const app = currentApps.find(a => a.name === appName);
+  if (!app) return;
+  const token = await getAppToken(app);
+  if (!token) return;
+  try {
+    await fetch('https://open.feishu.cn/open-apis/im/v1/pins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ message_id: messageId }),
+    });
+  } catch {}
+}
+
+async function unpinMessage(appName, messageId) {
+  const app = currentApps.find(a => a.name === appName);
+  if (!app) return;
+  const token = await getAppToken(app);
+  if (!token) return;
+  try {
+    await fetch(`https://open.feishu.cn/open-apis/im/v1/pins/${messageId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+  } catch {}
+}
+
 async function updateStatusCard(appName, cardMessageId, titleOrCard, content, template) {
   const app = currentApps.find(a => a.name === appName);
   if (!app) return;
@@ -362,8 +389,9 @@ async function handleWorkerMessage(msg) {
 
         let pending = pendingCards.get(msg.appName);
 
-        // If all existing tasks are done, start a fresh card
+        // If all existing tasks are done, unpin old card and start fresh
         if (pending?.tasks?.every(t => t.stage >= 3)) {
+          if (pending.cardMessageId) await unpinMessage(msg.appName, pending.cardMessageId);
           pendingCards.delete(msg.appName);
           pending = null;
         }
@@ -379,6 +407,7 @@ async function handleWorkerMessage(msg) {
           const card = buildSummaryCard(tasks);
           const cardMsgId = await sendStatusCard(msg.appName, msg.chatId, msg.messageId, card);
           if (cardMsgId) {
+            await pinMessage(msg.appName, cardMsgId);
             pending = { chatId: msg.chatId, cardMessageId: cardMsgId, tasks };
             pendingCards.set(msg.appName, pending);
           }

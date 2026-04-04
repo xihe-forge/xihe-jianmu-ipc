@@ -47,39 +47,41 @@ function getFeishuToken(app) {
 }
 
 /**
- * Build a progress card showing real delivery stages.
- * @param {number} stage - 1=sent to Hub, 2=session received (ACK), 3=reply ready
- * @param {string} [replyContent] - actual reply text (stage 3 only)
+ * Build a consolidated summary card showing multiple tasks per chat.
+ * @param {Array<{ id: string, preview: string, stage: number }>} tasks
  */
-function buildProgressCard(stage, replyContent) {
-  const stages = [
-    { label: '已送达 Hub', done: stage >= 1 },
-    { label: 'Session 已接收', done: stage >= 2 },
-    { label: '处理完成', done: stage >= 3 },
-  ];
+function buildSummaryCard(tasks) {
+  const completed = tasks.filter(t => t.stage >= 3).length;
+  const total = tasks.length;
+  const allDone = completed === total;
 
-  const stageLines = stages.map(s => {
-    if (s.done) return `✅ ${s.label}`;
-    if (stages.indexOf(s) === stages.findIndex(x => !x.done)) return `🔄 ${s.label}...`;
-    return `⬜ ${s.label}`;
-  }).join('\n');
+  const stageEmoji = (stage) => {
+    if (stage >= 3) return '✅';
+    if (stage >= 2) return '🔄';
+    return '📨';
+  };
 
-  const elements = [
-    { tag: 'div', text: { tag: 'lark_md', content: stageLines } },
-  ];
+  const stageText = (stage) => {
+    if (stage >= 3) return '已完成';
+    if (stage >= 2) return '处理中';
+    return '已送达';
+  };
 
-  if (replyContent) {
-    elements.push({ tag: 'hr' });
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: replyContent } });
-  }
+  const lines = tasks.map(t =>
+    `${stageEmoji(t.stage)} "${t.preview}"  —  ${stageText(t.stage)}`
+  ).join('\n');
 
-  const template = stage >= 3 ? 'green' : 'wathet';
-  const title = stage >= 3 ? '✅ 处理完成' : '⏳ 处理中...';
+  const title = allDone
+    ? `✅ 全部完成 (${total}/${total})`
+    : `⏳ 处理中 (${completed}/${total} 已完成)`;
+  const template = allDone ? 'green' : 'wathet';
 
   return {
     config: { wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: title }, template },
-    elements,
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines } },
+    ],
   };
 }
 
@@ -190,51 +192,62 @@ process.stdin.on('end', async () => {
     try { pendingCards = JSON.parse(fs.readFileSync(PENDING_CARDS_FILE, 'utf8')); } catch {}
 
     const pending = pendingCards[appName];
-    if (pending?.cardMessageId) {
-      // Try to update the card with the reply content
-      const apps = loadFeishuApps();
-      const app = apps.find(a => a.name === appName);
-      if (app) {
-        const https = require('https');
-        // Get token via HTTPS directly
-        const token = await new Promise((resolve) => {
-          const tokenBody = JSON.stringify({ app_id: app.appId, app_secret: app.appSecret });
-          const req = https.request({
-            hostname: 'open.feishu.cn',
-            port: 443,
-            path: '/open-apis/auth/v3/tenant_access_token/internal',
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(tokenBody) },
-          }, (res) => {
-            let buf = '';
-            res.on('data', c => buf += c);
-            res.on('end', () => {
-              try {
-                const d = JSON.parse(buf);
-                resolve(d.code === 0 ? d.tenant_access_token : null);
-              } catch { resolve(null); }
-            });
-          });
-          req.on('error', () => resolve(null));
-          req.setTimeout(5000, () => { req.destroy(); resolve(null); });
-          req.write(tokenBody);
-          req.end();
-        });
+    if (pending?.cardMessageId && pending?.tasks?.length) {
+      // Find the oldest unfinished task (FIFO) and mark it complete
+      const task = pending.tasks.find(t => t.stage < 3);
+      if (task) {
+        task.stage = 3;
+        task.reply = msg.substring(0, 50) + (msg.length > 50 ? '...' : '');
 
-        if (token) {
-          const updated = await updateCard(token, pending.cardMessageId, buildProgressCard(3, msg));
-          if (updated) {
-            // Remove from pending
-            delete pendingCards[appName];
-            try { fs.writeFileSync(PENDING_CARDS_FILE, JSON.stringify(pendingCards)); } catch {}
-            process.exit(0);
+        // Try to update the card
+        const apps = loadFeishuApps();
+        const app = apps.find(a => a.name === appName);
+        if (app) {
+          const https = require('https');
+          const token = await new Promise((resolve) => {
+            const tokenBody = JSON.stringify({ app_id: app.appId, app_secret: app.appSecret });
+            const req = https.request({
+              hostname: 'open.feishu.cn',
+              port: 443,
+              path: '/open-apis/auth/v3/tenant_access_token/internal',
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(tokenBody) },
+            }, (res) => {
+              let buf = '';
+              res.on('data', c => buf += c);
+              res.on('end', () => {
+                try {
+                  const d = JSON.parse(buf);
+                  resolve(d.code === 0 ? d.tenant_access_token : null);
+                } catch { resolve(null); }
+              });
+            });
+            req.on('error', () => resolve(null));
+            req.setTimeout(5000, () => { req.destroy(); resolve(null); });
+            req.write(tokenBody);
+            req.end();
+          });
+
+          if (token) {
+            const card = buildSummaryCard(pending.tasks);
+            const updated = await updateCard(token, pending.cardMessageId, card);
+            if (updated) {
+              // Save updated tasks; only remove entry if ALL tasks are done
+              if (pending.tasks.every(t => t.stage >= 3)) {
+                delete pendingCards[appName];
+              }
+              try { fs.writeFileSync(PENDING_CARDS_FILE, JSON.stringify(pendingCards)); } catch {}
+              process.exit(0);
+            }
           }
         }
-      }
 
-      // Card update failed — fall through to regular reply
-      delete pendingCards[appName];
-      try { fs.writeFileSync(PENDING_CARDS_FILE, JSON.stringify(pendingCards)); } catch {}
+        // Card update failed — fall through to regular reply
+        if (pending.tasks.every(t => t.stage >= 3)) {
+          delete pendingCards[appName];
+        }
+        try { fs.writeFileSync(PENDING_CARDS_FILE, JSON.stringify(pendingCards)); } catch {}
+      }
     }
 
     // Fallback: send as regular message via /feishu-reply

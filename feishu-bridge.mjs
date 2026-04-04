@@ -104,43 +104,45 @@ async function sendFeishuStatus(appName, chatId, text) {
 
 const PENDING_CARDS_FILE = resolve(__dirname, 'data', 'pending-cards.json');
 
-/** @type {Map<string, { cardMessageId: string, messageId?: string, stage: number }>} */
+/** @type {Map<string, { chatId: string, cardMessageId: string, tasks: Array<{ id: string, preview: string, stage: number, hubMessageId?: string }> }>} */
 const pendingCards = new Map();
 
 /**
- * Build a progress card showing real delivery stages.
- * @param {number} stage - 1=sent to Hub, 2=session received (ACK), 3=reply ready
- * @param {string} [replyContent] - actual reply text (stage 3 only)
+ * Build a consolidated summary card showing multiple tasks per chat.
+ * @param {Array<{ id: string, preview: string, stage: number }>} tasks
  */
-function buildProgressCard(stage, replyContent) {
-  const stages = [
-    { label: '已送达 Hub', done: stage >= 1 },
-    { label: 'Session 已接收', done: stage >= 2 },
-    { label: '处理完成', done: stage >= 3 },
-  ];
+function buildSummaryCard(tasks) {
+  const completed = tasks.filter(t => t.stage >= 3).length;
+  const total = tasks.length;
+  const allDone = completed === total;
 
-  const stageLines = stages.map(s => {
-    if (s.done) return `✅ ${s.label}`;
-    if (stages.indexOf(s) === stages.findIndex(x => !x.done)) return `🔄 ${s.label}...`;
-    return `⬜ ${s.label}`;
-  }).join('\n');
+  const stageEmoji = (stage) => {
+    if (stage >= 3) return '✅';
+    if (stage >= 2) return '🔄';
+    return '📨';
+  };
 
-  const elements = [
-    { tag: 'div', text: { tag: 'lark_md', content: stageLines } },
-  ];
+  const stageText = (stage) => {
+    if (stage >= 3) return '已完成';
+    if (stage >= 2) return '处理中';
+    return '已送达';
+  };
 
-  if (replyContent) {
-    elements.push({ tag: 'hr' });
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: replyContent } });
-  }
+  const lines = tasks.map(t =>
+    `${stageEmoji(t.stage)} "${t.preview}"  —  ${stageText(t.stage)}`
+  ).join('\n');
 
-  const template = stage >= 3 ? 'green' : 'wathet';
-  const title = stage >= 3 ? '✅ 处理完成' : '⏳ 处理中...';
+  const title = allDone
+    ? `✅ 全部完成 (${total}/${total})`
+    : `⏳ 处理中 (${completed}/${total} 已完成)`;
+  const template = allDone ? 'green' : 'wathet';
 
   return {
     config: { wide_screen_mode: true },
     header: { title: { tag: 'plain_text', content: title }, template },
-    elements,
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines } },
+    ],
   };
 }
 
@@ -247,9 +249,9 @@ function savePendingCards() {
     const obj = {};
     for (const [key, val] of pendingCards) {
       obj[key] = {
+        chatId: val.chatId || null,
         cardMessageId: val.cardMessageId,
-        messageId: val.messageId || null,
-        stage: val.stage || 1,
+        tasks: val.tasks || [],
         ts: Date.now(),
       };
     }
@@ -352,20 +354,36 @@ async function handleWorkerMessage(msg) {
       `[${msg.appName}] -> Hub (${msg.chatType}): ${result.ok || result.accepted ? 'delivered' : 'failed'} (to=${msg.to}, online=${result.online}, buffered=${result.buffered})`,
     );
 
-    // Send interactive card status indicator as reply to user's message
+    // Send or update consolidated status card for this chat
     if (msg.chatId) {
       if (result?.online) {
-        const cardMsgId = await sendStatusCard(msg.appName, msg.chatId, msg.messageId, buildProgressCard(1));
-        if (cardMsgId) {
-          // Clear any previous pending card for this app
+        const preview = msg.content.substring(0, 20) + (msg.content.length > 20 ? '...' : '');
+        const taskEntry = { id: result?.id || Date.now().toString(), preview, stage: 1, hubMessageId: result?.id };
+
+        let pending = pendingCards.get(msg.appName);
+
+        // If all existing tasks are done, start a fresh card
+        if (pending?.tasks?.every(t => t.stage >= 3)) {
           pendingCards.delete(msg.appName);
-          pendingCards.set(msg.appName, {
-            cardMessageId: cardMsgId,
-            messageId: result.id || null,
-            stage: 1,
-          });
-          savePendingCards();
+          pending = null;
         }
+
+        if (pending?.cardMessageId) {
+          // Add task to existing card
+          pending.tasks.push(taskEntry);
+          const card = buildSummaryCard(pending.tasks);
+          await updateStatusCard(msg.appName, pending.cardMessageId, card);
+        } else {
+          // Create new card with one task
+          const tasks = [taskEntry];
+          const card = buildSummaryCard(tasks);
+          const cardMsgId = await sendStatusCard(msg.appName, msg.chatId, msg.messageId, card);
+          if (cardMsgId) {
+            pending = { chatId: msg.chatId, cardMessageId: cardMsgId, tasks };
+            pendingCards.set(msg.appName, pending);
+          }
+        }
+        savePendingCards();
       } else if (result?.buffered) {
         await sendStatusCard(msg.appName, msg.chatId, msg.messageId, '💤 离线，消息已缓存');
       } else if (!result?.accepted) {
@@ -495,21 +513,30 @@ async function handleCardAction(data, appName) {
 setInterval(() => {
   try {
     const raw = readFileSync(PENDING_CARDS_FILE, 'utf8');
-    const pc = JSON.parse(raw);
-    let changed = false;
-    for (const [appName, info] of Object.entries(pc)) {
-      if (info.acked && !info.stage2Updated && info.cardMessageId) {
-        info.stage2Updated = true;
-        changed = true;
-        // Update the in-memory Map stage too
-        const mem = pendingCards.get(appName);
-        if (mem) mem.stage = 2;
-        updateStatusCard(appName, info.cardMessageId, buildProgressCard(2));
-        log(`[${appName}] card updated to stage 2 (session ACK received from ${info.ackedBy || 'unknown'})`);
+    const fileData = JSON.parse(raw);
+
+    for (const [appName, pending] of pendingCards) {
+      const filePending = fileData[appName];
+      if (!filePending) continue;
+
+      let changed = false;
+      // Check each task: if any task has hubMessageId matching an acked message, advance to stage 2
+      for (const task of pending.tasks) {
+        if (task.stage < 2) {
+          // Check if this specific task was acked (by hubMessageId match or general ack)
+          const fileTask = filePending.tasks?.find(ft => ft.id === task.id);
+          if (fileTask?.stage >= 2 || filePending.acked) {
+            task.stage = 2;
+            changed = true;
+          }
+        }
       }
-    }
-    if (changed) {
-      writeFileSync(PENDING_CARDS_FILE, JSON.stringify(pc));
+
+      if (changed && pending.cardMessageId) {
+        updateStatusCard(appName, pending.cardMessageId, buildSummaryCard(pending.tasks));
+        savePendingCards();
+        log(`[${appName}] card updated — tasks advanced to stage 2 (session ACK)`);
+      }
     }
   } catch {}
 }, 3000);

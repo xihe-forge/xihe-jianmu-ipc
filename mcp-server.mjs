@@ -612,19 +612,21 @@ function handleWsMessage(event) {
     if (msg.id) {
       wsSend({ type: 'ack', messageId: msg.id, from: IPC_NAME });
 
-      // Update pending-cards.json so feishu-bridge can advance card to stage 2
+      // Update pending-cards.json so feishu-bridge can advance task to stage 2
       try {
         const pcPath = join(PROJECT_DIR, 'data', 'pending-cards.json');
         if (existsSync(pcPath)) {
           const pc = JSON.parse(readFileSync(pcPath, 'utf8'));
           let changed = false;
           for (const [, info] of Object.entries(pc)) {
-            // Match by messageId if available, otherwise mark any unacked card
-            if (!info.acked && (info.messageId === msg.id || !info.messageId)) {
-              info.acked = true;
-              info.ackedBy = IPC_NAME;
-              info.ackTs = Date.now();
-              changed = true;
+            if (!info.tasks || !Array.isArray(info.tasks)) continue;
+            for (const task of info.tasks) {
+              // Match by hubMessageId if available, otherwise advance oldest stage-1 task
+              if (task.stage < 2 && (task.hubMessageId === msg.id || task.id === msg.id || !task.hubMessageId)) {
+                task.stage = 2;
+                changed = true;
+                break; // Only advance one task per ACK
+              }
             }
           }
           if (changed) {

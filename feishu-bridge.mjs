@@ -462,11 +462,20 @@ async function handleConsoleCommand(cmd, msg) {
       const agents = getAllStatus();
       const health = getHubHealth();
       const today = new Date().toISOString().slice(0, 10);
+      // Fetch per-agent message stats from Hub
+      let agentStats = new Map();
+      try {
+        const res = await fetch(`http://${HUB_HOST}:${parseInt(HUB_PORT)}/stats?hours=24`, { signal: AbortSignal.timeout(5000) });
+        const data = await res.json();
+        if (data.agents) {
+          for (const a of data.agents) agentStats.set(a.name, a.count);
+        }
+      } catch {}
       const reportData = {
         date: today,
         agents: agents.map(a => ({
           name: a.name,
-          messagesHandled: 0, // TODO: per-agent message count from Hub
+          messagesHandled: agentStats.get(a.name) || 0,
           status: a.online ? 'online' : 'offline',
         })),
         totalMessages: health?.messageCount || 0,
@@ -570,14 +579,18 @@ async function handleCardAction(data, appName) {
   // Check for console card actions (refresh, approve, reject)
   const actionValue = action?.value || {};
   if (actionValue.action === 'refresh_status') {
-    // Find chatId for this app and send updated status card
-    const notifyApp = currentApps.find(a => a.name === appName);
-    if (notifyApp?.chatId) {
-      const agents = getAllStatus();
-      const health = getHubHealth();
-      const card = buildStatusCard(agents, health);
-      // We don't have the original card messageId here easily, so send a new card
-      await sendStatusCard(appName, notifyApp.chatId, null, card);
+    const agents = getAllStatus();
+    const health = getHubHealth();
+    const card = buildStatusCard(agents, health);
+    // Update the existing card in-place if we have the message_id
+    const cardMsgId = data?.open_message_id || action?.open_message_id;
+    if (cardMsgId) {
+      await updateStatusCard(appName, cardMsgId, card);
+    } else {
+      const notifyApp = currentApps.find(a => a.name === appName);
+      if (notifyApp?.chatId) {
+        await sendStatusCard(appName, notifyApp.chatId, null, card);
+      }
     }
     return;
   }

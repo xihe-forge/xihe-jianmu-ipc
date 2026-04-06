@@ -59,7 +59,7 @@ import {
   IDLE_SHUTDOWN_DELAY,
 } from './lib/constants.mjs';
 import { createMessage, createSystemEvent, validateMessage } from './lib/protocol.mjs';
-import { saveMessage, getMessages, getMessageCount, cleanup, close } from './lib/db.mjs';
+import { saveMessage, getMessages, getMessageCount, getMessageCountByAgent, cleanup, close } from './lib/db.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
@@ -400,6 +400,12 @@ const httpServer = http.createServer((req, res) => {
     const messages = getMessages({ from, to, peer, limit });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(messages));
+  } else if (req.method === 'GET' && req.url?.startsWith('/stats')) {
+    const url = new URL(req.url, 'http://localhost');
+    const hours = parseInt(url.searchParams.get('hours') || '24', 10);
+    const stats = getMessageCountByAgent(hours * 60 * 60 * 1000);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ period_hours: hours, agents: stats }));
   } else if (req.method === 'GET' && (req.url === '/' || req.url === '/dashboard' || req.url?.startsWith('/dashboard/'))) {
     // Serve dashboard static files
     const dashboardDir = resolve(__hubDir, 'dashboard');

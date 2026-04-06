@@ -11,6 +11,9 @@ lib/constants.mjs    — 端口、超时常量
 lib/protocol.mjs     — 消息格式、校验
 lib/db.mjs           — SQLite消息持久化（better-sqlite3）
 lib/feishu-worker-thread.mjs — 飞书WSClient worker_thread（每app独立线程，避免Lark SDK全局状态冲突）
+lib/command-parser.mjs — 飞书命令解析器（7种指令：状态/帮助/派发/广播/重启/历史/日报）
+lib/agent-status.mjs — Agent在线状态追踪（15秒轮询Hub，上下线变更通知）
+lib/console-cards.mjs — 飞书控制台卡片模板（7种：状态看板/帮助/派发/广播/审批/日报/错误）
 bin/jianmu.mjs       — CLI (jianmu hub / jianmu status)
 bin/install.ps1      — PowerShell alias安装
 bin/patch-channels.mjs — Claude Code Channel弹窗补丁
@@ -39,9 +42,22 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `GET /sessions` — 仅session列表
 - `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
 
-## 飞书交互卡片
+## 飞书AI控制台
 
-P2P对话中发送 `新增机器人` 或 `/add-bot` 触发交互表单卡片，填写 App ID / App Secret / Session名称 后提交，bridge自动写入 feishu-apps.json 并热重载启动 Worker。
+P2P对话中支持以下命令（bridge拦截处理，不转发Hub）：
+
+| 命令 | 说明 |
+|------|------|
+| `状态` / `status` | 查看所有Agent在线状态（卡片） |
+| `帮助` / `help` | 显示命令列表 |
+| `让{agent}去{task}` | 派发任务给指定Agent |
+| `广播:{content}` | 向所有在线Agent广播 |
+| `重启 {target}` | 重启bridge/worker |
+| `消息记录` / `history` | 查看最近消息 |
+| `日报` / `report` | 生成工作报告 |
+| `新增机器人` / `/add-bot` | 交互表单添加新飞书应用 |
+
+Agent上下线自动推送飞书通知。状态卡片支持刷新按钮。审批卡片支持确认/拒绝按钮。
 
 ## 环境变量
 

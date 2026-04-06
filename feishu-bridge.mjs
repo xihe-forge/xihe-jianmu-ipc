@@ -18,6 +18,9 @@ import { readFileSync, writeFileSync, statSync, mkdirSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
+import { parseCommand } from './lib/command-parser.mjs';
+import { startTracking, getAllStatus, getHubHealth, markActivity, onStatusChange } from './lib/agent-status.mjs';
+import { buildStatusCard, buildHelpCard, buildDispatchCard, buildBroadcastCard, buildApprovalCard, buildReportCard, buildErrorCard } from './lib/console-cards.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HUB_HOST = process.env.IPC_HUB_HOST || '127.0.0.1';
@@ -359,6 +362,126 @@ async function stopWorker(appName) {
   workers.delete(appName);
 }
 
+async function handleConsoleCommand(cmd, msg) {
+  const { appName, chatId, messageId } = msg;
+  log(`[${appName}] console command: ${cmd.type}`);
+
+  switch (cmd.type) {
+    case 'status': {
+      const agents = getAllStatus();
+      const health = getHubHealth();
+      const card = buildStatusCard(agents, health);
+      await sendStatusCard(appName, chatId, messageId, card);
+      break;
+    }
+
+    case 'help': {
+      const card = buildHelpCard();
+      await sendStatusCard(appName, chatId, messageId, card);
+      break;
+    }
+
+    case 'dispatch': {
+      try {
+        const result = await sendToHub(`feishu:${appName}`, cmd.target, cmd.content);
+        markActivity(cmd.target);
+        const sent = !!(result?.online);
+        const card = buildDispatchCard(cmd.target, cmd.content, result?.id, sent);
+        await sendStatusCard(appName, chatId, messageId, card);
+      } catch (err) {
+        log(`[${appName}] dispatch failed: ${err.message}`);
+        const card = buildErrorCard('派发失败', `无法将任务发送给 ${cmd.target}: ${err.message}`);
+        await sendStatusCard(appName, chatId, messageId, card);
+      }
+      break;
+    }
+
+    case 'broadcast': {
+      const agents = getAllStatus();
+      const onlineAgents = agents.filter(a => a.online);
+      let sentCount = 0;
+      for (const agent of onlineAgents) {
+        try {
+          await sendToHub(`feishu:${appName}`, agent.name, cmd.content);
+          markActivity(agent.name);
+          sentCount++;
+        } catch {}
+      }
+      const card = buildBroadcastCard(cmd.content, sentCount, agents.length);
+      await sendStatusCard(appName, chatId, messageId, card);
+      break;
+    }
+
+    case 'restart': {
+      // For now, only support restarting feishu workers
+      const target = cmd.target;
+      if (target === 'bridge') {
+        await sendFeishuStatus(appName, chatId, '🔄 Bridge正在重启...');
+        setTimeout(() => process.exit(0), 1000); // run-forever.sh restarts
+      } else if (target === 'hub') {
+        await sendFeishuStatus(appName, chatId, '⚠️ Hub重启需要手动操作');
+      } else if (workers.has(target)) {
+        await stopWorker(target);
+        const app = currentApps.find(a => a.name === target);
+        if (app) {
+          suppressRestart.delete(target);
+          startWorker(app);
+          await sendFeishuStatus(appName, chatId, `🔄 ${target} Worker已重启`);
+        }
+      } else {
+        await sendFeishuStatus(appName, chatId, `❓ 未知目标: ${target}`);
+      }
+      break;
+    }
+
+    case 'history': {
+      try {
+        const params = new URLSearchParams();
+        if (cmd.peer) params.set('peer', cmd.peer);
+        params.set('limit', String(cmd.limit || 10));
+        const url = `http://${HUB_HOST}:${parseInt(HUB_PORT)}/messages?${params}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        const messages = await res.json();
+        if (Array.isArray(messages) && messages.length > 0) {
+          const lines = messages.slice(0, 15).map(m => {
+            const preview = (m.content || '').substring(0, 30);
+            const time = new Date(m.ts || m.timestamp).toLocaleTimeString('zh-CN');
+            return `${time} **${m.from}** → ${m.to}: ${preview}`;
+          }).join('\n');
+          await sendFeishuStatus(appName, chatId, `📜 最近消息:\n${lines}`);
+        } else {
+          await sendFeishuStatus(appName, chatId, '📜 暂无消息记录');
+        }
+      } catch (err) {
+        await sendFeishuStatus(appName, chatId, `❌ 查询失败: ${err.message}`);
+      }
+      break;
+    }
+
+    case 'report': {
+      const agents = getAllStatus();
+      const health = getHubHealth();
+      const today = new Date().toISOString().slice(0, 10);
+      const reportData = {
+        date: today,
+        agents: agents.map(a => ({
+          name: a.name,
+          messagesHandled: 0, // TODO: per-agent message count from Hub
+          status: a.online ? 'online' : 'offline',
+        })),
+        totalMessages: health?.messageCount || 0,
+        hubUptime: health?.uptime || 0,
+      };
+      const card = buildReportCard(reportData);
+      await sendStatusCard(appName, chatId, messageId, card);
+      break;
+    }
+
+    default:
+      log(`[${appName}] unhandled command type: ${cmd.type}`);
+  }
+}
+
 async function handleWorkerMessage(msg) {
   // Persist chat_id to feishu-apps.json so Hub can use it for replies
   if (msg.chatId && msg.chatType === 'p2p') {
@@ -372,6 +495,15 @@ async function handleWorkerMessage(msg) {
       }
     } catch (err) {
       log(`[${msg.appName}] failed to persist chat_id: ${err.message}`);
+    }
+  }
+
+  // ── Console command interception (p2p only) ────────────────────────────
+  if (msg.chatType === 'p2p') {
+    const cmd = parseCommand(msg.content);
+    if (cmd) {
+      await handleConsoleCommand(cmd, msg);
+      return; // Don't forward commands to Hub
     }
   }
 
@@ -434,6 +566,42 @@ async function handleWorkerMessage(msg) {
 
 async function handleCardAction(data, appName) {
   const action = data?.action || data;
+
+  // Check for console card actions (refresh, approve, reject)
+  const actionValue = action?.value || {};
+  if (actionValue.action === 'refresh_status') {
+    // Find chatId for this app and send updated status card
+    const notifyApp = currentApps.find(a => a.name === appName);
+    if (notifyApp?.chatId) {
+      const agents = getAllStatus();
+      const health = getHubHealth();
+      const card = buildStatusCard(agents, health);
+      // We don't have the original card messageId here easily, so send a new card
+      await sendStatusCard(appName, notifyApp.chatId, null, card);
+    }
+    return;
+  }
+
+  if (actionValue.action === 'approve' || actionValue.action === 'reject') {
+    const approved = actionValue.action === 'approve';
+    const approvalId = actionValue.id;
+    log(`[${appName}] approval ${approvalId}: ${approved ? 'approved' : 'rejected'}`);
+    // Send approval result back via Hub
+    try {
+      await sendToHub(`feishu:${appName}`, approvalId, JSON.stringify({
+        type: 'approval_response',
+        approved,
+        approvalId,
+      }));
+    } catch {}
+    // Notify user
+    const notifyApp = currentApps.find(a => a.name === appName);
+    if (notifyApp?.chatId) {
+      await sendFeishuStatus(appName, notifyApp.chatId, approved ? '✅ 已确认' : '❌ 已拒绝');
+    }
+    return;
+  }
+
   const formData = action?.form_value || action?.value || {};
 
   const appId = (formData.app_id || '').trim();
@@ -663,6 +831,19 @@ log(
 );
 applyConfig(initialApps);
 
+// Start agent status tracking
+startTracking();
+
+// Notify on Feishu when agents go online/offline
+onStatusChange(async ({ name, online }) => {
+  // Find the first send-enabled app to use for notifications (or any app with chatId)
+  const notifyApp = currentApps.find(a => a.chatId);
+  if (!notifyApp) return;
+  const emoji = online ? '🟢' : '🔴';
+  const text = `${emoji} ${name} ${online ? '已上线' : '已离线'}`;
+  await sendFeishuStatus(notifyApp.name, notifyApp.chatId, text);
+});
+
 // Poll config for hot-reload (WSL2 inotify doesn't work for NTFS)
 let lastConfigMtime = 0;
 try { lastConfigMtime = statSync(CONFIG_PATH).mtimeMs; } catch {}
@@ -682,7 +863,7 @@ log('polling feishu-apps.json for changes (5s interval)');
 //  Poll source files for changes — exit to trigger auto-restart via run-forever.sh
 //  (WSL2 inotify doesn't work for NTFS)
 // ---------------------------------------------------------------------------
-const sourceWatchFiles = ['feishu-bridge.mjs', 'lib/feishu-worker-thread.mjs'];
+const sourceWatchFiles = ['feishu-bridge.mjs', 'lib/feishu-worker-thread.mjs', 'lib/command-parser.mjs', 'lib/agent-status.mjs', 'lib/console-cards.mjs'];
 const fileMtimes = new Map();
 for (const f of sourceWatchFiles) {
   try { fileMtimes.set(f, statSync(resolve(__dirname, f)).mtimeMs); } catch {}

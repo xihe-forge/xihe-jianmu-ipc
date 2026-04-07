@@ -33,6 +33,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_whoami()` — 当前session身份
 - `ipc_subscribe(topic, action)` — 订阅/退订topic
 - `ipc_spawn(name, task, interactive?, model?)` — 启动新session
+- `ipc_rename(name)` — 重命名当前session
 
 ## HTTP API
 
@@ -41,6 +42,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `GET /health` — Hub状态 + session列表 + messageCount
 - `GET /sessions` — 仅session列表
 - `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
+- `GET /stats?hours=N` — per-agent消息统计（默认24小时）
 
 ## 飞书AI控制台
 
@@ -81,4 +83,4 @@ Agent上下线自动推送飞书通知。状态卡片支持刷新按钮。审批
 - 提交不加AI署名
 - 推送到 xihe-forge org
 - 纯JS (.mjs)，不用TypeScript
-- 依赖: `ws` + `@modelcontextprotocol/sdk` + `better-sqlite3`
+- 依赖: `ws` + `@modelcontextprotocol/sdk` + `better-sqlite3` + `@larksuiteoapi/node-sdk`

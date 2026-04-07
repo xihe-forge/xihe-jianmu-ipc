@@ -46,7 +46,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 
 ## 飞书AI控制台
 
-P2P对话中支持以下命令（bridge拦截处理，不转发Hub）：
+P2P对话及群聊@机器人时支持以下命令（bridge拦截处理，不转发Hub）：
 
 | 命令 | 说明 |
 |------|------|

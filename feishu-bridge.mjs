@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { parseCommand } from './lib/command-parser.mjs';
 import { startTracking, getAllStatus, getHubHealth, markActivity, onStatusChange } from './lib/agent-status.mjs';
-import { buildStatusCard, buildHelpCard, buildDispatchCard, buildBroadcastCard, buildApprovalCard, buildReportCard, buildErrorCard } from './lib/console-cards.mjs';
+import { buildStatusCard, buildHelpCard, buildDispatchCard, buildBroadcastCard, buildApprovalCard, buildReportCard, buildHistoryCard, buildErrorCard } from './lib/console-cards.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HUB_HOST = process.env.IPC_HUB_HOST || '127.0.0.1';
@@ -362,6 +362,30 @@ async function stopWorker(appName) {
   workers.delete(appName);
 }
 
+async function generateReportData() {
+  const agents = getAllStatus();
+  const health = getHubHealth();
+  const today = new Date().toISOString().slice(0, 10);
+  let agentStats = new Map();
+  try {
+    const res = await fetch(`http://${HUB_HOST}:${parseInt(HUB_PORT)}/stats?hours=24`, { signal: AbortSignal.timeout(5000) });
+    const data = await res.json();
+    if (data.agents) {
+      for (const a of data.agents) agentStats.set(a.name, a.count);
+    }
+  } catch {}
+  return {
+    date: today,
+    agents: agents.map(a => ({
+      name: a.name,
+      messagesHandled: agentStats.get(a.name) || 0,
+      status: a.online ? 'online' : 'offline',
+    })),
+    totalMessages: health?.messageCount || 0,
+    hubUptime: health?.uptime || 0,
+  };
+}
+
 async function handleConsoleCommand(cmd, msg) {
   const { appName, chatId, messageId } = msg;
   log(`[${appName}] console command: ${cmd.type}`);
@@ -442,45 +466,18 @@ async function handleConsoleCommand(cmd, msg) {
         const url = `http://${HUB_HOST}:${parseInt(HUB_PORT)}/messages?${params}`;
         const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
         const messages = await res.json();
-        if (Array.isArray(messages) && messages.length > 0) {
-          const lines = messages.slice(0, 15).map(m => {
-            const preview = (m.content || '').substring(0, 30);
-            const time = new Date(m.ts || m.timestamp).toLocaleTimeString('zh-CN');
-            return `${time} **${m.from}** → ${m.to}: ${preview}`;
-          }).join('\n');
-          await sendFeishuStatus(appName, chatId, `📜 最近消息:\n${lines}`);
-        } else {
-          await sendFeishuStatus(appName, chatId, '📜 暂无消息记录');
-        }
+        const list = Array.isArray(messages) ? messages.slice(0, 15) : [];
+        const card = buildHistoryCard(list, { peer: cmd.peer, total: list.length });
+        await sendStatusCard(appName, chatId, messageId, card);
       } catch (err) {
-        await sendFeishuStatus(appName, chatId, `❌ 查询失败: ${err.message}`);
+        const card = buildErrorCard('查询失败', `无法获取消息记录: ${err.message}`);
+        await sendStatusCard(appName, chatId, messageId, card);
       }
       break;
     }
 
     case 'report': {
-      const agents = getAllStatus();
-      const health = getHubHealth();
-      const today = new Date().toISOString().slice(0, 10);
-      // Fetch per-agent message stats from Hub
-      let agentStats = new Map();
-      try {
-        const res = await fetch(`http://${HUB_HOST}:${parseInt(HUB_PORT)}/stats?hours=24`, { signal: AbortSignal.timeout(5000) });
-        const data = await res.json();
-        if (data.agents) {
-          for (const a of data.agents) agentStats.set(a.name, a.count);
-        }
-      } catch {}
-      const reportData = {
-        date: today,
-        agents: agents.map(a => ({
-          name: a.name,
-          messagesHandled: agentStats.get(a.name) || 0,
-          status: a.online ? 'online' : 'offline',
-        })),
-        totalMessages: health?.messageCount || 0,
-        hubUptime: health?.uptime || 0,
-      };
+      const reportData = await generateReportData();
       const card = buildReportCard(reportData);
       await sendStatusCard(appName, chatId, messageId, card);
       break;
@@ -507,8 +504,8 @@ async function handleWorkerMessage(msg) {
     }
   }
 
-  // ── Console command interception (p2p only) ────────────────────────────
-  if (msg.chatType === 'p2p') {
+  // ── Console command interception (p2p + group @bot) ──────────────────
+  if (msg.chatType === 'p2p' || msg.chatType === 'group') {
     const cmd = parseCommand(msg.content);
     if (cmd) {
       await handleConsoleCommand(cmd, msg);
@@ -856,6 +853,55 @@ onStatusChange(async ({ name, online }) => {
   const text = `${emoji} ${name} ${online ? '已上线' : '已离线'}`;
   await sendFeishuStatus(notifyApp.name, notifyApp.chatId, text);
 });
+
+// ---------------------------------------------------------------------------
+//  Daily report cron
+// ---------------------------------------------------------------------------
+
+const IPC_REPORT_HOUR = parseInt(process.env.IPC_REPORT_HOUR || '9', 10);
+
+function msUntilNextReportTime() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(IPC_REPORT_HOUR, 0, 0, 0);
+  if (next <= now) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next.getTime() - now.getTime();
+}
+
+function scheduleDailyReport() {
+  const delay = msUntilNextReportTime();
+  const nextTime = new Date(Date.now() + delay).toISOString();
+  log(`[cron] 日报定时推送已设置，下次推送: ${nextTime}`);
+  setTimeout(async () => {
+    const appsWithChat = currentApps.filter(a => a.chatId);
+    if (appsWithChat.length === 0) {
+      log('[cron] 日报定时推送: 没有配置chatId的应用，跳过');
+    } else {
+      let reportData;
+      try {
+        reportData = await generateReportData();
+      } catch (err) {
+        log(`[cron] 日报生成失败: ${err.message}`);
+        scheduleDailyReport();
+        return;
+      }
+      for (const app of appsWithChat) {
+        try {
+          const card = buildReportCard(reportData);
+          await sendStatusCard(app.name, app.chatId, null, card);
+          log(`[cron] 日报定时推送 -> ${app.name}`);
+        } catch (err) {
+          log(`[cron] 日报推送失败 [${app.name}]: ${err.message}`);
+        }
+      }
+    }
+    scheduleDailyReport();
+  }, delay);
+}
+
+scheduleDailyReport();
 
 // Poll config for hot-reload (WSL2 inotify doesn't work for NTFS)
 let lastConfigMtime = 0;

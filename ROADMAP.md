@@ -49,20 +49,17 @@
 - [x] 任务状态跟踪 (pending → running → done/failed)
 - [x] Dashboard解析和展示任务链
 
-## Phase 10: Agent状态广播
+## 探索方向（不改Hub）
 
-- [ ] Agent定期广播状态到群: 忙碌/空闲/错误
-- [ ] Dashboard实时显示每个agent当前任务
-- [ ] 任务分配时自动选空闲agent
+原Phase 10/11的调度和知识共享需求，**不在Hub里加逻辑**。Hub保持轻量纯路由定位。如需实现，做独立agent通过IPC通信实现：
 
-## Phase 11: 团队知识共享
+- **调度agent**: 订阅各agent状态广播，自主决策任务分配，通过 `ipc_send` 下发指令
+- **知识agent**: 监听群消息，索引问题和方案，响应查询请求，避免重复踩坑
 
-- [ ] Agent发现的问题/方案通过群消息共享
-- [ ] 知识索引和搜索
-- [ ] 避免重复踩坑
+Hub只负责消息路由，业务逻辑在agent侧。
 
 ## 其他待办
 
 - [ ] npm发布0.2.0 (同步所有新功能)
-- [ ] README/CHANGELOG更新
+- [ ] 依赖漏洞修复 (npm audit fix)
 - [ ] Dashboard深化: 实时消息流、告警、日志查看器

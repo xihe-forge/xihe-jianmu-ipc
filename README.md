@@ -6,9 +6,9 @@
 > - **jianmu（建木）** — 隐喻。建木是上古神话中天地之间的通天神树，诸神借之往来天地、沟通上下。多个 AI 会话之间的通信如建木般无声连通 / Metaphor. Jiànmù is the mythical World Tree bridging heaven and earth in ancient Chinese mythology — gods traveled between realms through it in silence. IPC messages flow between AI sessions like spirits through the World Tree
 > - **ipc** — 功能。进程间实时通信 / Function. Real-time inter-process communication
 
-多 AI 会话实时通信中枢——WebSocket 消息路由 + MCP 集成 + Channel 推送唤醒。
+多 AI 会话实时通信中枢——WebSocket 消息路由 + MCP 集成 + Channel 推送唤醒 + 飞书 AI 控制台 + SQLite 持久化 + 结构化任务协议。
 
-Real-time communication hub for AI coding sessions — WebSocket message routing + MCP integration + Channel push notifications.
+Real-time communication hub for AI coding sessions — WebSocket message routing + MCP integration + Channel push notifications + Feishu AI console + SQLite persistence + structured task protocol.
 
 为需要多个 AI agent 协作而非各自为战的开发者而建。
 
@@ -39,73 +39,66 @@ The standard path for multi-agent coordination — routing messages through the 
 
 ---
 
-### 飞书集成 / Feishu Integration
-
-飞书接收由独立的 feishu-bridge 进程处理（不在 Hub 内），避免 Lark SDK WSClient 全局状态冲突。bridge 读取 feishu-apps.json，通过 WSClient 接收消息后 HTTP POST /send 转发给 Hub（0 LLM tokens）。Hub 仅负责飞书发送（Bot API）。
-
-Feishu receiving runs as a standalone feishu-bridge process (not inside Hub), avoiding Lark SDK WSClient global state conflicts. The bridge reads feishu-apps.json, receives messages via WSClient, and forwards them to Hub via HTTP POST /send (0 LLM tokens). Hub only handles Feishu sending (Bot API).
-
-- 接收：feishu-bridge 独立进程，WSClient 长连接，无需公网 IP / Receive: standalone feishu-bridge process, WSClient, no public IP needed
-- 发送：Hub 通过 Bot API 直推或 POST /feishu-reply / Send: Hub via Bot API or POST /feishu-reply
-- 回复/引用：bridge 自动获取 parent_id 原文 / Reply/quote: bridge fetches parent_id content
-- 内置 ping：飞书发 "ping" 给机器人，直接回复 "pong"，不经过 Hub/LLM / Built-in ping: send "ping" to bot, gets "pong" without Hub/LLM
-- 自动回复：Claude Code Stop hook 捕获响应自动发回飞书 / Auto-reply: Stop hook captures response
-- 多应用：feishu-apps.json 配置任意数量飞书机器人 / Multi-app: any number of bots
-
----
-
 ## 架构 / Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Hub (hub.mjs)                        │
-│           WebSocket server + HTTP API on :3179              │
-│  - Session registry (name → ws connection)                  │
-│  - Offline inbox with TTL-based cleanup                     │
-│  - Topic pub/sub fanout                                     │
-│  - Heartbeat / auto-reconnect                               │
-└──────────┬───────────────────────┬──────────────────────────┘
-           │ ws://localhost:3179   │ http://localhost:3179
-           │                       │
- ┌─────────▼──────────┐  ┌────────▼────────────────────────┐
- │  MCP Server        │  │  HTTP API                       │
- │  (mcp-server.mjs)  │  │  POST /send  (online/buffered)  │
- │                    │  │  GET  /health                   │
- │  Claude Code &     │  │  GET  /sessions                 │
- │  OpenClaw load     │  │                                 │
- │  via stdio MCP     │  │  Any HTTP client: Codex,        │
- │  protocol          │  │  curl, scripts, CI pipelines    │
- └─────────┬──────────┘  └─────────────────────────────────┘
-           │
- ┌─────────▼──────────────────────────────────────────────┐
- │  Channel (claude/channel capability)                    │
- │  Push incoming messages to Claude Code as              │
- │  <channel> notifications — wakes idle sessions         │
- └────────────────────────────────────────────────────────┘
-           │
- ┌─────────▼──────────────────────────────────────────────┐
- │  OpenClaw Adapter                                       │
- │  Outbound: Hub calls /hooks/wake on the Gateway         │
- │  when a message targets an openclaw-* session           │
- │  (ALWAYS via HTTP, even if WS is connected)             │
- │  Inbound:  OpenClaw loads mcp-server.mjs via            │
- │  openclaw.json — ipc_send reaches any connected tool    │
- └────────────────────────────────────────────────────────┘
-           │
- ┌─────────▼──────────────────────────────────────────────┐
- │  Feishu Sending (Hub 内 / inside Hub)                   │
- │  Outbound: Hub sends messages via Feishu Bot API       │
- │  Endpoint: POST /feishu-reply                          │
- └────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        Hub (hub.mjs)                             │
+│            WebSocket server + HTTP API on :3179                  │
+│  - Session registry (name → ws connection)                       │
+│  - Offline inbox with TTL-based cleanup                          │
+│  - Topic pub/sub fanout                                          │
+│  - Heartbeat / auto-reconnect                                    │
+│  - Per-session token authentication                              │
+│  - Structured task protocol (create/update/track)                │
+└──────┬──────────────────┬──────────────────┬─────────────────────┘
+       │ ws://:3179       │ http://:3179     │
+       │                  │                  │
+┌──────▼───────┐  ┌───────▼──────────┐  ┌───▼──────────────────┐
+│  MCP Server  │  │  HTTP API        │  │  Dashboard           │
+│  (mcp-       │  │  /send /health   │  │  GET /dashboard/*    │
+│  server.mjs) │  │  /sessions       │  │  实时监控面板         │
+│              │  │  /messages       │  │  Real-time monitor   │
+│  Claude Code │  │  /stats /task    │  └──────────────────────┘
+│  & OpenClaw  │  │  /tasks          │
+│  via stdio   │  │                  │
+└──────┬───────┘  └──────────────────┘
+       │
+┌──────▼──────────────────────────────────────────────────────┐
+│  Channel (claude/channel capability)                         │
+│  Push incoming messages to Claude Code as <channel>          │
+│  notifications — wakes idle sessions                         │
+└─────────────────────────────────────────────────────────────┘
+       │
+┌──────▼──────────────────────────────────────────────────────┐
+│  SQLite Persistence (lib/db.mjs)                             │
+│  WAL mode · 7-day TTL · message history · task tracking      │
+│  GET /messages · GET /stats · GET /tasks                     │
+└─────────────────────────────────────────────────────────────┘
+       │
+┌──────▼──────────────────────────────────────────────────────┐
+│  OpenClaw Adapter                                            │
+│  Outbound: Hub calls /hooks/wake on the Gateway              │
+│  when a message targets an openclaw-* session                │
+│  (ALWAYS via HTTP, even if WS is connected)                  │
+│  Inbound:  OpenClaw loads mcp-server.mjs via                 │
+│  openclaw.json — ipc_send reaches any connected tool         │
+└─────────────────────────────────────────────────────────────┘
+       │
+┌──────▼──────────────────────────────────────────────────────┐
+│  Feishu Sending (Hub 内 / inside Hub)                        │
+│  Outbound: Hub sends messages via Feishu Bot API             │
+│  Endpoint: POST /feishu-reply                                │
+└─────────────────────────────────────────────────────────────┘
 
- ┌────────────────────────────────────────────────────────┐
- │  feishu-bridge (独立进程 / standalone process)          │
- │  Reads feishu-apps.json, connects via Lark SDK         │
- │  WSClient — no public IP needed                        │
- │  Forwards messages to Hub via HTTP POST /send          │
- │  Built-in ping: "ping" → "pong" (0 LLM tokens)        │
- │  Supports reply/quote (fetches parent_id content)      │
- └────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  feishu-bridge (独立进程 / standalone process)               │
+│  Reads feishu-apps.json, connects via Lark SDK WSClient     │
+│  — no public IP needed                                       │
+│  Forwards messages to Hub via HTTP POST /send                │
+│  AI控制台: 8种命令 · Agent状态追踪 · 卡片交互 · 日报推送    │
+│  AI Console: 8 commands · agent tracking · cards · reports   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -342,100 +335,255 @@ ipc_spawn(name="ui-dev", task="Build the dashboard component", interactive=true)
 生成的 session 会自动获知自己的 IPC 名称，并被指示在完成后向生成方 session 汇报。
 Spawned sessions automatically know their IPC name and are instructed to report back to the spawning session when done.
 
----
+### `ipc_rename`
 
-## 环境变量 / Environment Variables
+重命名当前 session。
+Rename the current session.
 
-| Variable | Default | Description |
-|---|---|---|
-| `IPC_NAME` | `session-<pid>` | Session display name (set this explicitly) |
-| `IPC_PORT` | `3179` | Hub WebSocket + HTTP port |
-| `IPC_HUB_HOST` | auto-detect | Hub host; auto-detects WSL2 Windows host from `/etc/resolv.conf` |
-| `IPC_HUB_AUTOSTART` | `true` | Auto-start hub if not running when MCP server connects |
-| `IPC_AUTH_TOKEN` | (empty) | Shared secret. If set, all connections must provide this token. |
-| `IPC_CHANNEL_URL` | — | HTTP endpoint for the Channel Server to POST incoming messages to |
-| `OPENCLAW_URL` | `http://127.0.0.1:18789` | OpenClaw Gateway base URL. Hub uses this to call `POST /hooks/wake` for real-time message delivery to OpenClaw's main session. |
-| `OPENCLAW_TOKEN` | — | Bearer auth token for the OpenClaw Gateway. Sent as `Authorization: Bearer <token>` in `/hooks/wake` requests. |
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | New session name |
+
+```
+ipc_rename(name="code-reviewer")
+```
+
+### `ipc_task`
+
+结构化任务管理——创建、更新、查询任务。
+Structured task management — create, update, and list tasks.
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `action` | string | yes | `"create"`, `"update"`, or `"list"` |
+| `to` | string | create | Target agent for the task |
+| `title` | string | create | Task title |
+| `description` | string | no | Task description |
+| `priority` | string | no | `"low"`, `"normal"`, `"high"`, `"urgent"` |
+| `deadline` | string | no | ISO 8601 deadline |
+| `taskId` | string | update | Task ID to update |
+| `status` | string | update | `"pending"`, `"started"`, `"completed"`, `"failed"`, `"cancelled"` |
+
+```
+ipc_task(action="create", to="worker", title="Fix login bug", priority=4)
+ipc_task(action="update", taskId="task-abc123", status="completed")
+ipc_task(action="list")
+```
 
 ---
 
 ## HTTP API
 
-Hub 在与 WebSocket 相同的端口上暴露了一套极简 HTTP API，任意工具——Codex、Shell 脚本、CI 流水线——都可以在无 WebSocket 连接的情况下发送消息。
+Hub 在与 WebSocket 相同的端口上暴露 HTTP API，任意工具——Codex、Shell 脚本、CI 流水线——都可以在无 WebSocket 连接的情况下使用。
 
-The hub exposes a minimal HTTP API on the same port as WebSocket. This lets any tool — Codex, shell scripts, CI pipelines — send messages without a WebSocket connection.
+The hub exposes an HTTP API on the same port as WebSocket. Any tool — Codex, shell scripts, CI pipelines — can use it without a WebSocket connection.
 
-### `POST /send`
+### 消息 / Messages
+
+#### `POST /send`
 
 从任意 HTTP 客户端发送消息。
 Send a message from any HTTP client.
 
-**Request body:**
-
 ```json
-{
-  "from": "codex-agent",
-  "to": "main",
-  "content": "PR review complete — 3 issues found",
-  "topic": "reviews"
-}
-```
+// Request
+{ "from": "codex-agent", "to": "main", "content": "PR review complete", "topic": "reviews" }
 
-**Response (recipient online):**
-
-```json
+// Response (online)
 { "ok": true, "id": "msg-abc123", "delivered": true }
-```
 
-**Response (recipient offline — message buffered):**
-
-```json
+// Response (offline, buffered)
 { "ok": true, "id": "msg-abc123", "delivered": false, "buffered": true }
 ```
 
-**curl 示例 / Example with curl:**
-
 ```bash
 curl -s -X POST http://localhost:3179/send \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-token" \
   -d '{"from":"ci","to":"main","content":"tests passed"}'
 ```
 
-带认证 token / With auth token:
+#### `POST /feishu-reply`
 
-```bash
-curl -s -X POST http://localhost:3179/send \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-shared-secret" \
-  -d '{"from":"ci","to":"main","content":"tests passed"}'
+直接回复飞书，跳过 IPC 路由。
+Reply to Feishu directly, bypassing IPC routing.
+
+```json
+// Request
+{ "app": "bot-name", "content": "Task completed", "from": "worker" }
+
+// Response
+{ "ok": true, "app": "bot-name" }
 ```
 
-### `GET /health`
+#### `GET /messages?peer=&from=&to=&limit=`
 
-返回 Hub 状态和所有连接的 session。
-Returns hub status and all connected sessions.
+查询持久化消息历史。
+Query persisted message history.
+
+| Param | Type | Description |
+|---|---|---|
+| `peer` | string | Filter by sender or recipient |
+| `from` | string | Start time (ISO 8601) |
+| `to` | string | End time (ISO 8601) |
+| `limit` | number | Max results (default 50) |
+
+### 状态 / Status
+
+#### `GET /health`
+
+返回 Hub 状态、session 列表、消息计数。
+Returns hub status, session list, and message count.
 
 ```json
 {
   "ok": true,
   "uptime": 42.3,
   "sessions": [
-    { "name": "main", "connectedAt": 1711400000000, "topics": [] },
-    { "name": "worker", "connectedAt": 1711400005000, "topics": ["build-events"] }
-  ]
+    { "name": "main", "connectedAt": 1711400000000, "topics": [] }
+  ],
+  "messageCount": 1234
 }
 ```
 
-### `GET /sessions`
+#### `GET /sessions`
 
 仅返回 sessions 数组。
 Returns the sessions array only.
 
+#### `GET /stats?hours=N`
+
+Per-agent 消息统计（默认 24 小时）。
+Per-agent message statistics (default 24 hours).
+
+### 结构化任务 / Structured Tasks
+
+#### `POST /task`
+
+创建结构化任务。
+Create a structured task.
+
 ```json
-[
-  { "name": "main", "connectedAt": 1711400000000, "topics": [] }
-]
+// Request
+{
+  "from": "pm",
+  "to": "worker",
+  "title": "Fix login bug",
+  "description": "Users report 500 on /login",
+  "priority": "high",
+  "deadline": "2026-04-08T00:00:00Z",
+  "payload": {}
+}
+
+// Response
+{ "ok": true, "taskId": "task-abc123", "online": true, "buffered": false }
 ```
+
+#### `GET /tasks?agent=&status=&limit=`
+
+任务列表和统计。
+Task list with statistics.
+
+| Param | Type | Description |
+|---|---|---|
+| `agent` | string | Filter by agent name |
+| `status` | string | Filter by status (`pending`, `started`, `completed`, `failed`, `cancelled`) |
+| `limit` | number | Max results |
+
+#### `GET /tasks/:id`
+
+单个任务详情。
+Single task details.
+
+#### `PATCH /tasks/:id`
+
+更新任务状态。
+Update task status.
+
+```json
+// Request
+{ "status": "completed" }
+```
+
+### 监控 / Monitoring
+
+#### `GET /` 或 `GET /dashboard/*`
+
+监控 Dashboard，显示 session 列表、消息流、任务状态。
+Monitoring dashboard showing sessions, message flow, task status.
+
+---
+
+## 飞书集成 / Feishu Integration
+
+飞书集成分为两个独立部分：**feishu-bridge**（接收 + AI 控制台）和 **Hub**（发送）。bridge 是独立进程，避免了 Lark SDK WSClient 在同进程多实例时的全局状态冲突。
+
+Feishu integration is split into two independent parts: **feishu-bridge** (receiving + AI console) and **Hub** (sending). The bridge runs as a standalone process, avoiding Lark SDK WSClient global state conflicts when multiple instances run in the same process.
+
+多应用通过 `feishu-apps.json` 配置（已 gitignore，含密钥）。项目提供 `feishu-apps.example.json` 作为模板。
+
+Multi-app support via `feishu-apps.json` (gitignored, contains secrets). `feishu-apps.example.json` is provided as a template.
+
+**每个应用配置包含 / Each app entry contains:**
+
+| 字段 / Field | 说明 / Description |
+|---|---|
+| `name` | 应用显示名称 / App display name |
+| `appId` | 飞书应用 ID / Feishu App ID |
+| `appSecret` | 飞书应用密钥 / Feishu App Secret |
+| `targetOpenId` | 默认消息接收人 / Default message recipient |
+| `receive` | 接收方式：Lark SDK WSClient / Receive via Lark SDK WSClient |
+| `send` | 发送方式：Feishu Bot API / Send via Feishu Bot API |
+| `routeTo` | 目标 IPC session 名称 / Target IPC session name |
+
+### 消息收发 / Message Flow
+
+**入站 / Inbound（feishu-bridge 独立进程）:**
+
+feishu-bridge 读取 `feishu-apps.json`，为每个应用启动 Lark SDK WSClient 长连接。收到飞书消息后通过 HTTP `POST /send` 转发给 Hub，全程 0 LLM tokens。bridge 在独立进程中运行，彻底解决了 WSClient 全局状态冲突问题。支持回复/引用消息（自动获取 parent_id 原文）。支持图片/文件下载和富文本 post 解析。
+
+The feishu-bridge reads `feishu-apps.json` and starts a Lark SDK WSClient for each app. Incoming Feishu messages are forwarded to Hub via HTTP `POST /send` — 0 LLM tokens. Running in a separate process eliminates WSClient global state conflicts entirely. Supports reply/quote messages (fetches parent_id content automatically). Supports image/file download and rich text post parsing.
+
+**内置 ping / Built-in ping:** 飞书发 "ping" 给机器人，bridge 直接回复 "pong"，不经过 Hub 或 LLM，用于快速验证链路。
+
+Send "ping" to the bot in Feishu, bridge replies "pong" directly without Hub or LLM — useful for quick link testing.
+
+**出站 / Outbound（Hub 内）:** 通过 `POST /feishu-reply` 端点回复飞书，或在 IPC 中使用 `ipc_send(to="feishu:app-name")`。Hub 通过 Bot API 发送。
+
+Outbound (inside Hub): Reply to Feishu via `POST /feishu-reply` endpoint, or use `ipc_send(to="feishu:app-name")` from any IPC session. Hub sends via Bot API.
+
+**自动回复 / Auto-reply:** Stop hook（`bin/feishu-auto-reply.cjs`）在 Claude Code 响应结束时捕获 `last_assistant_message`，自动 POST 到 Hub 的 `/feishu-reply`，实现飞书消息的全自动回复，无需 tool call。
+
+Auto-reply: The Stop hook (`bin/feishu-auto-reply.cjs`) captures `last_assistant_message` when Claude Code finishes responding, and automatically POSTs it to Hub's `/feishu-reply`. Fully automatic Feishu replies with no tool call needed.
+
+### 飞书 AI 控制台 / Feishu AI Console
+
+P2P 对话及群聊 @机器人时支持以下命令（bridge 拦截处理，不转发 Hub）：
+
+Commands available in P2P chat and group @mention (intercepted by bridge, not forwarded to Hub):
+
+| 命令 / Command | 说明 / Description |
+|---|---|
+| `状态` / `status` | 查看所有 Agent 在线状态（卡片）/ View all agent online status (card) |
+| `帮助` / `help` | 显示命令列表 / Show command list |
+| `让{agent}去{task}` | 派发结构化任务给指定 Agent / Dispatch structured task to agent |
+| `广播:{content}` | 向所有在线 Agent 广播 / Broadcast to all online agents |
+| `重启 {target}` | 重启 bridge/worker / Restart bridge/worker |
+| `消息记录` / `history` | 查看最近消息 / View recent messages |
+| `日报` / `report` | 生成工作报告 / Generate work report |
+| `新增机器人` / `/add-bot` | 交互表单添加新飞书应用 / Add new Feishu app via form |
+
+**Agent 状态追踪 / Agent Status Tracking:** 15 秒轮询 Hub `/sessions`，检测上下线变更并自动推送飞书通知。状态卡片支持刷新按钮。
+
+15-second polling of Hub `/sessions`, detects online/offline changes and pushes Feishu notifications. Status cards support refresh button.
+
+**审批流 / Approval Flow:** Agent 可发送审批卡片（确认/拒绝按钮），按钮回调通过 IPC 回传审批结果。
+
+Agents can send approval cards (confirm/reject buttons), button callbacks return approval results via IPC.
+
+**日报定时推送 / Scheduled Daily Report:** 每日定时推送工作报告（默认 9:00，通过 `IPC_REPORT_HOUR` 配置），汇总 per-agent 消息统计。
+
+Daily work report pushed on schedule (default 9:00, configurable via `IPC_REPORT_HOUR`), summarizing per-agent message statistics.
 
 ---
 
@@ -467,45 +615,25 @@ This means Claude Code can push messages to OpenClaw in real-time — all throug
 
 ---
 
-## 飞书集成细节 / Feishu Integration
+## 环境变量 / Environment Variables
 
-飞书集成分为两个独立部分：**feishu-bridge**（接收）和 **Hub**（发送）。bridge 是独立进程，避免了 Lark SDK WSClient 在同进程多实例时的全局状态冲突。
+| Variable | Default | Description |
+|---|---|---|
+| `IPC_NAME` | `session-<pid>` | Session 显示名称 / Session display name |
+| `IPC_DEFAULT_NAME` | — | `.mcp.json` 中的默认名，`IPC_NAME` 优先 / Default name in `.mcp.json`, `IPC_NAME` takes priority |
+| `IPC_PORT` | `3179` | Hub WebSocket + HTTP 端口 / Hub port |
+| `IPC_HUB_HOST` | auto-detect | Hub 主机；WSL2 自动从 `/etc/resolv.conf` 读取 / Hub host; auto-detects WSL2 Windows host |
+| `IPC_HUB_AUTOSTART` | `true` | MCP server 连接时自动启动 Hub / Auto-start hub when MCP server connects |
+| `IPC_AUTH_TOKEN` | (empty) | 认证 token / Auth token. If set, all connections must provide it |
+| `IPC_DB_PATH` | `data/messages.db` | SQLite 数据库路径 / SQLite database path |
+| `IPC_REPORT_HOUR` | `9` | 日报定时推送小时（0-23）/ Daily report push hour (0-23) |
+| `IPC_CHANNEL_URL` | — | Channel Server HTTP 端点 / Channel Server HTTP endpoint |
+| `OPENCLAW_URL` | `http://127.0.0.1:18789` | OpenClaw Gateway 地址 / OpenClaw Gateway URL |
+| `OPENCLAW_TOKEN` | — | OpenClaw API token（`Authorization: Bearer`）|
 
-Feishu integration is split into two independent parts: **feishu-bridge** (receiving) and **Hub** (sending). The bridge runs as a standalone process, avoiding Lark SDK WSClient global state conflicts when multiple instances run in the same process.
+飞书配置已从环境变量迁移到 `feishu-apps.json`，支持多应用。见 `feishu-apps.example.json`。
 
-多应用通过 `feishu-apps.json` 配置（已 gitignore，含密钥）。项目提供 `feishu-apps.example.json` 作为模板。
-
-Multi-app support via `feishu-apps.json` (gitignored, contains secrets). `feishu-apps.example.json` is provided as a template.
-
-**每个应用配置包含 / Each app entry contains:**
-
-| 字段 / Field | 说明 / Description |
-|---|---|
-| `name` | 应用显示名称 / App display name |
-| `appId` | 飞书应用 ID / Feishu App ID |
-| `appSecret` | 飞书应用密钥 / Feishu App Secret |
-| `targetOpenId` | 默认消息接收人 / Default message recipient |
-| `receive` | 接收方式：Lark SDK WSClient / Receive via Lark SDK WSClient |
-| `send` | 发送方式：Feishu Bot API / Send via Feishu Bot API |
-| `routeTo` | 目标 IPC session 名称 / Target IPC session name |
-
-**入站 / Inbound（feishu-bridge 独立进程）:**
-
-feishu-bridge 读取 `feishu-apps.json`，为每个应用启动 Lark SDK WSClient 长连接。收到飞书消息后通过 HTTP `POST /send` 转发给 Hub，全程 0 LLM tokens。bridge 在独立进程中运行，彻底解决了 WSClient 全局状态冲突问题。支持回复/引用消息（自动获取 parent_id 原文）。
-
-The feishu-bridge reads `feishu-apps.json` and starts a Lark SDK WSClient for each app. Incoming Feishu messages are forwarded to Hub via HTTP `POST /send` — 0 LLM tokens. Running in a separate process eliminates WSClient global state conflicts entirely. Supports reply/quote messages (fetches parent_id content automatically).
-
-**内置 ping / Built-in ping:** 飞书发 "ping" 给机器人，bridge 直接回复 "pong"，不经过 Hub 或 LLM，用于快速验证链路。
-
-Send "ping" to the bot in Feishu, bridge replies "pong" directly without Hub or LLM — useful for quick link testing.
-
-**出站 / Outbound（Hub 内）:** 通过 `POST /feishu-reply` 端点回复飞书，或在 IPC 中使用 `ipc_send(to="feishu:app-name")`。Hub 通过 Bot API 发送。
-
-Outbound (inside Hub): Reply to Feishu via `POST /feishu-reply` endpoint, or use `ipc_send(to="feishu:app-name")` from any IPC session. Hub sends via Bot API.
-
-**自动回复 / Auto-reply:** Stop hook（`bin/feishu-auto-reply.cjs`）在 Claude Code 响应结束时捕获 `last_assistant_message`，自动 POST 到 Hub 的 `/feishu-reply`，实现飞书消息的全自动回复，无需 tool call。
-
-Auto-reply: The Stop hook (`bin/feishu-auto-reply.cjs`) captures `last_assistant_message` when Claude Code finishes responding, and automatically POSTs it to Hub's `/feishu-reply`. Fully automatic Feishu replies with no tool call needed.
+Feishu config has migrated from env vars to `feishu-apps.json` for multi-app support. See `feishu-apps.example.json`.
 
 ---
 
@@ -543,12 +671,9 @@ When running inside WSL2, the MCP server automatically reads the `nameserver` li
 
 ## 已知限制 / Known Limitations
 
-- **仅内存 / In-memory only**: Hub 不持久化消息到磁盘。Hub 进程重启后，缓冲的离线消息会丢失。/ The hub does not persist messages to disk. If the hub process restarts, buffered offline messages are lost.
-- **无结构化 agent 生命周期 / No structured agent lifecycle**: OpenClaw 有更丰富的 agent 编排原语。建木只处理原始消息路由，不管理 agent 状态、重试策略或任务队列。/ OpenClaw has richer agent orchestration primitives. Jianmu handles raw message routing — it does not manage agent state, retry policies, or task queues.
-- **基础认证 / Basic auth**: 认证方式为共享 token（`IPC_AUTH_TOKEN`），不提供 per-session 身份验证或 ACL。/ Authentication is a shared token (`IPC_AUTH_TOKEN`). There is no per-session identity verification or ACL.
 - **单 Hub / Single hub**: 不支持多 Hub 联邦。所有 session 必须连接到同一 Hub 实例。跨机器部署需要反向代理或隧道。/ No multi-hub federation. All sessions must connect to the same hub instance. Cross-machine setups require a reverse proxy or tunnel.
-- **OpenClaw `.env` 配置 / OpenClaw `.env` configuration**: OpenClaw adapter 需要 `OPENCLAW_URL` 和 `OPENCLAW_TOKEN` 才能工作。可以在 `hub.mjs` 同目录放置 `.env` 文件，也可以设置环境变量。/ The OpenClaw adapter requires `OPENCLAW_URL` and `OPENCLAW_TOKEN` to function. Place a `.env` file in the same directory as `hub.mjs`, or set them as environment variables.
 - **飞书自动回复仅限 Claude Code / Feishu auto-reply is Claude Code only**: Stop hook（`bin/feishu-auto-reply.cjs`）依赖 Claude Code 的 hook 机制，不适用于 OpenClaw 或其他工具。/ The Stop hook (`bin/feishu-auto-reply.cjs`) relies on Claude Code's hook mechanism and does not work with OpenClaw or other tools.
+- **OpenClaw `.env` 配置 / OpenClaw `.env` configuration**: OpenClaw adapter 需要 `OPENCLAW_URL` 和 `OPENCLAW_TOKEN` 才能工作。可以在 `hub.mjs` 同目录放置 `.env` 文件，也可以设置环境变量。/ The OpenClaw adapter requires `OPENCLAW_URL` and `OPENCLAW_TOKEN` to function. Place a `.env` file in the same directory as `hub.mjs`, or set them as environment variables.
 
 ---
 
@@ -556,22 +681,43 @@ When running inside WSL2, the MCP server automatically reads the `nameserver` li
 
 ```
 xihe-jianmu-ipc/
-├── hub.mjs              # WebSocket hub server (Feishu sending only)
-├── mcp-server.mjs       # MCP server (Claude Code + OpenClaw adapter)
-├── feishu-bridge.mjs    # Standalone Feishu receiving process
-├── feishu-apps.example.json  # Feishu multi-app config template
-├── SKILL.md             # OpenClaw ClawHub skill manifest
+├── hub.mjs                    # WebSocket hub server (+ Feishu sending)
+├── mcp-server.mjs             # MCP server (Claude Code + OpenClaw adapter)
+├── feishu-bridge.mjs          # Standalone Feishu receiving + AI console
+├── feishu-apps.example.json   # Feishu multi-app config template
+├── ecosystem.config.cjs       # PM2 process config
+├── SKILL.md                   # OpenClaw ClawHub skill manifest
 ├── lib/
-│   ├── constants.mjs    # Shared constants (ports, timeouts, etc.)
-│   ├── protocol.mjs     # Message schema and validation
-│   └── feishu-worker.mjs  # Per-app WSClient worker for feishu-bridge
+│   ├── constants.mjs          # Shared constants (ports, timeouts)
+│   ├── protocol.mjs           # Message schema and validation
+│   ├── db.mjs                 # SQLite persistence (WAL mode, 7-day TTL)
+│   ├── audit.mjs              # Audit logging
+│   ├── redact.mjs             # Sensitive info redaction
+│   ├── command-parser.mjs     # Feishu command parser (8 commands)
+│   ├── agent-status.mjs       # Agent online status tracking (15s poll)
+│   ├── console-cards.mjs      # Feishu card templates (status/help/dispatch/broadcast/approval/report/error)
+│   └── feishu-worker-thread.mjs  # Per-app WSClient worker thread
 ├── bin/
-│   ├── jianmu.mjs       # CLI entry point
+│   ├── jianmu.mjs             # CLI entry point (jianmu hub / jianmu status)
 │   ├── feishu-auto-reply.cjs  # Stop hook: auto-reply to Feishu
-│   ├── feishu-reply.sh  # Shell shortcut for Feishu reply
-│   ├── install.ps1      # PowerShell profile installer
-│   ├── ipc-claude.ps1   # PowerShell helper for Claude Code sessions
-│   └── patch-channels.mjs  # Claude Code channel patch helper
+│   ├── feishu-reply.sh        # Shell shortcut for Feishu reply
+│   ├── install.ps1            # PowerShell profile installer
+│   ├── patch-channels.mjs     # Claude Code channel patch helper
+│   ├── start.sh               # Start hub + bridge
+│   ├── stop.sh                # Stop all processes
+│   ├── restart.sh             # Restart all
+│   ├── status.sh              # Show process status
+│   ├── update.sh              # Pull + restart
+│   └── run-forever.sh         # Auto-restart wrapper
+├── dashboard/
+│   └── index.html             # Monitoring dashboard (sessions, messages, tasks)
+├── data/
+│   ├── messages.db            # SQLite database (gitignored)
+│   ├── audit.log              # Audit log (gitignored)
+│   └── feishu-files/          # Downloaded Feishu attachments
+├── docs/
+│   ├── feishu-events.md       # Feishu event subscription guide
+│   └── feishu-permissions.json  # Feishu app permission template
 └── package.json
 ```
 

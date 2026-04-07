@@ -3,7 +3,7 @@
     "name": "my-bot",
     "appId": "cli_xxx",
     "appSecret": "your-app-secret",
-    "targetOpenId": "ou_xxx",
+    "chatId": "",
     "receive": true,
     "send": true,
     "routeTo": "my-session"

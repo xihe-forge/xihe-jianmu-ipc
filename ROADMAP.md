@@ -43,11 +43,11 @@
 - [x] 消息历史: 改用卡片展示而非纯文本
 - [x] 群聊命令支持 (当前仅P2P)
 
-## Phase 9: Agent协作协议
+## Phase 9: Agent协作协议 ✅ 已完成
 
-- [ ] 结构化任务消息: `{ action, target, deadline, priority }`
-- [ ] 任务状态跟踪 (pending → running → done/failed)
-- [ ] Dashboard解析和展示任务链
+- [x] 结构化任务消息: `{ action, target, deadline, priority }`
+- [x] 任务状态跟踪 (pending → running → done/failed)
+- [x] Dashboard解析和展示任务链
 
 ## Phase 10: Agent状态广播
 

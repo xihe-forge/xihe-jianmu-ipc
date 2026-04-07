@@ -446,9 +446,8 @@ Claude Code 通过 `.mcp.json` 加载 MCP server。接收到的消息以 `<chann
 Claude Code loads the MCP server via `.mcp.json`. Incoming messages are pushed as `<channel>` notifications, which wake idle Claude Code sessions without requiring a poll loop. The flow:
 
 1. 发送方调用 `ipc_send(to="target-session", content="...")` / Sender calls `ipc_send(to="target-session", content="...")`
-2. Hub 若目标在线则走 WebSocket 路由，离线则缓冲 / Hub routes over WebSocket if target is online; buffers if offline
-3. `channel-server.mjs`（若运行）将消息 POST 到 Claude Code Channel 端点 / `channel-server.mjs` (if running) POSTs the message to the Claude Code Channel endpoint
-4. Claude Code 接收 `<channel>` 通知并处理 / Claude Code receives a `<channel>` notification and processes it
+2. Hub 若目标在线则走 WebSocket 路由，离线则缓冲；OpenClaw session 始终走 `POST /hooks/wake` / Hub routes over WebSocket if target is online; buffers if offline; OpenClaw sessions always receive via `POST /hooks/wake`
+3. Claude Code 接收 `<channel>` 通知并处理 / Claude Code receives a `<channel>` notification and processes it
 
 ---
 
@@ -523,7 +522,6 @@ Jianmu is not Claude-specific. Any tool that can send HTTP requests or open a We
 | OpenAI Codex | HTTP API (`POST /send`) |
 | Custom scripts | HTTP API or raw WebSocket |
 | Feishu Bots | feishu-bridge (WSClient receiving) + Hub Bot API (sending) |
-| Channel Server | `channel-server.mjs` — standalone receiver that POSTs to a webhook |
 
 ---
 

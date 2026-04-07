@@ -58,8 +58,8 @@ import {
   INBOX_TTL,
   IDLE_SHUTDOWN_DELAY,
 } from './lib/constants.mjs';
-import { createMessage, createSystemEvent, validateMessage } from './lib/protocol.mjs';
-import { saveMessage, getMessages, getMessageCount, getMessageCountByAgent, cleanup, close } from './lib/db.mjs';
+import { createMessage, createSystemEvent, createTask, validateMessage, TASK_STATUSES } from './lib/protocol.mjs';
+import { saveMessage, getMessages, getMessageCount, getMessageCountByAgent, cleanup, close, saveTask, getTask, updateTaskStatus, listTasks, getTaskStats } from './lib/db.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
@@ -406,6 +406,126 @@ const httpServer = http.createServer((req, res) => {
     const stats = getMessageCountByAgent(hours * 60 * 60 * 1000);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ period_hours: hours, agents: stats }));
+  } else if (req.method === 'POST' && req.url === '/task') {
+    let body = '';
+    let size = 0;
+    let aborted = false;
+    const MAX_BODY = 1024 * 1024;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        aborted = true;
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'payload too large' }));
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      let data;
+      try { data = JSON.parse(body); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      if (!data.from || !data.to || !data.title) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'requires "from", "to", and "title"' }));
+        return;
+      }
+      const task = createTask({
+        from: data.from,
+        to: data.to,
+        title: data.title,
+        description: data.description || '',
+        priority: data.priority || 3,
+        deadline: data.deadline || null,
+        payload: data.payload || null,
+      });
+      saveTask(task);
+      // Route task as a message to the target agent
+      const taskMsg = createMessage({
+        from: data.from,
+        to: data.to,
+        content: JSON.stringify({ taskId: task.id, title: task.title, description: task.description, priority: task.priority }),
+        topic: 'task',
+      });
+      taskMsg.contentType = 'task';
+      const fakeSender = { name: data.from };
+      routeMessage(taskMsg, fakeSender);
+      const target = sessions.get(data.to);
+      const online = target?.ws?.readyState === target?.ws?.OPEN;
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, taskId: task.id, online: !!online, buffered: !online }));
+      audit('task_create', { from: data.from, to: data.to, taskId: task.id });
+      stderr(`[ipc-hub] POST /task: ${data.from} → ${data.to} [${task.id}]`);
+    });
+  } else if (req.method === 'PATCH' && req.url?.startsWith('/tasks/')) {
+    const taskId = decodeURIComponent(req.url.slice('/tasks/'.length));
+    let body = '';
+    let size = 0;
+    let aborted = false;
+    const MAX_BODY = 4096;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        aborted = true;
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'payload too large' }));
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      let data;
+      try { data = JSON.parse(body); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      if (!data.status || !TASK_STATUSES.includes(data.status)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `invalid status, must be one of: ${TASK_STATUSES.join(', ')}` }));
+        return;
+      }
+      const existing = getTask(taskId);
+      if (!existing) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'task not found' }));
+        return;
+      }
+      updateTaskStatus(taskId, data.status);
+      const updated = getTask(taskId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, task: updated }));
+      audit('task_update', { taskId, status: data.status });
+      stderr(`[ipc-hub] PATCH /tasks/${taskId}: ${data.status}`);
+    });
+  } else if (req.method === 'GET' && req.url?.startsWith('/tasks/')) {
+    // GET /tasks/:id — single task
+    const taskId = decodeURIComponent(req.url.slice('/tasks/'.length));
+    const task = getTask(taskId);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'task not found' }));
+    } else {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(task));
+    }
+  } else if (req.method === 'GET' && req.url?.startsWith('/tasks')) {
+    // GET /tasks?agent=name&status=pending&limit=20
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const opts = {};
+    if (params.get('agent')) opts.agent = params.get('agent');
+    if (params.get('status')) opts.status = params.get('status');
+    if (params.get('limit')) opts.limit = parseInt(params.get('limit'));
+    const tasks = listTasks(opts);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ tasks, stats: getTaskStats() }));
   } else if (req.method === 'GET' && (req.url === '/' || req.url === '/dashboard' || req.url?.startsWith('/dashboard/'))) {
     // Serve dashboard static files
     const dashboardDir = resolve(__hubDir, 'dashboard');

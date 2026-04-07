@@ -407,14 +407,31 @@ async function handleConsoleCommand(cmd, msg) {
 
     case 'dispatch': {
       try {
-        const result = await sendToHub(`feishu:${appName}`, cmd.target, cmd.content);
-        markActivity(cmd.target);
-        const sent = !!(result?.online);
-        const card = buildDispatchCard(cmd.target, cmd.content, result?.id, sent);
-        await sendStatusCard(appName, chatId, messageId, card);
+        const taskBody = JSON.stringify({
+          from: `feishu:${appName}`,
+          to: cmd.target,
+          title: cmd.content.length > 50 ? cmd.content.substring(0, 50) : cmd.content,
+          description: cmd.content,
+          priority: 3,
+          payload: { source: 'feishu', chatId },
+        });
+        const taskRes = await fetch(`http://${HUB_HOST}:${parseInt(HUB_PORT)}/task`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(taskBody) },
+          body: taskBody,
+          signal: AbortSignal.timeout(5000),
+        });
+        const taskResult = await taskRes.json();
+        if (taskResult.ok) {
+          const card = buildDispatchCard(cmd.target, cmd.content, taskResult.taskId, taskResult.online);
+          await sendStatusCard(appName, chatId, messageId, card);
+        } else {
+          const card = buildErrorCard('任务创建失败', taskResult.error || '未知错误');
+          await sendStatusCard(appName, chatId, messageId, card);
+        }
       } catch (err) {
         log(`[${appName}] dispatch failed: ${err.message}`);
-        const card = buildErrorCard('派发失败', `无法将任务发送给 ${cmd.target}: ${err.message}`);
+        const card = buildErrorCard('任务创建失败', err.message);
         await sendStatusCard(appName, chatId, messageId, card);
       }
       break;

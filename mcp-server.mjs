@@ -176,6 +176,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['name'],
       },
     },
+    {
+      name: 'ipc_task',
+      description: 'Create, update, or list structured tasks. Actions: create (assign task to agent), update (change task status), list (query tasks)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['create', 'update', 'list'], description: 'Action to perform' },
+          to: { type: 'string', description: 'Target agent name (required for create)' },
+          title: { type: 'string', description: 'Task title (required for create)' },
+          description: { type: 'string', description: 'Task description' },
+          priority: { type: 'number', description: 'Priority 1-5, default 3' },
+          taskId: { type: 'string', description: 'Task ID (required for update)' },
+          status: { type: 'string', enum: ['started', 'completed', 'failed', 'cancelled'], description: 'New status (required for update)' },
+          agent: { type: 'string', description: 'Filter by assigned agent' },
+          filterStatus: { type: 'string', description: 'Filter by status' },
+          limit: { type: 'number', description: 'Max results, default 20' },
+        },
+        required: ['action'],
+      },
+    },
   ],
 }));
 
@@ -320,6 +340,61 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     process.stderr.write(`[ipc] renamed: ${oldName} → ${newName}\n`);
     return { content: [{ type: 'text', text: JSON.stringify({ renamed: true, from: oldName, to: newName }) }] };
+  }
+
+  // -------------------------------------------------------------------------
+  // ipc_task
+  // -------------------------------------------------------------------------
+  if (name === 'ipc_task') {
+    const { action, to, title, description, priority, taskId, status, agent, filterStatus, limit } = args ?? {};
+    if (!action) {
+      return { content: [{ type: 'text', text: 'ipc_task requires "action"' }], isError: true };
+    }
+
+    if (action === 'create') {
+      if (!to || !title) {
+        return { content: [{ type: 'text', text: 'ipc_task create requires "to" and "title"' }], isError: true };
+      }
+      try {
+        const result = await httpPost(`http://${HOST}:${IPC_PORT}/task`, {
+          from: IPC_NAME,
+          to,
+          title,
+          description: description ?? '',
+          priority: priority ?? 3,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Failed to create task: ${err?.message ?? err}` }], isError: true };
+      }
+    }
+
+    if (action === 'update') {
+      if (!taskId || !status) {
+        return { content: [{ type: 'text', text: 'ipc_task update requires "taskId" and "status"' }], isError: true };
+      }
+      try {
+        const result = await httpPatch(`http://${HOST}:${IPC_PORT}/tasks/${encodeURIComponent(taskId)}`, { status });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Failed to update task: ${err?.message ?? err}` }], isError: true };
+      }
+    }
+
+    if (action === 'list') {
+      try {
+        const params = new URLSearchParams();
+        if (agent) params.set('agent', agent);
+        if (filterStatus) params.set('status', filterStatus);
+        params.set('limit', String(limit ?? 20));
+        const result = await httpGet(`http://${HOST}:${IPC_PORT}/tasks?${params.toString()}`);
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Failed to list tasks: ${err?.message ?? err}` }], isError: true };
+      }
+    }
+
+    return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true };
   }
 
   return {
@@ -792,6 +867,27 @@ function httpPost(url, body) {
     if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
     const parsed = new URL(url);
     const req = http.request({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname, method: 'POST', headers }, (res) => {
+      let buf = '';
+      res.on('data', (chunk) => { buf += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(buf)); }
+        catch { reject(new Error(`invalid JSON from ${url}: ${buf}`)); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => { req.destroy(new Error('timeout')); });
+    req.write(data);
+    req.end();
+  });
+}
+
+function httpPatch(url, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) };
+    if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
+    const parsed = new URL(url);
+    const req = http.request({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname, method: 'PATCH', headers }, (res) => {
       let buf = '';
       res.on('data', (chunk) => { buf += chunk; });
       res.on('end', () => {

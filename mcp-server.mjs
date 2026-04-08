@@ -19,7 +19,7 @@ import {
   HUB_AUTOSTART_TIMEOUT,
   HUB_AUTOSTART_RETRY_INTERVAL,
 } from './lib/constants.mjs';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'fs';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -999,3 +999,21 @@ main().catch((err) => {
   process.stderr.write(`[ipc] fatal: ${err?.message ?? err}\n`);
   process.exit(1);
 });
+
+// ---------------------------------------------------------------------------
+// Source file auto-restart: poll own mtime, exit on change so Claude Code
+// restarts us (mirrors the pattern used in hub.mjs / feishu-bridge.mjs)
+// ---------------------------------------------------------------------------
+const __mcp_file = fileURLToPath(import.meta.url);
+let __mcp_mtime = 0;
+try { __mcp_mtime = statSync(__mcp_file).mtimeMs; } catch {}
+
+setInterval(() => {
+  try {
+    const mtime = statSync(__mcp_file).mtimeMs;
+    if (__mcp_mtime && mtime !== __mcp_mtime) {
+      process.stderr.write('[ipc] source file changed, restarting...\n');
+      process.exit(0);
+    }
+  } catch {}
+}, 10000).unref();

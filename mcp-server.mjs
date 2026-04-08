@@ -39,7 +39,7 @@ if (!process.env.IPC_NAME && !process.env.IPC_DEFAULT_NAME) {
   process.stderr.write(`[ipc] IPC_NAME not set, using auto-generated: ${IPC_NAME}\n`);
 }
 
-const IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
+let IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || '';
 
 // ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ function detectHost() {
   return '127.0.0.1';
 }
 
-const HOST = detectHost();
+let HOST = detectHost();
 
 // ---------------------------------------------------------------------------
 // WebSocket state
@@ -174,6 +174,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: { type: 'string', description: 'New session name' },
         },
         required: ['name'],
+      },
+    },
+    {
+      name: 'ipc_reconnect',
+      description: 'Change the Hub address and/or port at runtime, then reconnect. Useful when the Hub moves to a different host or port without restarting the MCP server.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          host: { type: 'string', description: 'New Hub host address (e.g. "192.168.1.10" or "127.0.0.1"). Omit to keep current.' },
+          port: { type: 'number', description: 'New Hub port number. Omit to keep current.' },
+        },
       },
     },
     {
@@ -340,6 +351,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     process.stderr.write(`[ipc] renamed: ${oldName} → ${newName}\n`);
     return { content: [{ type: 'text', text: JSON.stringify({ renamed: true, from: oldName, to: newName }) }] };
+  }
+
+  // -------------------------------------------------------------------------
+  // ipc_reconnect
+  // -------------------------------------------------------------------------
+  if (name === 'ipc_reconnect') {
+    const { host, port } = args ?? {};
+
+    if (host === undefined && port === undefined) {
+      return { content: [{ type: 'text', text: 'ipc_reconnect requires at least one of "host" or "port"' }], isError: true };
+    }
+
+    const oldHub = `${HOST}:${IPC_PORT}`;
+
+    if (host !== undefined) HOST = host;
+    if (port !== undefined) IPC_PORT = Number(port);
+
+    const newHub = `${HOST}:${IPC_PORT}`;
+
+    // Disconnect existing connection
+    if (ws) {
+      try { ws.close(); } catch {}
+      ws = null;
+    }
+
+    // Reconnect to new address
+    reconnectAttempts = 0;
+    connect();
+
+    process.stderr.write(`[ipc] reconnecting: ${oldHub} → ${newHub}\n`);
+    return { content: [{ type: 'text', text: JSON.stringify({ reconnecting: true, from: oldHub, to: newHub, session: IPC_NAME }) }] };
   }
 
   // -------------------------------------------------------------------------

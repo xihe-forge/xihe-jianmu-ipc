@@ -932,11 +932,11 @@ function routeMessage(msg, senderSession) {
   }
 
   // Direct or broadcast routing
-  if (to === '*') {
-    // Broadcast to all except sender
+  if (to === '*' && !topic) {
+    // Broadcast to all except sender (only when no topic — topic messages go to subscribers only)
     for (const [, s] of sessions) {
       if (s.name === senderSession.name) continue;
-      if (delivered.has(s.name)) continue; // Skip if already got via topic
+      if (delivered.has(s.name)) continue;
       // Skip openclaw sessions — they receive messages only via /hooks/wake
       if (isOpenClawSession(s.name)) continue;
       if (s.ws && s.ws.readyState === s.ws.OPEN) {

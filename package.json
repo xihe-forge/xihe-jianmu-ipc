@@ -45,6 +45,7 @@
   },
   "scripts": {
     "hub": "node hub.mjs",
+    "test": "node --test tests/*.test.mjs",
     "start": "pm2 start ecosystem.config.cjs",
     "stop": "pm2 stop ecosystem.config.cjs",
     "restart": "pm2 restart ecosystem.config.cjs",

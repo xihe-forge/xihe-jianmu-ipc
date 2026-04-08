@@ -1005,8 +1005,8 @@ main().catch((err) => {
 });
 
 // ---------------------------------------------------------------------------
-// Source file auto-restart: poll own mtime, exit on change so Claude Code
-// restarts us (mirrors the pattern used in hub.mjs / feishu-bridge.mjs)
+// Source file change detection: poll own mtime, reconnect on change
+// (NOT exit — Claude Code may not auto-restart MCP servers)
 // ---------------------------------------------------------------------------
 const __mcp_file = fileURLToPath(import.meta.url);
 let __mcp_mtime = 0;
@@ -1016,8 +1016,12 @@ setInterval(() => {
   try {
     const mtime = statSync(__mcp_file).mtimeMs;
     if (__mcp_mtime && mtime !== __mcp_mtime) {
-      process.stderr.write('[ipc] source file changed, restarting...\n');
-      process.exit(0);
+      __mcp_mtime = mtime;
+      process.stderr.write('[ipc] source file changed, re-detecting host and reconnecting...\n');
+      HOST = detectHost();
+      if (ws) { try { ws.close(); } catch {} ws = null; }
+      reconnectAttempts = 0;
+      connect();
     }
   } catch {}
 }, 10000).unref();

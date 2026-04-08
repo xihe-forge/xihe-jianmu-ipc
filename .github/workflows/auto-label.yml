@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Apply path-based labels
-        uses: actions/labeler@v5
+        uses: actions/labeler@v6
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           # 配置文件位于目标项目 .github/labeler.yml

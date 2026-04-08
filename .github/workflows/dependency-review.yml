@@ -1,0 +1,220 @@
+name: Dependency Review
+
+# 当 PR 修改了任意 lockfile 时触发，对 Dependabot 及手动依赖升级 PR 做安全门禁
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "pnpm-lock.yaml"
+      - "package-lock.json"
+
+permissions:
+  contents: read
+  pull-requests: write  # 允许向 PR 写入审查评论
+
+jobs:
+  dependency-review:
+    name: Dependency Security Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+        with:
+          # 拉取完整历史，供后续 diff 分析使用
+          fetch-depth: 0
+
+      # ──────────────────────────────────────────
+      # 1. Rust 依赖审计（仅在项目包含 Cargo.toml 时执行）
+      # ──────────────────────────────────────────
+      - name: 检测 Rust 项目
+        id: detect-rust
+        run: |
+          if [ -f "Cargo.toml" ]; then
+            echo "has_rust=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_rust=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 安装 Rust 工具链
+        if: steps.detect-rust.outputs.has_rust == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo registry
+        if: steps.detect-rust.outputs.has_rust == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-audit-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-audit-${{ runner.os }}-
+
+      - name: 安装 cargo-audit
+        if: steps.detect-rust.outputs.has_rust == 'true'
+        run: cargo install cargo-audit
+
+      - name: 运行 cargo audit（有漏洞则阻断合并）
+        if: steps.detect-rust.outputs.has_rust == 'true'
+        # cargo audit 在发现漏洞时以非零状态码退出，自动阻断 CI
+        run: cargo audit
+
+      # ──────────────────────────────────────────
+      # 2. Node 依赖审计（仅在项目包含 package.json 时执行）
+      # ──────────────────────────────────────────
+      - name: 检测 Node 项目
+        id: detect-node
+        run: |
+          if [ -f "package.json" ]; then
+            echo "has_node=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_node=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 安装 pnpm
+        if: steps.detect-node.outputs.has_node == 'true'
+        uses: pnpm/action-setup@v4
+
+      - name: 配置 Node.js
+        if: steps.detect-node.outputs.has_node == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: 安装 Node 依赖
+        if: steps.detect-node.outputs.has_node == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: 运行 pnpm audit（moderate 及以上阻断合并）
+        if: steps.detect-node.outputs.has_node == 'true'
+        run: pnpm audit --audit-level=moderate
+
+      # ──────────────────────────────────────────
+      # 3. GitHub 官方 dependency-review-action
+      #    对比 base 和 head，检查新引入依赖的已知 CVE
+      # ──────────────────────────────────────────
+      - name: 使用 dependency-review-action 扫描新增依赖漏洞
+        uses: actions/dependency-review-action@v4
+        with:
+          # moderate 及以上漏洞阻断合并
+          fail-on-severity: moderate
+          # 同时在 PR 中发表审查评论，方便人工查看
+          comment-summary-in-pr: always
+
+      # ──────────────────────────────────────────
+      # 4. 检测新增包（之前未出现过的依赖），输出人工 review 警告
+      # ──────────────────────────────────────────
+      - name: 检测新增包（需要人工 review）
+        run: |
+          echo "## 新增依赖检测" | tee -a "$GITHUB_STEP_SUMMARY"
+          NEW_PACKAGES=""
+
+          # 检查 pnpm-lock.yaml 中新增的包
+          if git diff origin/${{ github.base_ref }}...HEAD -- pnpm-lock.yaml > /dev/null 2>&1; then
+            ADDED=$(git diff origin/${{ github.base_ref }}...HEAD -- pnpm-lock.yaml \
+              | grep "^+" \
+              | grep -E "^\+\s+/.+:" \
+              | grep -v "^+++" \
+              | sed "s/^+\s*//" \
+              | cut -d: -f1 \
+              | sort -u || true)
+            if [ -n "$ADDED" ]; then
+              echo "### pnpm-lock.yaml 新增包" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "$ADDED" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "⚠️ 以上包为本次 PR 新引入，请人工确认：用途是否合理、维护状态、license 是否兼容" | tee -a "$GITHUB_STEP_SUMMARY"
+              NEW_PACKAGES="$NEW_PACKAGES pnpm"
+            fi
+          fi
+
+          # 检查 Cargo.lock 中新增的包
+          if git diff origin/${{ github.base_ref }}...HEAD -- Cargo.lock > /dev/null 2>&1; then
+            ADDED=$(git diff origin/${{ github.base_ref }}...HEAD -- Cargo.lock \
+              | grep "^+name = " \
+              | grep -v "^+++" \
+              | sed 's/^+name = "\(.*\)"/\1/' \
+              | sort -u || true)
+            if [ -n "$ADDED" ]; then
+              echo "### Cargo.lock 新增 crate" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "$ADDED" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "⚠️ 以上 crate 为本次 PR 新引入，请人工确认：用途是否合理、维护状态、unsafe 使用情况" | tee -a "$GITHUB_STEP_SUMMARY"
+              NEW_PACKAGES="$NEW_PACKAGES cargo"
+            fi
+          fi
+
+          if [ -z "$NEW_PACKAGES" ]; then
+            echo "✅ 未检测到新增包，仅有版本升级或 hash 变更。" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ──────────────────────────────────────────
+      # 5. 检测可疑 lockfile 变更（只改 hash 不改版本号）
+      #    此类变更可能是供应链攻击的信号，需要人工介入
+      # ──────────────────────────────────────────
+      - name: 检测可疑 lockfile 变更（只改 hash 不改版本号）
+        run: |
+          echo "## 可疑 lockfile 变更检测" | tee -a "$GITHUB_STEP_SUMMARY"
+          SUSPICIOUS=false
+
+          # 检查 pnpm-lock.yaml：版本号不变但 integrity hash 变了
+          if git diff origin/${{ github.base_ref }}...HEAD -- pnpm-lock.yaml > /dev/null 2>&1; then
+            # 提取变更行，找出只有 integrity/checksum 变动的情况
+            HASH_ONLY=$(git diff origin/${{ github.base_ref }}...HEAD -- pnpm-lock.yaml \
+              | grep "^[+-]" \
+              | grep -v "^---\|^+++" \
+              | grep -E "(integrity|checksum):" || true)
+            VERSION_CHANGE=$(git diff origin/${{ github.base_ref }}...HEAD -- pnpm-lock.yaml \
+              | grep "^[+-]" \
+              | grep -v "^---\|^+++" \
+              | grep -E "^\+.*version:" || true)
+
+            if [ -n "$HASH_ONLY" ] && [ -z "$VERSION_CHANGE" ]; then
+              echo "### ⚠️ 警告：pnpm-lock.yaml 中存在可疑变更" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "检测到 integrity/checksum 发生变化，但版本号未变。可能原因：" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "- 注册表上同版本号的包被替换（供应链攻击信号）" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "- 本地 patch/override 导致的 hash 漂移" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "**建议：人工核查以下 hash 变更行**" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "$HASH_ONLY" | head -20 | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+              SUSPICIOUS=true
+            fi
+          fi
+
+          # 检查 Cargo.lock：checksum 变了但版本号不变
+          if git diff origin/${{ github.base_ref }}...HEAD -- Cargo.lock > /dev/null 2>&1; then
+            CHECKSUM_CHANGE=$(git diff origin/${{ github.base_ref }}...HEAD -- Cargo.lock \
+              | grep "^[+-]" \
+              | grep -v "^---\|^+++" \
+              | grep "checksum" || true)
+            VERSION_CHANGE=$(git diff origin/${{ github.base_ref }}...HEAD -- Cargo.lock \
+              | grep "^+" \
+              | grep -v "^+++" \
+              | grep "^+version = " || true)
+
+            if [ -n "$CHECKSUM_CHANGE" ] && [ -z "$VERSION_CHANGE" ]; then
+              echo "### ⚠️ 警告：Cargo.lock 中存在可疑变更" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "检测到 checksum 发生变化，但 crate 版本号未变。可能原因：" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "- crates.io 上该版本包被替换（供应链攻击信号）" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "- 使用了 \`[patch]\` 覆盖但未升级版本" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "**建议：人工核查以下 checksum 变更行**" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "$CHECKSUM_CHANGE" | head -20 | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+              SUSPICIOUS=true
+            fi
+          fi
+
+          if [ "$SUSPICIOUS" = false ]; then
+            echo "✅ 未检测到可疑的 lockfile 变更。" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # 可疑变更时以非零退出码阻断合并
+          if [ "$SUSPICIOUS" = true ]; then
+            echo ""
+            echo "检测到可疑的 lockfile 变更，阻断合并。请人工审查后决定是否放行。"
+            exit 1
+          fi

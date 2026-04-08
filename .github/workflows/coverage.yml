@@ -1,0 +1,220 @@
+name: 测试覆盖率追踪
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - '**/*.ts'
+      - '**/*.js'
+      - '**/*.mjs'
+      - '**/*.cjs'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  COVERAGE_THRESHOLD: 60
+
+jobs:
+  coverage:
+    name: 覆盖率检查
+    runs-on: ubuntu-latest
+    outputs:
+      line_rate: ${{ steps.parse.outputs.line_rate }}
+      passed: ${{ steps.gate.outputs.passed }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect package manager
+        id: pm
+        run: |
+          if [ -f "pnpm-lock.yaml" ]; then
+            echo "pm=pnpm" >> "$GITHUB_OUTPUT"
+          else
+            echo "pm=npm" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install pnpm
+        if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: ${{ steps.pm.outputs.pm }}
+
+      - name: Install dependencies (pnpm)
+        if: steps.pm.outputs.pm == 'pnpm'
+        run: pnpm install --frozen-lockfile
+
+      - name: Install dependencies (npm)
+        if: steps.pm.outputs.pm == 'npm'
+        run: npm ci
+
+      - name: Detect test runner
+        id: runner
+        run: |
+          if grep -q '"vitest"' package.json 2>/dev/null; then
+            echo "runner=vitest" >> "$GITHUB_OUTPUT"
+          elif grep -q '"jest"' package.json 2>/dev/null; then
+            echo "runner=jest" >> "$GITHUB_OUTPUT"
+          else
+            echo "runner=vitest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run vitest coverage
+        if: steps.runner.outputs.runner == 'vitest'
+        run: |
+          if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then
+            pnpm exec vitest run --coverage \
+              --coverage.provider=v8 \
+              --coverage.reporter=lcov \
+              --coverage.reporter=text \
+              --coverage.reportsDirectory=coverage
+          else
+            npx vitest run --coverage \
+              --coverage.provider=v8 \
+              --coverage.reporter=lcov \
+              --coverage.reporter=text \
+              --coverage.reportsDirectory=coverage
+          fi
+        continue-on-error: true
+
+      - name: Run jest coverage
+        if: steps.runner.outputs.runner == 'jest'
+        run: |
+          if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then
+            pnpm exec jest --coverage \
+              --coverageReporters=lcov \
+              --coverageReporters=text \
+              --coverageDirectory=coverage
+          else
+            npx jest --coverage \
+              --coverageReporters=lcov \
+              --coverageReporters=text \
+              --coverageDirectory=coverage
+          fi
+        continue-on-error: true
+
+      - name: 解析覆盖率数值
+        id: parse
+        run: |
+          LCOV_FILE="coverage/lcov.info"
+
+          if [ -f "${LCOV_FILE}" ]; then
+            LINES_FOUND=$(grep -E '^LF:' "${LCOV_FILE}" | awk -F: '{sum+=$2} END {print sum}')
+            LINES_HIT=$(grep -E '^LH:' "${LCOV_FILE}" | awk -F: '{sum+=$2} END {print sum}')
+
+            if [ "${LINES_FOUND:-0}" -gt 0 ]; then
+              LINE_RATE=$(echo "scale=1; ${LINES_HIT} * 100 / ${LINES_FOUND}" | bc)
+            else
+              LINE_RATE=0
+            fi
+          else
+            LINE_RATE=0
+            LINES_HIT=0
+            LINES_FOUND=0
+            echo "未找到 lcov.info，覆盖率视为 0%"
+          fi
+
+          echo "line_rate=${LINE_RATE}" >> "$GITHUB_OUTPUT"
+          echo "lines_hit=${LINES_HIT}" >> "$GITHUB_OUTPUT"
+          echo "lines_found=${LINES_FOUND}" >> "$GITHUB_OUTPUT"
+          echo "覆盖率: ${LINE_RATE}% (${LINES_HIT}/${LINES_FOUND} 行)"
+
+      - name: 门禁检查
+        id: gate
+        run: |
+          RATE="${{ steps.parse.outputs.line_rate }}"
+          THRESHOLD="${COVERAGE_THRESHOLD}"
+
+          if (( $(echo "${RATE} >= ${THRESHOLD}" | bc -l) )); then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "覆盖率 ${RATE}% >= ${THRESHOLD}%，通过"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "覆盖率 ${RATE}% < ${THRESHOLD}%，未达门禁"
+          fi
+
+      - name: 上传覆盖率产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  report:
+    name: PR 评论报告
+    runs-on: ubuntu-latest
+    needs: coverage
+    if: always()
+
+    steps:
+      - name: 在 PR 评论覆盖率报告
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const rate = "${{ needs.coverage.outputs.line_rate }}";
+            const passed = "${{ needs.coverage.outputs.passed }}" === "true";
+            const threshold = process.env.COVERAGE_THRESHOLD || "60";
+
+            const icon = passed ? "✅" : "❌";
+            const header = passed ? "✅ 覆盖率检查通过" : "❌ 覆盖率未达门禁，PR 被阻断";
+
+            const body = `## ${header}
+
+            | 覆盖率 | 门禁值 | 状态 |
+            |--------|--------|------|
+            | ${rate}% | ≥ ${threshold}% | ${icon} |
+
+            ${passed ? "" : `
+            ### 如何修复
+
+            覆盖率低于门禁时，需要补充单元测试。优先补充：
+
+            - 核心业务逻辑的分支覆盖
+            - 错误处理路径（\`catch\` 块、错误返回）
+            - 边界条件（空值、极端输入）
+
+            测试规范参见 \`handbook/03-verify.md\`。
+            `}
+
+            ---
+            *[查看完整报告](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})*
+            `;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.find(c =>
+              c.body.includes("覆盖率检查通过") || c.body.includes("覆盖率未达门禁")
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: 阻断 PR（覆盖率不达标）
+        if: needs.coverage.outputs.passed == 'false'
+        run: |
+          echo "覆盖率未达门禁值："
+          echo "  当前：${{ needs.coverage.outputs.line_rate }}%（要求 >= ${COVERAGE_THRESHOLD}%）"
+          exit 1

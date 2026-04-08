@@ -1,0 +1,278 @@
+name: 健康检查
+
+on:
+  schedule:
+    # 每天 UTC 08:00（北京时间 16:00）执行
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      fail_on_warning:
+        description: '将 Warning 级别问题也作为失败条件'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  health-check:
+    name: 健康检查
+    runs-on: ubuntu-latest
+    outputs:
+      has_critical: ${{ steps.summary.outputs.has_critical }}
+      report: ${{ steps.summary.outputs.report }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ─── 依赖漏洞扫描 ───────────────────────────────────────────────────
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 注册表
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-audit-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-audit-${{ runner.os }}-
+
+      - name: 安装 cargo-audit
+        run: cargo install cargo-audit --quiet
+
+      - name: 检查 Rust 依赖漏洞（cargo audit）
+        id: cargo_audit
+        run: |
+          set +e
+          cargo audit --json > /tmp/cargo-audit.json 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "status=ok" >> $GITHUB_OUTPUT
+            echo "message=Rust 依赖无已知漏洞" >> $GITHUB_OUTPUT
+          else
+            VULN_COUNT=$(cat /tmp/cargo-audit.json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          vulns = data.get('vulnerabilities', {}).get('list', [])
+          print(len(vulns))
+          " 2>/dev/null || echo "未知")
+            echo "status=critical" >> $GITHUB_OUTPUT
+            echo "message=发现 ${VULN_COUNT} 个 Rust 依赖漏洞" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: 安装 Node 依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 检查 Node 依赖漏洞（pnpm audit）
+        id: pnpm_audit
+        run: |
+          set +e
+          pnpm audit --json > /tmp/pnpm-audit.json 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "status=ok" >> $GITHUB_OUTPUT
+            echo "message=Node 依赖无已知漏洞" >> $GITHUB_OUTPUT
+          else
+            # 仅高危及以上作为 Critical
+            HIGH_COUNT=$(cat /tmp/pnpm-audit.json | python3 -c "
+          import json, sys
+          try:
+              data = json.load(sys.stdin)
+              meta = data.get('metadata', {})
+              high = meta.get('vulnerabilities', {}).get('high', 0)
+              critical = meta.get('vulnerabilities', {}).get('critical', 0)
+              print(high + critical)
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+
+            if [ "$HIGH_COUNT" -gt "0" ] 2>/dev/null; then
+              echo "status=critical" >> $GITHUB_OUTPUT
+              echo "message=Node 依赖发现 ${HIGH_COUNT} 个高危/严重漏洞" >> $GITHUB_OUTPUT
+            else
+              echo "status=warning" >> $GITHUB_OUTPUT
+              echo "message=Node 依赖存在中低危漏洞（已记录）" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      # ─── GitHub Actions 版本检查 ────────────────────────────────────────
+
+      - name: 检查 Actions 版本是否过期
+        id: actions_check
+        run: |
+          OUTDATED=0
+          DETAILS=""
+
+          # 检查 workflow 文件中的 actions 版本
+          for WORKFLOW in .github/workflows/*.yml; do
+            # 提取所有 uses: owner/action@version 行
+            while IFS= read -r line; do
+              ACTION=$(echo "$line" | grep -oP 'uses:\s+\K[^\s]+' || true)
+              if [ -n "$ACTION" ]; then
+                NAME=$(echo "$ACTION" | cut -d@ -f1)
+                VERSION=$(echo "$ACTION" | cut -d@ -f2)
+                # 判断是否使用 v1 或 v2（过期标志）
+                if echo "$VERSION" | grep -qP '^v[12]$'; then
+                  OUTDATED=$((OUTDATED + 1))
+                  DETAILS="${DETAILS}\n  - ${WORKFLOW}: ${ACTION}"
+                fi
+              fi
+            done < <(grep -i 'uses:' "$WORKFLOW" 2>/dev/null || true)
+          done
+
+          if [ $OUTDATED -gt 0 ]; then
+            echo "status=warning" >> $GITHUB_OUTPUT
+            echo "message=发现 ${OUTDATED} 个 Actions 使用旧版本（v1/v2）" >> $GITHUB_OUTPUT
+          else
+            echo "status=ok" >> $GITHUB_OUTPUT
+            echo "message=所有 Actions 版本正常" >> $GITHUB_OUTPUT
+          fi
+
+      # ─── 关键文件存在性检查 ─────────────────────────────────────────────
+
+      - name: 检查 LICENSE 文件
+        id: license_check
+        run: |
+          if [ -f "LICENSE" ] || [ -f "LICENSE.md" ] || [ -f "LICENSE.txt" ]; then
+            echo "status=ok" >> $GITHUB_OUTPUT
+            echo "message=LICENSE 文件存在" >> $GITHUB_OUTPUT
+          else
+            echo "status=critical" >> $GITHUB_OUTPUT
+            echo "message=未找到 LICENSE 文件" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 检查 README 文件
+        id: readme_check
+        run: |
+          if [ -f "README.md" ] || [ -f "README.rst" ] || [ -f "README" ]; then
+            echo "status=ok" >> $GITHUB_OUTPUT
+            echo "message=README 文件存在" >> $GITHUB_OUTPUT
+          else
+            echo "status=warning" >> $GITHUB_OUTPUT
+            echo "message=未找到 README 文件" >> $GITHUB_OUTPUT
+          fi
+
+      # ─── 汇总健康报告 ───────────────────────────────────────────────────
+
+      - name: 生成健康报告摘要
+        id: summary
+        run: |
+          CARGO_STATUS="${{ steps.cargo_audit.outputs.status }}"
+          PNPM_STATUS="${{ steps.pnpm_audit.outputs.status }}"
+          ACTIONS_STATUS="${{ steps.actions_check.outputs.status }}"
+          LICENSE_STATUS="${{ steps.license_check.outputs.status }}"
+          README_STATUS="${{ steps.readme_check.outputs.status }}"
+
+          HAS_CRITICAL=false
+          if [ "$CARGO_STATUS" = "critical" ] || \
+             [ "$PNPM_STATUS" = "critical" ] || \
+             [ "$ACTIONS_STATUS" = "critical" ] || \
+             [ "$LICENSE_STATUS" = "critical" ] || \
+             [ "$README_STATUS" = "critical" ]; then
+            HAS_CRITICAL=true
+          fi
+
+          # 如果开启了 fail_on_warning，Warning 也算 Critical
+          if [ "${{ inputs.fail_on_warning }}" = "true" ]; then
+            if [ "$CARGO_STATUS" = "warning" ] || \
+               [ "$PNPM_STATUS" = "warning" ] || \
+               [ "$ACTIONS_STATUS" = "warning" ] || \
+               [ "$LICENSE_STATUS" = "warning" ] || \
+               [ "$README_STATUS" = "warning" ]; then
+              HAS_CRITICAL=true
+            fi
+          fi
+
+          echo "has_critical=${HAS_CRITICAL}" >> $GITHUB_OUTPUT
+
+          # 状态图标映射
+          icon_ok="✅"
+          icon_warning="⚠️"
+          icon_critical="❌"
+
+          cargo_icon=$([ "$CARGO_STATUS" = "ok" ] && echo "$icon_ok" || [ "$CARGO_STATUS" = "warning" ] && echo "$icon_warning" || echo "$icon_critical")
+          pnpm_icon=$([ "$PNPM_STATUS" = "ok" ] && echo "$icon_ok" || [ "$PNPM_STATUS" = "warning" ] && echo "$icon_warning" || echo "$icon_critical")
+          actions_icon=$([ "$ACTIONS_STATUS" = "ok" ] && echo "$icon_ok" || [ "$ACTIONS_STATUS" = "warning" ] && echo "$icon_warning" || echo "$icon_critical")
+          license_icon=$([ "$LICENSE_STATUS" = "ok" ] && echo "$icon_ok" || [ "$LICENSE_STATUS" = "warning" ] && echo "$icon_warning" || echo "$icon_critical")
+          readme_icon=$([ "$README_STATUS" = "ok" ] && echo "$icon_ok" || [ "$README_STATUS" = "warning" ] && echo "$icon_warning" || echo "$icon_critical")
+
+          REPORT="## 每日健康检查报告
+
+          **日期：** $(date -u '+%Y-%m-%d %H:%M UTC')
+          **状态：** $([ "$HAS_CRITICAL" = "true" ] && echo "🔴 需要关注" || echo "🟢 一切正常")
+
+          | 检查项 | 状态 | 详情 |
+          |--------|------|------|
+          | Rust 依赖漏洞 | ${cargo_icon} | ${{ steps.cargo_audit.outputs.message }} |
+          | Node 依赖漏洞 | ${pnpm_icon} | ${{ steps.pnpm_audit.outputs.message }} |
+          | Actions 版本 | ${actions_icon} | ${{ steps.actions_check.outputs.message }} |
+          | LICENSE 文件 | ${license_icon} | ${{ steps.license_check.outputs.message }} |
+          | README 文件 | ${readme_icon} | ${{ steps.readme_check.outputs.message }} |"
+
+          # 写入 Step Summary
+          echo "$REPORT" >> $GITHUB_STEP_SUMMARY
+
+          # 多行输出需要 heredoc 方式
+          {
+            echo 'report<<EOF'
+            echo "$REPORT"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+  # ─── 严重问题自动创建 Issue ────────────────────────────────────────────
+
+  create-issue:
+    name: 创建告警 Issue
+    needs: health-check
+    runs-on: ubuntu-latest
+    if: needs.health-check.outputs.has_critical == 'true'
+
+    steps:
+      - name: 检查近期是否已有相同 Issue
+        id: check_existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label "health-check,automated" \
+            --state open \
+            --json number \
+            --jq 'length')
+          echo "count=${EXISTING}" >> $GITHUB_OUTPUT
+
+      - name: 创建健康检查告警 Issue
+        if: steps.check_existing.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "🔴 [健康检查] 发现严重问题 - $(date -u '+%Y-%m-%d')" \
+            --label "health-check,automated,priority/P1" \
+            --body "${{ needs.health-check.outputs.report }}
+
+          ---
+
+          > 本 Issue 由每日健康检查 workflow 自动创建。
+          > 请处理完所有 ❌ 项后关闭本 Issue。
+          > Workflow 运行：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

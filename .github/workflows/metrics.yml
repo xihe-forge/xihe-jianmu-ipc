@@ -1,0 +1,229 @@
+name: CI/CD 度量收集
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # 每周一 09:00 UTC
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: '回溯天数（默认 7）'
+        required: false
+        default: '7'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  collect-metrics:
+    name: 收集度量指标
+    runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+
+    steps:
+      - name: 计算时间窗口
+        id: window
+        run: |
+          SINCE=$(date -u -d "${LOOKBACK_DAYS} days ago" '+%Y-%m-%dT%H:%M:%SZ')
+          UNTIL=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          echo "since=${SINCE}" >> "$GITHUB_OUTPUT"
+          echo "until=${UNTIL}" >> "$GITHUB_OUTPUT"
+          echo "week_label=$(date -u '+%Y-W%V')" >> "$GITHUB_OUTPUT"
+
+      - name: 统计 PR 合入时间（中位数）
+        id: pr_metrics
+        run: |
+          # 获取过去一周合并的 PR，计算从创建到合并的秒数
+          MERGED_PRS=$(gh api \
+            "repos/${REPO}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+            --jq '[.[] | select(.merged_at != null and .merged_at >= "${{ steps.window.outputs.since }}")] |
+                  map({
+                    number: .number,
+                    created_at: .created_at,
+                    merged_at: .merged_at
+                  })')
+
+          PR_COUNT=$(echo "$MERGED_PRS" | jq 'length')
+          echo "pr_count=${PR_COUNT}" >> "$GITHUB_OUTPUT"
+
+          if [ "$PR_COUNT" -gt 0 ]; then
+            # 计算每个 PR 的合入时间（秒）
+            DURATIONS=$(echo "$MERGED_PRS" | jq '[.[] | ((.merged_at | fromdateiso8601) - (.created_at | fromdateiso8601))]')
+            # 排序后取中位数
+            MEDIAN_SECONDS=$(echo "$DURATIONS" | jq 'sort | if length == 0 then 0 elif length % 2 == 1 then .[length/2 | floor] else (.[length/2 - 1] + .[length/2]) / 2 end')
+            MEDIAN_HOURS=$(echo "scale=1; ${MEDIAN_SECONDS} / 3600" | bc)
+            echo "pr_median_seconds=${MEDIAN_SECONDS}" >> "$GITHUB_OUTPUT"
+            echo "pr_median_hours=${MEDIAN_HOURS}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_median_seconds=0" >> "$GITHUB_OUTPUT"
+            echo "pr_median_hours=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 统计 CI 通过率和平均运行时间
+        id: ci_metrics
+        run: |
+          # 获取过去一周内 CI workflow 的运行记录（以 ci.yml 为准）
+          WORKFLOW_RUNS=$(gh api \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?created=>${{ steps.window.outputs.since }}&per_page=100" \
+            --jq '.workflow_runs | map({
+              status: .status,
+              conclusion: .conclusion,
+              created_at: .created_at,
+              updated_at: .updated_at
+            })' 2>/dev/null || echo '[]')
+
+          TOTAL=$(echo "$WORKFLOW_RUNS" | jq '[.[] | select(.status == "completed")] | length')
+          SUCCESS=$(echo "$WORKFLOW_RUNS" | jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length')
+          echo "ci_total=${TOTAL}" >> "$GITHUB_OUTPUT"
+          echo "ci_success=${SUCCESS}" >> "$GITHUB_OUTPUT"
+
+          if [ "$TOTAL" -gt 0 ]; then
+            PASS_RATE=$(echo "scale=1; ${SUCCESS} * 100 / ${TOTAL}" | bc)
+            echo "ci_pass_rate=${PASS_RATE}" >> "$GITHUB_OUTPUT"
+
+            # 计算平均运行时间（秒）
+            AVG_SECONDS=$(echo "$WORKFLOW_RUNS" | jq '[.[] | select(.status == "completed") | ((.updated_at | fromdateiso8601) - (.created_at | fromdateiso8601))] | if length == 0 then 0 else (add / length) end | floor')
+            AVG_MINUTES=$(echo "scale=1; ${AVG_SECONDS} / 60" | bc)
+            echo "ci_avg_seconds=${AVG_SECONDS}" >> "$GITHUB_OUTPUT"
+            echo "ci_avg_minutes=${AVG_MINUTES}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ci_pass_rate=0" >> "$GITHUB_OUTPUT"
+            echo "ci_avg_seconds=0" >> "$GITHUB_OUTPUT"
+            echo "ci_avg_minutes=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 统计 Issue 变化
+        id: issue_metrics
+        run: |
+          # 新增 Issue
+          OPENED=$(gh api \
+            "repos/${REPO}/issues?state=open&since=${{ steps.window.outputs.since }}&per_page=100" \
+            --jq '[.[] | select(.pull_request == null)] | length')
+
+          # 过去一周关闭的 Issue（非 PR）
+          CLOSED=$(gh api \
+            "repos/${REPO}/issues?state=closed&since=${{ steps.window.outputs.since }}&per_page=100" \
+            --jq '[.[] | select(.pull_request == null and .closed_at >= "${{ steps.window.outputs.since }}")] | length')
+
+          echo "issues_opened=${OPENED}" >> "$GITHUB_OUTPUT"
+          echo "issues_closed=${CLOSED}" >> "$GITHUB_OUTPUT"
+
+      - name: 输出度量报告（Workflow Summary）
+        run: |
+          WEEK="${{ steps.window.outputs.week_label }}"
+          PR_COUNT="${{ steps.pr_metrics.outputs.pr_count }}"
+          PR_MEDIAN="${{ steps.pr_metrics.outputs.pr_median_hours }}"
+          CI_TOTAL="${{ steps.ci_metrics.outputs.ci_total }}"
+          CI_SUCCESS="${{ steps.ci_metrics.outputs.ci_success }}"
+          CI_PASS="${{ steps.ci_metrics.outputs.ci_pass_rate }}"
+          CI_AVG="${{ steps.ci_metrics.outputs.ci_avg_minutes }}"
+          ISSUES_OPENED="${{ steps.issue_metrics.outputs.issues_opened }}"
+          ISSUES_CLOSED="${{ steps.issue_metrics.outputs.issues_closed }}"
+
+          # 判断是否达标
+          PR_STATUS="✅"
+          CI_RATE_STATUS="✅"
+          CI_TIME_STATUS="✅"
+
+          if (( $(echo "${PR_MEDIAN} > 4" | bc -l) )) && [ "${PR_COUNT}" -gt 0 ]; then
+            PR_STATUS="⚠️"
+          fi
+          if (( $(echo "${CI_PASS} < 85" | bc -l) )) && [ "${CI_TOTAL}" -gt 0 ]; then
+            CI_RATE_STATUS="⚠️"
+          fi
+          if (( $(echo "${CI_AVG} > 15" | bc -l) )) && [ "${CI_TOTAL}" -gt 0 ]; then
+            CI_TIME_STATUS="⚠️"
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          # 度量报告 ${WEEK}
+
+          > 统计区间：${{ steps.window.outputs.since }} ~ ${{ steps.window.outputs.until }}
+
+          ## 工程效率
+
+          | 指标 | 本周实际 | 目标值 | 状态 |
+          |------|---------|--------|------|
+          | PR 合入时间（中位数） | ${PR_MEDIAN}h（${PR_COUNT} 个 PR） | < 4h | ${PR_STATUS} |
+          | CI 首次通过率 | ${CI_PASS}%（${CI_SUCCESS}/${CI_TOTAL}） | > 85% | ${CI_RATE_STATUS} |
+          | CI 平均运行时间 | ${CI_AVG} 分钟 | < 15 分钟 | ${CI_TIME_STATUS} |
+
+          ## Issue 动态
+
+          | 指标 | 本周数量 |
+          |------|---------|
+          | 新增 Issue | ${ISSUES_OPENED} |
+          | 关闭 Issue | ${ISSUES_CLOSED} |
+          | 净变化 | $((ISSUES_OPENED - ISSUES_CLOSED)) |
+
+          EOF
+
+      - name: 创建告警 Issue（PR 合入时间超标）
+        if: >
+          steps.pr_metrics.outputs.pr_count > 0 &&
+          steps.pr_metrics.outputs.pr_median_hours > 4
+        run: |
+          WEEK="${{ steps.window.outputs.week_label }}"
+          MEDIAN="${{ steps.pr_metrics.outputs.pr_median_hours }}"
+          gh issue create \
+            --title "【度量告警】${WEEK} PR 合入时间超标（${MEDIAN}h，目标 < 4h）" \
+            --body "## 告警详情
+
+          **指标**：PR 合入时间（中位数）
+          **本周实际**：${MEDIAN}h
+          **目标值**：< 4h
+          **统计区间**：${{ steps.window.outputs.since }} ~ ${{ steps.window.outputs.until }}
+
+          ## 可能原因
+
+          - Review 排队过长
+          - PR 粒度过大
+          - CI 反复失败阻断合入
+
+          ## 建议行动
+
+          - [ ] 检查当前积压 PR 列表
+          - [ ] 与团队对齐 Review SLA
+          - [ ] 评估 PR 拆分策略
+
+          ---
+          *由 metrics workflow 自动创建，详见 [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})*
+          " \
+            --label "type/metrics-alert,priority/P2"
+
+      - name: 创建告警 Issue（CI 通过率低于门禁）
+        if: >
+          steps.ci_metrics.outputs.ci_total > 0 &&
+          steps.ci_metrics.outputs.ci_pass_rate < 85
+        run: |
+          WEEK="${{ steps.window.outputs.week_label }}"
+          RATE="${{ steps.ci_metrics.outputs.ci_pass_rate }}"
+          gh issue create \
+            --title "【度量告警】${WEEK} CI 通过率不达标（${RATE}%，目标 > 85%）" \
+            --body "## 告警详情
+
+          **指标**：CI 首次通过率
+          **本周实际**：${RATE}%（${{ steps.ci_metrics.outputs.ci_success }}/${{ steps.ci_metrics.outputs.ci_total }} 次运行）
+          **目标值**：> 85%
+          **统计区间**：${{ steps.window.outputs.since }} ~ ${{ steps.window.outputs.until }}
+
+          ## 可能原因
+
+          - 测试不稳定（flaky tests）
+          - 环境依赖问题（网络、外部服务）
+          - 代码质量下滑
+
+          ## 建议行动
+
+          - [ ] 查看失败 CI runs，归类失败原因
+          - [ ] 修复 flaky test（加 retry 或隔离副作用）
+          - [ ] 评估是否需要加 lint-on-save 预提交检查
+
+          ---
+          *由 metrics workflow 自动创建，详见 [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})*
+          " \
+            --label "type/metrics-alert,priority/P1"

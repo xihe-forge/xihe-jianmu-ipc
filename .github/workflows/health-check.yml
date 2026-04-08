@@ -69,7 +69,7 @@ jobs:
           fi
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
 
       - name: 安装 Node.js
         uses: actions/setup-node@v4

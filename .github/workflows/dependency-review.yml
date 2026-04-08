@@ -73,7 +73,7 @@ jobs:
 
       - name: 安装 pnpm
         if: steps.detect-node.outputs.has_node == 'true'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
 
       - name: 配置 Node.js
         if: steps.detect-node.outputs.has_node == 'true'

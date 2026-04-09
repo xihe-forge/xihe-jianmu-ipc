@@ -613,8 +613,9 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
 function pushChannelNotification(msg) {
   const from = msg.from || 'unknown';
   const topic = msg.topic ? ` [${msg.topic}]` : '';
+  const time = new Date().toLocaleString('zh-CN', { hour12: false });
   const body = msg.content || JSON.stringify(msg);
-  const content = `[from: ${from}${topic}]\n${body}`;
+  const content = `[${time} from: ${from}${topic}]\n${body}`;
   server.notification({
     method: 'notifications/claude/channel',
     params: {

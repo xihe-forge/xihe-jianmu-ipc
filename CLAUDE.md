@@ -86,6 +86,20 @@ Agent上下线自动推送飞书通知。状态卡片支持刷新按钮。审批
 
 本项目已接入天枢 Harness。工程规范、生命周期、质量标准见 `.tianshu/` 目录。
 
+## 角色分工
+
+- **Opus**: 架构决策、文档审查、代码review、IPC消息路由编排
+- **Sonnet子agent**: 所有代码编写、测试编写、bug修复
+- **Codex**: 交叉安全审查（非同家族模型验证）
+
+## 联想规则
+
+- 改了消息协议(protocol.mjs) → 检查hub.mjs路由逻辑和mcp-server.mjs工具是否需要同步
+- 改了db.mjs schema → 检查hub.mjs端点和dashboard是否需要适配
+- 改了飞书命令(command-parser.mjs) → 检查feishu-bridge.mjs handler和console-cards.mjs卡片是否需要同步
+- 改了认证逻辑 → 检查HTTP端点和WebSocket两条路径是否都覆盖
+- 新增MCP工具 → 同步更新CLAUDE.md、README.md、SKILL.md
+
 ## 开发规范
 
 - Git身份: `Xihe <xihe-ai@lumidrivetech.com>`

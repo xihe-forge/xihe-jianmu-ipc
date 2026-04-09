@@ -82,6 +82,10 @@ Agent上下线自动推送飞书通知。状态卡片支持刷新按钮。审批
 
 飞书配置已从环境变量迁移到 `feishu-apps.json`，支持多应用。见 `feishu-apps.example.json`。
 
+## 天枢工程方法论
+
+本项目已接入天枢 Harness。工程规范、生命周期、质量标准见 `.tianshu/` 目录。
+
 ## 开发规范
 
 - Git身份: `Xihe <xihe-ai@lumidrivetech.com>`

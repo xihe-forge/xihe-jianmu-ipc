@@ -558,7 +558,21 @@ const httpServer = http.createServer((req, res) => {
 // ---------------------------------------------------------------------------
 // WebSocket server
 // ---------------------------------------------------------------------------
-const wss = new WebSocketServer({ server: httpServer });
+const wss = new WebSocketServer({
+  server: httpServer,
+  verifyClient: ({ req }) => {
+    const origin = req.headers.origin;
+    // No Origin header = non-browser client (Node.js / CLI) — allow
+    if (!origin) return true;
+    // Browser request: only allow localhost origins
+    try {
+      const u = new URL(origin);
+      return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    } catch {
+      return false;
+    }
+  },
+});
 
 wss.on('connection', (ws, req) => {
   // Parse session name and token from query string
@@ -1123,9 +1137,11 @@ stderr('[ipc-hub] polling source files for auto-restart (10s interval)');
 // Start listening
 // ---------------------------------------------------------------------------
 httpServer.listen(PORT, DEFAULT_HOST, () => {
-  stderr(`[ipc-hub] listening on :${PORT}`);
+  stderr(`[ipc-hub] listening on ${DEFAULT_HOST}:${PORT}`);
   stderr(`[ipc-hub] auth: ${authTokens ? 'per-session tokens (auth-tokens.json)' : AUTH_TOKEN ? 'shared token (IPC_AUTH_TOKEN)' : 'disabled (open access)'}`);
-
+  if (DEFAULT_HOST !== '127.0.0.1' && DEFAULT_HOST !== 'localhost' && !AUTH_TOKEN && !authTokens) {
+    stderr(`[ipc-hub] WARNING: hub is exposed on ${DEFAULT_HOST} with no authentication — set IPC_AUTH_TOKEN or provide auth-tokens.json`);
+  }
 });
 
 httpServer.on('error', (err) => {

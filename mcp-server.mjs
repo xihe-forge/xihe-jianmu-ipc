@@ -308,6 +308,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'ipc_spawn requires "name" and "task"' }], isError: true };
     }
 
+    // Sanitize session name — allow only alphanumeric, underscore, hyphen
+    if (!/^[a-zA-Z0-9_-]+$/.test(sessionName)) {
+      return { content: [{ type: 'text', text: `Invalid session name "${sessionName}": only letters, numbers, underscore and hyphen allowed` }], isError: true };
+    }
+
     // Check if session name is already taken
     try {
       const sessions = await httpGet(`http://${HOST}:${IPC_PORT}/sessions`);
@@ -334,6 +339,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name: newName } = args ?? {};
     if (!newName) {
       return { content: [{ type: 'text', text: 'ipc_rename requires "name"' }], isError: true };
+    }
+
+    // Sanitize session name — allow only alphanumeric, underscore, hyphen
+    if (!/^[a-zA-Z0-9_-]+$/.test(newName)) {
+      return { content: [{ type: 'text', text: `Invalid session name "${newName}": only letters, numbers, underscore and hyphen allowed` }], isError: true };
     }
 
     const oldName = IPC_NAME;
@@ -449,6 +459,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // spawnSession — launch a new Claude Code session (background or interactive)
 // ---------------------------------------------------------------------------
 async function spawnSession({ name: sessionName, task, interactive, model }) {
+  // Sanitize session name — allow only alphanumeric, underscore, hyphen
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionName)) {
+    throw new Error(`Invalid session name: only letters, numbers, underscore and hyphen allowed`);
+  }
+
   const ipcEnv = {
     ...process.env,
     IPC_NAME: sessionName,

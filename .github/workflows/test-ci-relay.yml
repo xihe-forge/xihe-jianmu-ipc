@@ -1,0 +1,14 @@
+name: CI Relay Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fail-on-purpose:
+    name: Intentional Failure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail
+        run: |
+          echo "This workflow intentionally fails to test CI relay notification"
+          exit 1

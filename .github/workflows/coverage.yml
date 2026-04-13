@@ -154,7 +154,7 @@ jobs:
 
     steps:
       - name: 在 PR 评论覆盖率报告
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const rate = "${{ needs.coverage.outputs.line_rate }}";

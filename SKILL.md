@@ -73,6 +73,34 @@ Subscribe to topic channels for filtered message delivery.
 ipc_subscribe(topic="alerts", action="subscribe")
 ```
 
+### `ipc_spawn`
+Start a new Claude Code session with a task.
+
+```
+ipc_spawn(name="worker-1", task="run the test suite")
+```
+
+### `ipc_rename`
+Rename the current session.
+
+```
+ipc_rename(name="my-new-name")
+```
+
+### `ipc_task`
+Manage structured tasks (create/update/list).
+
+```
+ipc_task(action="create", to="worker-1", title="fix lint errors")
+```
+
+### `ipc_reconnect`
+Reconnect to a different hub address.
+
+```
+ipc_reconnect(host="192.168.1.100", port=3179)
+```
+
 ## Rules
 
 1. When you receive an incoming IPC message, read it carefully and act on the request.

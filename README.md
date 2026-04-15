@@ -393,10 +393,10 @@ Send a message from any HTTP client.
 { "from": "codex-agent", "to": "main", "content": "PR review complete", "topic": "reviews" }
 
 // Response (online)
-{ "ok": true, "id": "msg-abc123", "delivered": true }
+{ "accepted": true, "id": "msg-abc123", "online": true, "buffered": false }
 
 // Response (offline, buffered)
-{ "ok": true, "id": "msg-abc123", "delivered": false, "buffered": true }
+{ "accepted": true, "id": "msg-abc123", "online": false, "buffered": true }
 ```
 
 ```bash

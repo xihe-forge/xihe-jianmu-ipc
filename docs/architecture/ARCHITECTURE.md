@@ -74,7 +74,14 @@ WebSocket服务器 + HTTP API，监听 `:3179`。
 - 通过 `@modelcontextprotocol/sdk` 实现 JSON-RPC over stdio
 - 启动时连接Hub WebSocket，Hub不存在时自动启动（autostart）
 - 收到Hub推送的消息后，通过 Channel capability 以 `<channel>` 通知形式注入Claude Code上下文
-- 提供7个MCP工具：`ipc_send` / `ipc_sessions` / `ipc_whoami` / `ipc_subscribe` / `ipc_spawn` / `ipc_rename` / `ipc_task`
+- 提供8个MCP工具：`ipc_send` / `ipc_sessions` / `ipc_whoami` / `ipc_subscribe` / `ipc_spawn` / `ipc_rename` / `ipc_task` / `ipc_reconnect`
+
+### HTTP API
+
+补充端点：
+- `POST /feishu-reply` — `{app, content, from?}` 直接回复飞书
+- `GET /tasks/:id` — 单个任务详情
+- `PATCH /tasks/:id` — `{status}` 更新任务状态
 
 ### feishu-bridge.mjs — 飞书编排器
 

@@ -35,10 +35,11 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_spawn(name, task, interactive?, model?)` — 启动新session
 - `ipc_rename(name)` — 重命名当前session
 - `ipc_task(action, ...)` — 结构化任务管理（create/update/list）
+- `ipc_reconnect(host?, port?)` — 重连到新的Hub地址
 
 ## HTTP API
 
-- `POST /send` — `{from, to, content}` 发消息，返回 `{ok, id, online, buffered}`
+- `POST /send` — `{from, to, content}` 发消息，返回 `{accepted, id, online, buffered}`
 - `POST /feishu-reply` — `{app, content, from?}` 直接回复飞书，跳过IPC路由，返回 `{ok, app}`
 - `GET /health` — Hub状态 + session列表 + messageCount
 - `GET /sessions` — 仅session列表

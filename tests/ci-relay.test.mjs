@@ -42,7 +42,7 @@ test('parseGitHubCIEmail: 只接受 GitHub 失败通知', () => {
   const parsed = parseGitHubCIEmail({
     subject: '[xihe-forge/xihe-jianmu-ipc] Run failed: CI - main (abc1234)',
     head_from: { mail_address: 'notifications@github.com' },
-    body_plain_text: 'Triggered by bob\nhttps://github.com/xihe-forge/xihe-jianmu-ipc/actions/runs/42',
+    body_plain_text: Buffer.from('Triggered by bob\nhttps://github.com/xihe-forge/xihe-jianmu-ipc/actions/runs/42').toString('base64'),
     internal_date: '1710000000000',
   }, 'msg-1');
 

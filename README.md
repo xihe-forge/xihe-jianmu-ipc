@@ -1,3 +1,6 @@
+[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[English](README.md) | [中文](README.zh-CN.md)
+
 # xihe-jianmu-ipc
 
 > **命名由来 / Etymology** — 遵循曦和项目三段式命名规范 `xihe-{隐喻}-{功能}`：
@@ -725,9 +728,32 @@ xihe-jianmu-ipc/
 
 ## 关于曦和 AI / About Xihe AI
 
-曦和（Xihe）得名于中国神话中驾驭太阳的女神。[xihe-forge](https://github.com/xihe-forge) 是曦和 AI 的开源锻造炉——我们在这里把实用的 AI 工具从想法锤炼成可以直接上手的开源项目。xihe-jianmu-ipc 是锻造炉中的第三个开源作品。更多面向 AI 协作、搜索和增长的工具正在锻造中，欢迎关注或参与贡献。
+曦和（Xihe）得名于中国神话中驾驭太阳的女神。[xihe-forge](https://github.com/xihe-forge) 是曦和 AI 的开源锻造炉——我们在这里把实用的 AI 工具从想法锤炼成可以直接上手的开源项目。`xihe-jianmu-ipc` 是锻造炉中的第三个开源作品，也是我们多 AI 协作基础设施方向的重要一环。
 
-Xihe is named after the sun goddess who drives the solar chariot in Chinese mythology. [xihe-forge](https://github.com/xihe-forge) is Xihe AI's open-source forge — where we hammer practical AI tools from ideas into ready-to-use open-source projects. xihe-jianmu-ipc is the third open-source piece out of the forge. More AI tools for AI collaboration, search, and growth are being forged — follow the org or contribute.
+Xihe is named after the sun goddess who drives the solar chariot in Chinese mythology. [xihe-forge](https://github.com/xihe-forge) is Xihe AI's open-source forge — where we hammer practical AI tools from ideas into ready-to-use open-source projects. `xihe-jianmu-ipc` is the third open-source piece out of the forge and a key part of our multi-AI collaboration infrastructure.
+
+### 项目矩阵 / Project Lineup
+
+| Project | Description |
+|---|---|
+| `xihe-jizhu-scaffold` | AI 项目脚手架 / AI project scaffold |
+| `xihe-jianmu-ipc` | 多 AI 通信 Hub（本项目）/ Multi-AI communication hub |
+| `xihe-core` | 核心库 / Core library |
+| `lumidrive-site` | 光影随行官网 / Lumidrive official site |
+| `xihe-rinian-seo` | SEO 工具 / SEO toolkit |
+| `heartreadAI` | AI 心理健康产品 / AI mental wellness product |
+| `xihe-jinwu-epet` | 桌面宠物 / Desktop pet |
+| `xihe-tiangang-mesh` | 多 Agent 协作平台 / Multi-agent collaboration platform |
+
+### 网站链接 / Links
+
+- 组织主页 / Org: https://github.com/xihe-forge
+- 光影随行官网 / Lumidrive: https://lumidrivetech.com
+- HeartRead 官网 / HeartRead: https://heartread.ai
+
+更多面向 AI 协作、搜索、增长与数字体验的产品仍在持续锻造中，欢迎关注组织、试用产品或参与贡献。
+
+More products for AI collaboration, search, growth, and digital experiences are actively being forged — follow the org, try the products, or contribute.
 
 ---
 

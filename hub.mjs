@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import { audit } from './lib/audit.mjs';
+import { startCIRelay, stopCIRelay } from './lib/ci-relay.mjs';
 
 // Load .env from project root (no dotenv dependency needed)
 try {
@@ -1142,6 +1143,7 @@ httpServer.listen(PORT, DEFAULT_HOST, () => {
   if (DEFAULT_HOST !== '127.0.0.1' && DEFAULT_HOST !== 'localhost' && !AUTH_TOKEN && !authTokens) {
     stderr(`[ipc-hub] WARNING: hub is exposed on ${DEFAULT_HOST} with no authentication — set IPC_AUTH_TOKEN or provide auth-tokens.json`);
   }
+  startCIRelay(routeMessage);
 });
 
 httpServer.on('error', (err) => {
@@ -1158,6 +1160,7 @@ httpServer.on('error', (err) => {
 process.on('SIGTERM', () => {
   stderr('[ipc-hub] SIGTERM received, shutting down');
   clearInterval(heartbeatInterval);
+  stopCIRelay();
   close();
   wss.close(() => httpServer.close(() => process.exit(0)));
 });
@@ -1165,6 +1168,7 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   stderr('[ipc-hub] SIGINT received, shutting down');
   clearInterval(heartbeatInterval);
+  stopCIRelay();
   close();
   wss.close(() => httpServer.close(() => process.exit(0)));
 });

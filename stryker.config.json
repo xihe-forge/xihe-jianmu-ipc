@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker/master/packages/core/schema/stryker-core.schema.json",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "node --test --test-force-exit tests/router.test.mjs"
+  },
+  "mutate": ["lib/router.mjs"],
+  "mutator": {
+    "excludedMutations": ["StringLiteral"]
+  },
+  "concurrency": 2,
+  "reporters": ["clear-text"],
+  "coverageAnalysis": "off",
+  "tempDirName": ".stryker-tmp",
+  "timeoutMS": 30000,
+  "dryRunTimeoutMinutes": 2
+}

@@ -479,3 +479,357 @@ test('scheduleInboxCleanup: session 重连后过期不删除', { timeout: 5000 }
   // session 应该仍然存在
   assert.ok(ctx.sessions.has('reconnected-agent'), 'session 重连后不应被删除');
 });
+
+// ── 飞书群组路由（feishu-group:<chatId>）────────────────────────────────────────
+
+test('routeMessage: 发送到 feishu-group 时调用 getFeishuToken', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid_xxx' }];
+
+  let tokenCallArg = null;
+  ctx.getFeishuToken = async (app) => {
+    tokenCallArg = app;
+    return 'test-token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    const senderSession = { name: 'jianmu-pm' };
+    const msg = { id: 'msg_fg1', type: 'message', from: 'jianmu-pm', to: 'feishu-group:chat_123', content: 'hello group' };
+
+    routeMessage(msg, senderSession);
+
+    // getFeishuToken 是 async，等待 Promise 链执行
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(tokenCallArg !== null, 'getFeishuToken 应该被调用');
+    assert.equal(tokenCallArg.name, 'bot');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('routeMessage: 发送到 feishu-group 但无 send-enabled app 时只打日志不报错', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [];
+
+  const { routeMessage } = createRouter(ctx);
+  const senderSession = { name: 'jianmu-pm' };
+  const msg = { id: 'msg_fg2', type: 'message', from: 'jianmu-pm', to: 'feishu-group:chat_123', content: 'hello group' };
+
+  // 不应抛异常
+  assert.doesNotThrow(() => routeMessage(msg, senderSession));
+  await new Promise(r => setTimeout(r, 10));
+
+  const hasLog = ctx._logs.some(l => l.includes('no send-enabled Feishu app found'));
+  assert.ok(hasLog, '应该记录 no send-enabled Feishu app found 日志');
+});
+
+// ── 飞书 P2P 路由（feishu 或 feishu:<appName>）──────────────────────────────────
+
+test('routeMessage: 发送到 feishu 时找默认 send app 并调用 getFeishuToken', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'default-bot', send: true, chatId: 'chat_456' }];
+
+  let tokenCallArg = null;
+  ctx.getFeishuToken = async (app) => {
+    tokenCallArg = app;
+    return 'test-token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    const senderSession = { name: 'jianmu-pm' };
+    const msg = { id: 'msg_p2p1', type: 'message', from: 'jianmu-pm', to: 'feishu', content: 'hello p2p' };
+
+    routeMessage(msg, senderSession);
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(tokenCallArg !== null, 'getFeishuToken 应该被调用');
+    assert.equal(tokenCallArg.name, 'default-bot');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('routeMessage: 发送到 feishu:specific-bot 时找指定 app', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [
+    { name: 'other-bot', send: true, chatId: 'chat_000' },
+    { name: 'specific-bot', chatId: 'chat_789' },
+  ];
+
+  let tokenCallArg = null;
+  ctx.getFeishuToken = async (app) => {
+    tokenCallArg = app;
+    return 'test-token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    const senderSession = { name: 'jianmu-pm' };
+    const msg = { id: 'msg_p2p2', type: 'message', from: 'jianmu-pm', to: 'feishu:specific-bot', content: 'hello specific' };
+
+    routeMessage(msg, senderSession);
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(tokenCallArg !== null, 'getFeishuToken 应该被调用');
+    assert.equal(tokenCallArg.name, 'specific-bot');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('routeMessage: 发送到 feishu 但无匹配 app 时只打日志不报错', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [];
+
+  const { routeMessage } = createRouter(ctx);
+  const senderSession = { name: 'jianmu-pm' };
+  const msg = { id: 'msg_p2p3', type: 'message', from: 'jianmu-pm', to: 'feishu', content: 'hello nobody' };
+
+  assert.doesNotThrow(() => routeMessage(msg, senderSession));
+  await new Promise(r => setTimeout(r, 10));
+
+  const hasLog = ctx._logs.some(l => l.includes('no matching Feishu app found'));
+  assert.ok(hasLog, '应该记录 no matching Feishu app found 日志');
+});
+
+// ── OpenClaw 路由：deliver 成功时不触发重试 ────────────────────────────────────
+
+test('routeMessage: deliverToOpenClaw 返回 true 时不调用 enqueueOpenClawRetry', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.deliverToOpenClaw = async () => true;
+
+  let retryCalled = false;
+  ctx.enqueueOpenClawRetry = () => { retryCalled = true; };
+
+  const { routeMessage } = createRouter(ctx);
+  ctx.sessions.set('openclaw', createOnlineSession('openclaw', createMockWs()));
+
+  const senderSession = { name: 'jianmu-pm' };
+  const msg = { id: 'msg_oc_ok', type: 'message', from: 'jianmu-pm', to: 'openclaw', content: 'task success' };
+
+  routeMessage(msg, senderSession);
+  await new Promise(r => setTimeout(r, 50));
+
+  assert.equal(retryCalled, false, 'deliverToOpenClaw 成功时不应调用 enqueueOpenClawRetry');
+});
+
+// ── OpenClaw 路由：deliver 失败时触发重试 ────────────────────────────────────────
+
+test('routeMessage: deliverToOpenClaw 返回 false 时调用 enqueueOpenClawRetry', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.deliverToOpenClaw = async () => false;
+
+  let retryMsg = null;
+  ctx.enqueueOpenClawRetry = (m) => { retryMsg = m; };
+
+  const { routeMessage } = createRouter(ctx);
+  ctx.sessions.set('openclaw', createOnlineSession('openclaw', createMockWs()));
+
+  const senderSession = { name: 'jianmu-pm' };
+  const msg = { id: 'msg_oc_fail', type: 'message', from: 'jianmu-pm', to: 'openclaw', content: 'task failed' };
+
+  routeMessage(msg, senderSession);
+  await new Promise(r => setTimeout(r, 50));
+
+  assert.ok(retryMsg !== null, 'deliverToOpenClaw 失败时应调用 enqueueOpenClawRetry');
+  assert.equal(retryMsg.id, 'msg_oc_fail');
+});
+
+// ── 广播时跳过 OpenClaw session ───────────────────────────────────────────────
+
+test('routeMessage: to="*" 广播时跳过 openclaw session', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsNormal = createMockWs();
+  const wsOC = createMockWs();
+  ctx.sessions.set('normal-agent', createOnlineSession('normal-agent', wsNormal));
+  ctx.sessions.set('openclaw', createOnlineSession('openclaw', wsOC));
+
+  const senderSession = { name: 'alice' };
+  const msg = { id: 'msg_bc_oc', type: 'message', from: 'alice', to: '*', content: 'broadcast skip oc' };
+
+  routeMessage(msg, senderSession);
+
+  assert.equal(wsNormal._sent.length, 1, '普通 session 应该收到广播');
+  assert.equal(wsOC._sent.length, 0, 'openclaw session 应该被跳过');
+});
+
+// ── topic fanout 时跳过 OpenClaw session ─────────────────────────────────────
+
+test('routeMessage: topic fanout 时跳过 openclaw session', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsNormal = createMockWs();
+  const wsOC = createMockWs();
+
+  const normalSession = createOnlineSession('normal-agent', wsNormal);
+  const ocSession = createOnlineSession('openclaw', wsOC);
+  normalSession.topics.add('events');
+  ocSession.topics.add('events');
+
+  ctx.sessions.set('normal-agent', normalSession);
+  ctx.sessions.set('openclaw', ocSession);
+
+  const senderSession = { name: 'alice' };
+  const msg = { id: 'msg_topic_oc', type: 'message', from: 'alice', to: '*', topic: 'events', content: 'event fired' };
+
+  routeMessage(msg, senderSession);
+
+  assert.equal(wsNormal._sent.length, 1, '订阅了 topic 的普通 session 应该收到');
+  assert.equal(wsOC._sent.length, 0, 'openclaw session 即使订阅了 topic 也应被跳过');
+});
+
+// ── 去重边界：id 为 undefined 时不去重 ───────────────────────────────────────
+
+test('routeMessage: msg.id 为 undefined 时不做去重（每次都投递）', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsEve = createMockWs();
+  ctx.sessions.set('eve', createOnlineSession('eve', wsEve));
+
+  const senderSession = { name: 'alice' };
+
+  routeMessage({ type: 'message', from: 'alice', to: 'eve', content: 'first' }, senderSession);
+  routeMessage({ type: 'message', from: 'alice', to: 'eve', content: 'second' }, senderSession);
+
+  assert.equal(wsEve._sent.length, 2, 'id 为 undefined 时两条消息都应投递');
+});
+
+// ── pushInbox 边界：第50条不淘汰，第51条才淘汰 ────────────────────────────────
+
+test('pushInbox: inbox 已有 49 条时 push 第 50 条不淘汰', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { pushInbox } = createRouter(ctx);
+
+  const session = createOnlineSession('test-agent', null);
+
+  for (let i = 0; i < 49; i++) {
+    pushInbox(session, { id: `msg_${i}`, content: `msg ${i}` });
+  }
+  assert.equal(session.inbox.length, 49);
+
+  pushInbox(session, { id: 'msg_49', content: 'fiftieth' });
+
+  // 恰好 50 条，不应触发淘汰
+  assert.equal(session.inbox.length, 50, '第 50 条不应触发淘汰');
+  assert.equal(session.inbox[0].id, 'msg_0', 'msg_0 应仍在 inbox 中');
+  assert.equal(session.inbox[49].id, 'msg_49', '最新消息应在末尾');
+});
+
+test('pushInbox: inbox 已有 50 条时 push 第 51 条淘汰第 1 条', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { pushInbox } = createRouter(ctx);
+
+  const session = createOnlineSession('test-agent', null);
+
+  for (let i = 0; i < 50; i++) {
+    pushInbox(session, { id: `msg_${i}`, content: `msg ${i}` });
+  }
+  assert.equal(session.inbox.length, 50);
+
+  pushInbox(session, { id: 'msg_50', content: 'fifty-first' });
+
+  assert.equal(session.inbox.length, 50, 'push 后仍应保持 50 条上限');
+  assert.equal(session.inbox[0].id, 'msg_1', 'msg_0 应被淘汰，msg_1 成为最旧');
+  assert.equal(session.inbox[49].id, 'msg_50', '最新消息应在末尾');
+});
+
+// ── 突变测试补强 ──────────────────────────────────────────────────────────────
+
+test('routeMessage: type 不是 message 时不调用 saveMessage', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', { name: 'target', ws, inbox: [], topics: new Set(), inboxExpiry: null });
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: 'sys_1', type: 'system', from: 'sender', to: 'target', content: 'ping' },
+    { name: 'sender' },
+  );
+
+  assert.equal(ctx._savedMessages.length, 0, 'type=system 时不应调用 saveMessage');
+});
+
+test('routeMessage: msg.id 为 null 时不写入 deliveredMessageIds', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', { name: 'target', ws, inbox: [], topics: new Set(), inboxExpiry: null });
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: null, type: 'message', from: 'sender', to: 'target', content: 'no id' },
+    { name: 'sender' },
+  );
+
+  assert.equal(ctx.deliveredMessageIds.size, 0, 'id 为 null 时不应写入 dedup map');
+});
+
+test('routeMessage: msg.id 为 null 时不写入 ackPending', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', { name: 'target', ws, inbox: [], topics: new Set(), inboxExpiry: null });
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: null, type: 'message', from: 'sender', to: 'target', content: 'no ack' },
+    { name: 'sender' },
+  );
+
+  assert.equal(ctx.ackPending.size, 0, 'id 为 null 时不应写入 ackPending');
+});
+
+test('scheduleInboxCleanup: 重复调用时 clearTimeout 旧 timer', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { scheduleInboxCleanup } = createRouter(ctx);
+
+  const session = {
+    name: 'test-agent',
+    ws: null,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('test-agent', session);
+
+  scheduleInboxCleanup(session);
+  const firstTimer = session.inboxExpiry;
+  assert.ok(firstTimer !== null, '第一次调用应设置 timer');
+
+  scheduleInboxCleanup(session);
+  const secondTimer = session.inboxExpiry;
+  assert.ok(secondTimer !== null, '第二次调用应设置新 timer');
+  assert.notEqual(firstTimer, secondTimer, '第二次调用应替换旧 timer');
+
+  clearTimeout(session.inboxExpiry);
+});
+
+test('flushInbox: 发送的消息格式为 { type: inbox, messages }', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  const { flushInbox } = createRouter(ctx);
+
+  const session = { name: 'agent', ws, inbox: [{ id: 'm1' }, { id: 'm2' }], topics: new Set(), inboxExpiry: null };
+
+  flushInbox(session);
+
+  assert.equal(ws._sent.length, 1, '应发送一条 inbox 消息');
+  assert.equal(ws._sent[0].type, 'inbox', 'type 应为 inbox');
+  assert.equal(ws._sent[0].messages.length, 2, '应包含 2 条缓冲消息');
+  assert.equal(session.inbox.length, 0, 'inbox 应被清空');
+});

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 
-const ROOT_DIR = fileURLToPath(new URL('../', import.meta.url));
+const ROOT_DIR = fileURLToPath(new URL('../../', import.meta.url));
 const TEST_TIMEOUT = 10_000;
 const HUB_START_TIMEOUT = 3_000;
 const WS_TIMEOUT = 3_000;

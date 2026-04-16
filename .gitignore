@@ -13,3 +13,4 @@ skills/
 CLAUDE.md
 .claude/
 coverage/
+.stryker-tmp

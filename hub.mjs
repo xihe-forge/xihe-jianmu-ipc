@@ -56,7 +56,23 @@ import {
   IDLE_SHUTDOWN_DELAY,
 } from './lib/constants.mjs';
 import { createMessage, createSystemEvent, createTask, validateMessage, TASK_STATUSES } from './lib/protocol.mjs';
-import { saveMessage, getMessages, getMessageCount, getMessageCountByAgent, cleanup, close, saveTask, getTask, updateTaskStatus, listTasks, getTaskStats } from './lib/db.mjs';
+import {
+  saveMessage,
+  getMessages,
+  getMessageCount,
+  getMessageCountByAgent,
+  cleanup,
+  close,
+  saveTask,
+  getTask,
+  updateTaskStatus,
+  listTasks,
+  getTaskStats,
+  saveInboxMessage,
+  getInboxMessages,
+  clearInbox,
+  clearExpiredInbox,
+} from './lib/db.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
@@ -125,6 +141,9 @@ const ctx = {
   stderr,
   audit,
   saveMessage,
+  saveInboxMessage,
+  getInboxMessages,
+  clearInbox,
   checkAuth,
   authTokens,
   AUTH_TOKEN,
@@ -253,7 +272,10 @@ const heartbeatInterval = setInterval(() => {
   }
 }, HEARTBEAT_INTERVAL);
 heartbeatInterval.unref();
-setInterval(() => cleanup(), 60 * 60 * 1000).unref();
+setInterval(() => {
+  cleanup();
+  clearExpiredInbox();
+}, 60 * 60 * 1000).unref();
 
 // 轮询源文件变更——exit触发自动重启（WSL2 inotify对NTFS不可用）
 const __hubWatchFiles = ['hub.mjs', 'lib/db.mjs', 'lib/protocol.mjs', 'lib/constants.mjs', 'lib/redact.mjs', 'lib/audit.mjs'];

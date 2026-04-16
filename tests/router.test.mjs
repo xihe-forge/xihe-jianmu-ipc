@@ -15,6 +15,9 @@ function createMockCtx() {
   const logs = [];
   const audits = [];
   const savedMessages = [];
+  const savedInboxMessages = [];
+  const persistedInbox = new Map();
+  const clearedInboxSessions = [];
   const sessions = new Map();
   const deliveredMessageIds = new Map();
   const ackPending = new Map();
@@ -31,10 +34,24 @@ function createMockCtx() {
     stderr: (msg) => logs.push(msg),
     audit: (event, details) => audits.push({ event, ...details }),
     saveMessage: (msg) => savedMessages.push(msg),
+    saveInboxMessage: (sessionName, msg) => {
+      savedInboxMessages.push({ sessionName, msg });
+      const list = persistedInbox.get(sessionName) ?? [];
+      list.push(msg);
+      persistedInbox.set(sessionName, list);
+    },
+    getInboxMessages: (sessionName) => [...(persistedInbox.get(sessionName) ?? [])],
+    clearInbox: (sessionName) => {
+      clearedInboxSessions.push(sessionName);
+      persistedInbox.delete(sessionName);
+    },
     // 用于断言的辅助引用
     _logs: logs,
     _audits: audits,
     _savedMessages: savedMessages,
+    _savedInboxMessages: savedInboxMessages,
+    _persistedInbox: persistedInbox,
+    _clearedInboxSessions: clearedInboxSessions,
   };
 }
 
@@ -154,6 +171,8 @@ test('pushInbox: 将消息加入 inbox', { timeout: 5000 }, () => {
 
   assert.equal(session.inbox.length, 1);
   assert.equal(session.inbox[0].id, 'msg_1');
+  assert.equal(ctx._savedInboxMessages.length, 1);
+  assert.equal(ctx._savedInboxMessages[0].sessionName, 'charlie');
 });
 
 test('pushInbox: 超过 INBOX_MAX_SIZE(50) 时淘汰最旧消息', { timeout: 5000 }, () => {
@@ -184,6 +203,10 @@ test('flushInbox: 将缓冲消息一次性发送给重连的 session', { timeout
 
   const ws = createMockWs();
   const session = createOnlineSession('dave', ws);
+  ctx._persistedInbox.set('dave', [
+    { id: 'msg_a', content: 'buffered 1' },
+    { id: 'msg_b', content: 'buffered 2' },
+  ]);
   session.inbox.push({ id: 'msg_a', content: 'buffered 1' });
   session.inbox.push({ id: 'msg_b', content: 'buffered 2' });
 
@@ -195,6 +218,30 @@ test('flushInbox: 将缓冲消息一次性发送给重连的 session', { timeout
   assert.equal(ws._sent.length, 1);
   assert.equal(ws._sent[0].type, 'inbox');
   assert.equal(ws._sent[0].messages.length, 2);
+  assert.deepEqual(ctx._clearedInboxSessions, ['dave']);
+});
+
+test('flushInbox: 合并 SQLite 和内存 inbox，并按 id 去重', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { flushInbox } = createRouter(ctx);
+
+  const ws = createMockWs();
+  const session = createOnlineSession('merge-agent', ws);
+  ctx._persistedInbox.set('merge-agent', [
+    { id: 'msg_1', content: 'persisted 1', ts: 1 },
+    { id: 'msg_2', content: 'persisted 2', ts: 2 },
+  ]);
+  session.inbox.push(
+    { id: 'msg_2', content: 'persisted 2', ts: 2 },
+    { id: 'msg_3', content: 'memory 3', ts: 3 },
+  );
+
+  flushInbox(session);
+
+  assert.equal(ws._sent.length, 1);
+  assert.deepEqual(ws._sent[0].messages.map(m => m.id), ['msg_1', 'msg_2', 'msg_3']);
+  assert.equal(session.inbox.length, 0);
+  assert.equal(ctx._persistedInbox.has('merge-agent'), false);
 });
 
 test('flushInbox: 空 inbox 时不发送', { timeout: 5000 }, () => {
@@ -216,6 +263,7 @@ test('flushInbox: openclaw session 时清空 inbox 但不发送', { timeout: 500
 
   const ws = createMockWs();
   const session = createOnlineSession('openclaw', ws);
+  ctx._persistedInbox.set('openclaw', [{ id: 'msg_x', content: 'for openclaw' }]);
   session.inbox.push({ id: 'msg_x', content: 'for openclaw' });
 
   flushInbox(session);
@@ -224,6 +272,7 @@ test('flushInbox: openclaw session 时清空 inbox 但不发送', { timeout: 500
   assert.equal(session.inbox.length, 0);
   // ws 不应该收到消息
   assert.equal(ws._sent.length, 0);
+  assert.deepEqual(ctx._clearedInboxSessions, ['openclaw']);
 });
 
 // ── routeMessage — 直接寻址（路径4：普通 IPC 会话） ───────────────────────────

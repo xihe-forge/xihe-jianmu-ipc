@@ -199,6 +199,41 @@ test('getMessageCountByAgent: 结果包含 name 和 count 字段', () => {
   }
 });
 
+// ── inbox 持久化 ──────────────────────────────────────────────────────────────
+
+test('saveInboxMessage + getInboxMessages: 保存后按 ts 升序返回并自动反序列化', () => {
+  const sessionName = `session_inbox_${Date.now()}`;
+  const msg1 = { id: `inbox_1_${Date.now()}`, content: 'first', ts: Date.now() - 10 };
+  const msg2 = { id: `inbox_2_${Date.now()}`, content: 'second', ts: Date.now() };
+
+  db.saveInboxMessage(sessionName, msg2);
+  db.saveInboxMessage(sessionName, msg1);
+
+  const rows = db.getInboxMessages(sessionName);
+  assert.deepEqual(rows.map(r => r.id), [msg1.id, msg2.id]);
+  assert.equal(rows[0].content, 'first');
+  assert.equal(rows[1].content, 'second');
+});
+
+test('clearInbox: 指定 session 的 inbox 消息会被清空', () => {
+  const sessionName = `session_clear_${Date.now()}`;
+  db.saveInboxMessage(sessionName, { id: `clear_1_${Date.now()}`, content: 'to clear', ts: Date.now() });
+
+  db.clearInbox(sessionName);
+
+  assert.deepEqual(db.getInboxMessages(sessionName), []);
+});
+
+test('clearExpiredInbox: 超过 TTL 的 inbox 消息会被删除', () => {
+  const sessionName = `session_expired_${Date.now()}`;
+  const oldMsg = { id: `expired_${Date.now()}`, content: 'old inbox', ts: Date.now() - 10 * 24 * 60 * 60 * 1000 };
+
+  db.saveInboxMessage(sessionName, oldMsg);
+  db.clearExpiredInbox(1);
+
+  assert.deepEqual(db.getInboxMessages(sessionName), []);
+});
+
 // ── cleanup ───────────────────────────────────────────────────────────────────
 
 test('cleanup: 超期数据被删除', () => {

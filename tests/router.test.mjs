@@ -833,3 +833,968 @@ test('flushInbox: 发送的消息格式为 { type: inbox, messages }', { timeout
   assert.equal(ws._sent[0].messages.length, 2, '应包含 2 条缓冲消息');
   assert.equal(session.inbox.length, 0, 'inbox 应被清空');
 });
+
+// ── send catch 块 ─────────────────────────────────────────────────────────────
+
+test('send: ws.send 抛异常时 stderr 记录错误', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { send } = createRouter(ctx);
+
+  const badWs = {
+    readyState: 1,
+    OPEN: 1,
+    send: () => { throw new Error('broken pipe'); },
+  };
+
+  assert.doesNotThrow(() => send(badWs, { test: true }));
+  assert.ok(ctx._logs.some(l => l.includes('send error')), '应记录 send error 日志');
+  assert.ok(ctx._logs.some(l => l.includes('broken pipe')), '日志应包含错误消息');
+});
+
+// ── broadcast 详细条件验证 ─────────────────────────────────────────────────────
+
+test('broadcast: ws 存在但非 OPEN 状态时不发送（CLOSED）', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { broadcast } = createRouter(ctx);
+
+  const openWs = createMockWs();
+  const closedWs = createMockWs();
+  closedWs.readyState = 3; // CLOSED
+
+  ctx.sessions.set('online', createOnlineSession('online', openWs));
+  ctx.sessions.set('closed', { name: 'closed', ws: closedWs, connectedAt: 0, topics: new Set(), inbox: [], inboxExpiry: null });
+
+  broadcast({ type: 'test', content: 'hi' });
+
+  assert.equal(openWs._sent.length, 1, 'OPEN session 应收到消息');
+  assert.equal(closedWs._sent.length, 0, 'CLOSED ws 不应收到消息');
+});
+
+test('broadcast: ws 为 null 时不发送也不报错', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { broadcast } = createRouter(ctx);
+
+  ctx.sessions.set('offline', { name: 'offline', ws: null, connectedAt: 0, topics: new Set(), inbox: [], inboxExpiry: null });
+
+  assert.doesNotThrow(() => broadcast({ type: 'test' }));
+});
+
+test('broadcast: 排除 exceptName 精确匹配', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { broadcast } = createRouter(ctx);
+
+  const wsA = createMockWs();
+  const wsB = createMockWs();
+  const wsC = createMockWs();
+  ctx.sessions.set('alice', createOnlineSession('alice', wsA));
+  ctx.sessions.set('bob', createOnlineSession('bob', wsB));
+  ctx.sessions.set('charlie', createOnlineSession('charlie', wsC));
+
+  broadcast({ type: 'msg', content: 'hello' }, 'bob');
+
+  assert.equal(wsA._sent.length, 1, 'alice 应收到');
+  assert.equal(wsB._sent.length, 0, 'bob 被排除不应收到');
+  assert.equal(wsC._sent.length, 1, 'charlie 应收到');
+});
+
+// ── ackPending 详细验证 ────────────────────────────────────────────────────────
+
+test('routeMessage: ackPending 写入正确的 sender 和 ts', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', createOnlineSession('target', ws));
+  const { routeMessage } = createRouter(ctx);
+
+  const before = Date.now();
+  routeMessage(
+    { id: 'ack_test_1', type: 'message', from: 'sender', to: 'target', content: 'test' },
+    { name: 'sender' },
+  );
+  const after = Date.now();
+
+  assert.ok(ctx.ackPending.has('ack_test_1'), 'ackPending 应包含该 id');
+  const entry = ctx.ackPending.get('ack_test_1');
+  assert.equal(entry.sender, 'sender', 'sender 字段应为发送方 name');
+  assert.ok(entry.ts >= before && entry.ts <= after, 'ts 应在调用时间范围内');
+});
+
+test('routeMessage: senderSession.name 为空字符串时不写入 ackPending', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', createOnlineSession('target', ws));
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: 'ack_empty_sender', type: 'message', from: '', to: 'target', content: 'test' },
+    { name: '' },
+  );
+
+  assert.equal(ctx.ackPending.size, 0, 'senderSession.name 为空时不应写入 ackPending');
+});
+
+test('routeMessage: ackPending entry 包含 sender 和 ts 两个字段', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', createOnlineSession('target', ws));
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: 'ack_fields', type: 'message', from: 'alice', to: 'target', content: 'test' },
+    { name: 'alice' },
+  );
+
+  const entry = ctx.ackPending.get('ack_fields');
+  assert.ok(entry !== undefined, 'entry 应存在');
+  assert.ok(Object.prototype.hasOwnProperty.call(entry, 'sender'), 'entry 应有 sender 字段');
+  assert.ok(Object.prototype.hasOwnProperty.call(entry, 'ts'), 'entry 应有 ts 字段');
+  assert.equal(typeof entry.ts, 'number', 'ts 应为数字');
+});
+
+// ── topic fanout 详细条件验证 ──────────────────────────────────────────────────
+
+test('routeMessage: topic fanout 时发送方不收到自己的消息', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsSender = createMockWs();
+  const wsReceiver = createMockWs();
+
+  const senderSession = createOnlineSession('alice', wsSender);
+  senderSession.topics.add('news');
+  const receiverSession = createOnlineSession('bob', wsReceiver);
+  receiverSession.topics.add('news');
+
+  ctx.sessions.set('alice', senderSession);
+  ctx.sessions.set('bob', receiverSession);
+
+  routeMessage(
+    { id: 'topic_self', type: 'message', from: 'alice', to: '*', topic: 'news', content: 'self test' },
+    { name: 'alice' },
+  );
+
+  assert.equal(wsSender._sent.length, 0, '发送方自己不应收到 topic 消息');
+  assert.equal(wsReceiver._sent.length, 1, '订阅者应收到消息');
+});
+
+test('routeMessage: topic fanout 时非 OPEN 的 session 消息进 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const offlineSession = {
+    name: 'offline-sub',
+    ws: null,
+    connectedAt: 0,
+    topics: new Set(['updates']),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('offline-sub', offlineSession);
+
+  routeMessage(
+    { id: 'topic_offline', type: 'message', from: 'sender', to: '*', topic: 'updates', content: 'update' },
+    { name: 'sender' },
+  );
+
+  assert.equal(offlineSession.inbox.length, 1, '离线订阅者消息应进 inbox');
+  assert.equal(offlineSession.inbox[0].id, 'topic_offline', 'inbox 应包含正确消息');
+});
+
+test('routeMessage: topic fanout 时 ws 为 CLOSED 状态的 session 消息进 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const closedWs = createMockWs();
+  closedWs.readyState = 3; // CLOSED
+
+  const closedSession = {
+    name: 'closed-sub',
+    ws: closedWs,
+    connectedAt: 0,
+    topics: new Set(['alerts']),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('closed-sub', closedSession);
+
+  routeMessage(
+    { id: 'topic_closed', type: 'message', from: 'sender', to: '*', topic: 'alerts', content: 'alert' },
+    { name: 'sender' },
+  );
+
+  assert.equal(closedWs._sent.length, 0, 'CLOSED ws 不应直接发送');
+  assert.equal(closedSession.inbox.length, 1, 'CLOSED ws 的 session 消息应进 inbox');
+});
+
+test('routeMessage: 未订阅 topic 的 session 不收到 topic 消息', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsUnsubbed = createMockWs();
+  ctx.sessions.set('unsub', createOnlineSession('unsub', wsUnsubbed));
+
+  routeMessage(
+    { id: 'topic_unsub', type: 'message', from: 'sender', to: '*', topic: 'secret', content: 'secret msg' },
+    { name: 'sender' },
+  );
+
+  assert.equal(wsUnsubbed._sent.length, 0, '未订阅 topic 的 session 不应收到消息');
+});
+
+// ── 广播路由详细条件验证 ───────────────────────────────────────────────────────
+
+test('routeMessage: to="*" 广播时发送方自己不收到消息', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsSender = createMockWs();
+  const wsOther = createMockWs();
+  ctx.sessions.set('alice', createOnlineSession('alice', wsSender));
+  ctx.sessions.set('bob', createOnlineSession('bob', wsOther));
+
+  routeMessage(
+    { id: 'bc_self', type: 'message', from: 'alice', to: '*', content: 'broadcast' },
+    { name: 'alice' },
+  );
+
+  assert.equal(wsSender._sent.length, 0, '发送方自己不应收到广播');
+  assert.equal(wsOther._sent.length, 1, '其他 session 应收到广播');
+});
+
+test('routeMessage: to="*" 广播时离线 session 消息进 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const offlineSession = {
+    name: 'offline-agent',
+    ws: null,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('offline-agent', offlineSession);
+
+  routeMessage(
+    { id: 'bc_offline', type: 'message', from: 'sender', to: '*', content: 'broadcast to offline' },
+    { name: 'sender' },
+  );
+
+  assert.equal(offlineSession.inbox.length, 1, '离线 session 广播消息应进 inbox');
+  assert.equal(offlineSession.inbox[0].id, 'bc_offline', 'inbox 应包含正确消息');
+});
+
+test('routeMessage: to="*" 广播时 CLOSED ws 的 session 消息进 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const closedWs = createMockWs();
+  closedWs.readyState = 3; // CLOSED
+
+  const closedSession = {
+    name: 'closed-agent',
+    ws: closedWs,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('closed-agent', closedSession);
+
+  routeMessage(
+    { id: 'bc_closed', type: 'message', from: 'sender', to: '*', content: 'broadcast to closed' },
+    { name: 'sender' },
+  );
+
+  assert.equal(closedWs._sent.length, 0, 'CLOSED ws 不应直接发送');
+  assert.equal(closedSession.inbox.length, 1, 'CLOSED ws session 广播消息应进 inbox');
+});
+
+test('routeMessage: topic 存在时 to="*" 不走广播逻辑', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsSubscribed = createMockWs();
+  const wsUnsubscribed = createMockWs();
+
+  const subbedSession = createOnlineSession('subbed', wsSubscribed);
+  subbedSession.topics.add('chan');
+  ctx.sessions.set('subbed', subbedSession);
+  ctx.sessions.set('unsubbed', createOnlineSession('unsubbed', wsUnsubscribed));
+
+  routeMessage(
+    { id: 'topic_no_bc', type: 'message', from: 'sender', to: '*', topic: 'chan', content: 'topic only' },
+    { name: 'sender' },
+  );
+
+  // 有 topic 时只走 topic fanout，不走广播
+  assert.equal(wsSubscribed._sent.length, 1, '订阅者应通过 topic fanout 收到');
+  assert.equal(wsUnsubscribed._sent.length, 0, '未订阅者不应通过广播收到');
+});
+
+// ── 普通 IPC 路由详细验证 ─────────────────────────────────────────────────────
+
+test('routeMessage: 离线 session inbox 包含正确消息内容', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const offlineSession = {
+    name: 'offline-eve',
+    ws: null,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('offline-eve', offlineSession);
+
+  const msg = { id: 'buf_1', type: 'message', from: 'alice', to: 'offline-eve', content: 'buffered content' };
+  routeMessage(msg, { name: 'alice' });
+
+  assert.equal(offlineSession.inbox.length, 1);
+  assert.equal(offlineSession.inbox[0].id, 'buf_1');
+  assert.equal(offlineSession.inbox[0].content, 'buffered content');
+  assert.ok(ctx._logs.some(l => l.includes('offline') || l.includes('buffered')), '应记录 buffered 日志');
+});
+
+test('routeMessage: 创建 stub session 的属性正确', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const msg = { id: 'stub_1', type: 'message', from: 'alice', to: 'unknown-agent', content: 'stub content' };
+  routeMessage(msg, { name: 'alice' });
+
+  assert.ok(ctx.sessions.has('unknown-agent'), 'stub session 应被创建');
+  const stub = ctx.sessions.get('unknown-agent');
+
+  assert.equal(stub.name, 'unknown-agent', 'stub.name 应等于 to');
+  assert.equal(stub.ws, null, 'stub.ws 应为 null');
+  assert.equal(stub.connectedAt, 0, 'stub.connectedAt 应为 0');
+  assert.ok(stub.topics instanceof Set, 'stub.topics 应为 Set');
+  assert.equal(stub.topics.size, 0, 'stub.topics 应为空');
+  assert.ok(Array.isArray(stub.inbox), 'stub.inbox 应为数组');
+  assert.equal(stub.inbox.length, 1, 'stub.inbox 应包含 1 条消息');
+  assert.equal(stub.inbox[0].id, 'stub_1', 'stub.inbox[0] 应为正确消息');
+  assert.equal(stub.inbox[0].content, 'stub content', 'stub.inbox[0].content 正确');
+});
+
+test('routeMessage: 创建 stub session 时调用 scheduleInboxCleanup（inboxExpiry 被设置）', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: 'stub_cleanup', type: 'message', from: 'alice', to: 'ghost-agent', content: 'test' },
+    { name: 'alice' },
+  );
+
+  const stub = ctx.sessions.get('ghost-agent');
+  assert.ok(stub !== undefined, 'stub 应已创建');
+  assert.ok(stub.inboxExpiry !== null, 'stub.inboxExpiry 应已被 scheduleInboxCleanup 设置');
+
+  // 清理 timer 避免泄漏
+  clearTimeout(stub.inboxExpiry);
+});
+
+// ── 飞书群组路由 fetch 参数验证 ────────────────────────────────────────────────
+
+test('feishu-group: fetch 请求包含正确的 chatId 和 content', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid_xxx' }];
+  ctx.getFeishuToken = async () => 'test-token';
+
+  let fetchArgs = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    fetchArgs = { url, opts };
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_fetch_1', type: 'message', from: 'sender', to: 'feishu-group:chat_123', content: 'hello feishu' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(fetchArgs !== null, 'fetch 应被调用');
+    assert.ok(fetchArgs.url.includes('receive_id_type=chat_id'), 'URL 应包含 receive_id_type=chat_id');
+    const body = JSON.parse(fetchArgs.opts.body);
+    assert.equal(body.receive_id, 'chat_123', 'receive_id 应为 chatId');
+    assert.equal(body.msg_type, 'text', 'msg_type 应为 text');
+    assert.deepEqual(JSON.parse(body.content), { text: 'hello feishu' }, 'content 应正确序列化');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: fetch 请求包含正确的 Authorization header', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid_xxx' }];
+  ctx.getFeishuToken = async () => 'my-secret-token';
+
+  let fetchHeaders = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    fetchHeaders = opts.headers;
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_auth', type: 'message', from: 'sender', to: 'feishu-group:chat_xyz', content: 'auth test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(fetchHeaders !== null, 'headers 应被设置');
+    assert.equal(fetchHeaders['Authorization'], 'Bearer my-secret-token', 'Authorization 应包含正确 token');
+    assert.equal(fetchHeaders['Content-Type'], 'application/json');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: fetch 返回 code !== 0 时打日志', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid_xxx' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 99, msg: 'bad request' }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_err', type: 'message', from: 'sender', to: 'feishu-group:chat_err', content: 'err test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('99') || l.includes('error')), '应记录错误 code 日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: fetch 成功时打日志含 chatId', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid_xxx' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_ok', type: 'message', from: 'sender', to: 'feishu-group:chat_ok', content: 'ok test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('chat_ok') || l.includes('sent')), '成功时应打含 chatId 的日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: fetch 抛异常时打日志不 crash', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid_xxx' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('network error'); };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    assert.doesNotThrow(() => routeMessage(
+      { id: 'fg_throw', type: 'message', from: 'sender', to: 'feishu-group:chat_throw', content: 'throw test' },
+      { name: 'sender' },
+    ));
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('failed') || l.includes('network error')), '应记录异常日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: getFeishuToken 返回 null 时不调用 fetch', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid_xxx' }];
+  ctx.getFeishuToken = async () => null;
+
+  let fetchCalled = false;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { fetchCalled = true; return { json: async () => ({ code: 0 }) }; };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_notoken', type: 'message', from: 'sender', to: 'feishu-group:chat_notoken', content: 'no token' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.equal(fetchCalled, false, 'token 为 null 时不应调用 fetch');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// ── 飞书 P2P 路由 fetch 参数验证 ──────────────────────────────────────────────
+
+test('feishu P2P: fetch 请求包含正确的 receiveId 和 receiveIdType（chatId 优先）', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, chatId: 'chat_p2p_456', targetOpenId: 'open_oid' }];
+  ctx.getFeishuToken = async () => 'p2p-token';
+
+  let fetchArgs = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    fetchArgs = { url, opts };
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_chat', type: 'message', from: 'sender', to: 'feishu', content: 'p2p hello' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(fetchArgs !== null, 'fetch 应被调用');
+    // chatId 存在时 receiveIdType 应为 chat_id
+    assert.ok(fetchArgs.url.includes('receive_id_type=chat_id'), 'chatId 存在时 URL 应用 chat_id');
+    const body = JSON.parse(fetchArgs.opts.body);
+    assert.equal(body.receive_id, 'chat_p2p_456', 'receive_id 应为 chatId');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: 无 chatId 时使用 targetOpenId 和 open_id 类型', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'open_id_abc' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  let fetchArgs = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    fetchArgs = { url, opts };
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_openid', type: 'message', from: 'sender', to: 'feishu', content: 'p2p open_id' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(fetchArgs !== null, 'fetch 应被调用');
+    assert.ok(fetchArgs.url.includes('receive_id_type=open_id'), '无 chatId 时 URL 应用 open_id');
+    const body = JSON.parse(fetchArgs.opts.body);
+    assert.equal(body.receive_id, 'open_id_abc', 'receive_id 应为 targetOpenId');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch content 正确序列化为 JSON 字符串', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid_p2p' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  let fetchBody = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    fetchBody = JSON.parse(opts.body);
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_content', type: 'message', from: 'sender', to: 'feishu', content: 'test content 123' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(fetchBody !== null, 'fetch body 应被捕获');
+    assert.equal(fetchBody.msg_type, 'text', 'msg_type 应为 text');
+    const contentParsed = JSON.parse(fetchBody.content);
+    assert.deepEqual(contentParsed, { text: 'test content 123' }, 'content 应正确序列化');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch 返回 code !== 0 时打日志', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'mybot', send: true, targetOpenId: 'oid_err' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 400, msg: 'invalid param' }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_err', type: 'message', from: 'sender', to: 'feishu', content: 'err' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('400') || l.includes('error') || l.includes('mybot')), '应记录错误日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch 成功时打日志含 app.name', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'success-bot', send: true, targetOpenId: 'oid_ok' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_ok', type: 'message', from: 'sender', to: 'feishu', content: 'ok' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('success-bot')), '成功日志应包含 app.name');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch 抛异常时打日志不 crash', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'crash-bot', send: true, targetOpenId: 'oid_crash' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('connection refused'); };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    assert.doesNotThrow(() => routeMessage(
+      { id: 'p2p_crash', type: 'message', from: 'sender', to: 'feishu', content: 'crash' },
+      { name: 'sender' },
+    ));
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('failed') || l.includes('connection refused') || l.includes('crash-bot')), '应记录异常日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: getFeishuToken 返回 null 时不调用 fetch', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => null;
+
+  let fetchCalled = false;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { fetchCalled = true; return { json: async () => ({ code: 0 }) }; };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_notoken', type: 'message', from: 'sender', to: 'feishu', content: 'no token' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.equal(fetchCalled, false, 'token 为 null 时不应调用 fetch');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: 通过 feishu:<appName> 精确找到指定 app 的 receiveId', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [
+    { name: 'bot-a', send: true, targetOpenId: 'oid_a' },
+    { name: 'bot-b', chatId: 'chat_b_789', targetOpenId: 'oid_b' },
+  ];
+  ctx.getFeishuToken = async () => 'token';
+
+  let fetchBody = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    fetchBody = JSON.parse(opts.body);
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_named', type: 'message', from: 'sender', to: 'feishu:bot-b', content: 'named bot' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(fetchBody !== null, 'fetch 应被调用');
+    // bot-b 有 chatId，应优先使用 chatId
+    assert.equal(fetchBody.receive_id, 'chat_b_789', '应使用 bot-b 的 chatId');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// ── scheduleInboxCleanup 真实 timer 行为验证 ───────────────────────────────────
+
+test('scheduleInboxCleanup: 调用后 inboxExpiry 不为 null', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { scheduleInboxCleanup } = createRouter(ctx);
+
+  const session = {
+    name: 'timer-test',
+    ws: null,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+
+  scheduleInboxCleanup(session);
+  assert.ok(session.inboxExpiry !== null, 'inboxExpiry 应被设置为非 null');
+
+  clearTimeout(session.inboxExpiry);
+});
+
+test('scheduleInboxCleanup: 已有 timer 时再次调用会替换为新 timer', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { scheduleInboxCleanup } = createRouter(ctx);
+
+  const session = {
+    name: 'timer-replace',
+    ws: null,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+
+  scheduleInboxCleanup(session);
+  const first = session.inboxExpiry;
+  assert.ok(first !== null, '第一次调用应设置 timer');
+
+  scheduleInboxCleanup(session);
+  const second = session.inboxExpiry;
+  assert.ok(second !== null, '第二次调用应设置新 timer');
+  assert.notEqual(String(first), String(second), '两次 timer 应不同（旧的被替换）');
+
+  clearTimeout(session.inboxExpiry);
+});
+
+// ── OpenClaw 路由：topic fanout 时跳过的验证 ─────────────────────────────────
+
+test('routeMessage: topic fanout 时跳过 openclaw session，消息不进其 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const ocSession = {
+    name: 'openclaw',
+    ws: null,
+    connectedAt: 0,
+    topics: new Set(['events']),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('openclaw', ocSession);
+
+  routeMessage(
+    { id: 'topic_oc_skip', type: 'message', from: 'sender', to: '*', topic: 'events', content: 'skip oc' },
+    { name: 'sender' },
+  );
+
+  assert.equal(ocSession.inbox.length, 0, 'openclaw session topic fanout 时 inbox 也不应收到');
+});
+
+test('routeMessage: to="*" 广播时跳过 openclaw，消息不进其 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const ocSession = {
+    name: 'openclaw',
+    ws: null,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('openclaw', ocSession);
+
+  routeMessage(
+    { id: 'bc_oc_skip', type: 'message', from: 'sender', to: '*', content: 'skip oc broadcast' },
+    { name: 'sender' },
+  );
+
+  assert.equal(ocSession.inbox.length, 0, '广播时 openclaw inbox 也不应收到');
+});
+
+// ── 去重写入 deliveredMessageIds 验证 ────────────────────────────────────────
+
+test('routeMessage: msg.id 存在时写入 deliveredMessageIds', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', createOnlineSession('target', ws));
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: 'dedup_write', type: 'message', from: 'alice', to: 'target', content: 'test' },
+    { name: 'alice' },
+  );
+
+  assert.ok(ctx.deliveredMessageIds.has('dedup_write'), 'deliveredMessageIds 应包含 msg.id');
+  assert.equal(typeof ctx.deliveredMessageIds.get('dedup_write'), 'number', 'value 应为 timestamp 数字');
+});
+
+test('routeMessage: 重复 msg.id 不再写入 ackPending 不重复累加', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', createOnlineSession('target', ws));
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: 'dup_ack', type: 'message', from: 'alice', to: 'target', content: 'first' },
+    { name: 'alice' },
+  );
+  const firstEntry = ctx.ackPending.get('dup_ack');
+
+  routeMessage(
+    { id: 'dup_ack', type: 'message', from: 'alice', to: 'target', content: 'second dup' },
+    { name: 'alice' },
+  );
+
+  // 第二次调用应被去重跳过，ackPending 的 entry 不变
+  assert.equal(ctx.ackPending.size, 1, 'ackPending 应只有一条 entry');
+  assert.equal(ctx.ackPending.get('dup_ack'), firstEntry, '重复消息不应更新 ackPending');
+});
+
+// ── topic + to 组合：同时有 topic 和直接地址时不重复投递 ──────────────────────
+
+test('routeMessage: topic fanout 已投递的 session，直接寻址时不重复', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsBob = createMockWs();
+  const bobSession = createOnlineSession('bob', wsBob);
+  bobSession.topics.add('news');
+  ctx.sessions.set('bob', bobSession);
+
+  // to='bob' 且带 topic，bob 已通过 topic fanout 收到，直接寻址应被跳过（delivered.has）
+  routeMessage(
+    { id: 'combo_1', type: 'message', from: 'alice', to: 'bob', topic: 'news', content: 'combo' },
+    { name: 'alice' },
+  );
+
+  assert.equal(wsBob._sent.length, 1, 'bob 应只收到一条消息（不重复）');
+});
+
+// ── flushInbox 内容验证 ────────────────────────────────────────────────────────
+
+test('flushInbox: messages 数组包含原始消息对象', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  const { flushInbox } = createRouter(ctx);
+
+  const msg1 = { id: 'flush_a', type: 'message', content: 'first buffered' };
+  const msg2 = { id: 'flush_b', type: 'message', content: 'second buffered' };
+  const session = { name: 'agent', ws, inbox: [msg1, msg2], topics: new Set(), inboxExpiry: null };
+
+  flushInbox(session);
+
+  const sent = ws._sent[0];
+  assert.equal(sent.messages[0].id, 'flush_a');
+  assert.equal(sent.messages[0].content, 'first buffered');
+  assert.equal(sent.messages[1].id, 'flush_b');
+  assert.equal(sent.messages[1].content, 'second buffered');
+});
+
+// ── feishu-group: chatId 为空字符串时不发送 ────────────────────────────────────
+
+test('feishu-group: chatId 为空字符串时不触发 feishu 请求', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  let tokenCalled = false;
+  ctx.getFeishuToken = async () => { tokenCalled = true; return 'token'; };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    // to='feishu-group:' (empty chatId after split)
+    routeMessage(
+      { id: 'fg_empty_chat', type: 'message', from: 'sender', to: 'feishu-group:', content: 'empty chatId' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    // chatId 为空，不应调用 getFeishuToken
+    assert.equal(tokenCalled, false, 'chatId 为空时不应调用 getFeishuToken');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// ── routeMessage: stderr 记录路由信息 ─────────────────────────────────────────
+
+test('routeMessage: 调用时 stderr 记录 from→to 信息', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const ws = createMockWs();
+  ctx.sessions.set('target', createOnlineSession('target', ws));
+  const { routeMessage } = createRouter(ctx);
+
+  routeMessage(
+    { id: 'log_test', type: 'message', from: 'alice', to: 'target', content: 'test' },
+    { name: 'alice' },
+  );
+
+  assert.ok(ctx._logs.some(l => l.includes('alice') && l.includes('target')), 'stderr 应记录 from→to 信息');
+});
+
+// ── pushInbox 边界：连续写入内容顺序正确 ─────────────────────────────────────
+
+test('pushInbox: 多次 push 后消息顺序 FIFO', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { pushInbox } = createRouter(ctx);
+
+  const session = createOnlineSession('agent', null);
+  pushInbox(session, { id: 'first' });
+  pushInbox(session, { id: 'second' });
+  pushInbox(session, { id: 'third' });
+
+  assert.equal(session.inbox[0].id, 'first');
+  assert.equal(session.inbox[1].id, 'second');
+  assert.equal(session.inbox[2].id, 'third');
+});
+
+// ── broadcast: 只有一个 session 时排除后无人接收 ─────────────────────────────
+
+test('broadcast: session 全部被排除时不报错', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { broadcast } = createRouter(ctx);
+
+  const ws = createMockWs();
+  ctx.sessions.set('alice', createOnlineSession('alice', ws));
+
+  assert.doesNotThrow(() => broadcast({ type: 'msg' }, 'alice'));
+  assert.equal(ws._sent.length, 0, 'alice 被排除后没有人收到消息');
+});

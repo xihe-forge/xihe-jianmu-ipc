@@ -80,6 +80,7 @@ Agent上下线自动推送飞书通知。状态卡片支持刷新按钮。审批
 | `OPENCLAW_URL` | `http://127.0.0.1:18789` | OpenClaw Gateway地址 |
 | `OPENCLAW_TOKEN` | — | OpenClaw API token |
 | `IPC_DB_PATH` | `data/messages.db` | SQLite数据库路径 |
+| `IPC_DEV_WATCH` | — | 设为1启用源文件变更自动重启（仅开发模式） |
 
 飞书配置已从环境变量迁移到 `feishu-apps.json`，支持多应用。见 `feishu-apps.example.json`。
 

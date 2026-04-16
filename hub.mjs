@@ -277,21 +277,26 @@ setInterval(() => {
   clearExpiredInbox();
 }, 60 * 60 * 1000).unref();
 
-// 轮询源文件变更——exit触发自动重启（WSL2 inotify对NTFS不可用）
-const __hubWatchFiles = ['hub.mjs', 'lib/db.mjs', 'lib/protocol.mjs', 'lib/constants.mjs', 'lib/redact.mjs', 'lib/audit.mjs'];
-const __hubFileMtimes = new Map();
-for (const file of __hubWatchFiles) {
-  try { __hubFileMtimes.set(file, statSync(join(__hubDir, file)).mtimeMs); } catch {}
-}
-setInterval(() => {
-  for (const [file, oldMtime] of __hubFileMtimes) {
-    try {
-      const mtime = statSync(join(__hubDir, file)).mtimeMs;
-      if (mtime !== oldMtime) { stderr(`[ipc-hub] source file changed: ${file}, restarting...`); process.exit(0); }
-    } catch {}
+// 轮询源文件变更——仅开发模式启用（IPC_DEV_WATCH=1）
+// 生产环境默认关闭，避免代码提交触发Hub重启导致全员断线
+if (process.env.IPC_DEV_WATCH === '1') {
+  const __hubWatchFiles = ['hub.mjs', 'lib/router.mjs', 'lib/http-handlers.mjs', 'lib/db.mjs', 'lib/protocol.mjs', 'lib/constants.mjs'];
+  const __hubFileMtimes = new Map();
+  for (const file of __hubWatchFiles) {
+    try { __hubFileMtimes.set(file, statSync(join(__hubDir, file)).mtimeMs); } catch {}
   }
-}, 10000);
-stderr('[ipc-hub] polling source files for auto-restart (10s interval)');
+  setInterval(() => {
+    for (const [file, oldMtime] of __hubFileMtimes) {
+      try {
+        const mtime = statSync(join(__hubDir, file)).mtimeMs;
+        if (mtime !== oldMtime) { stderr(`[ipc-hub] source file changed: ${file}, restarting...`); process.exit(0); }
+      } catch {}
+    }
+  }, 10000);
+  stderr('[ipc-hub] DEV mode: polling source files for auto-restart (10s interval)');
+} else {
+  stderr('[ipc-hub] file watch disabled (set IPC_DEV_WATCH=1 to enable)');
+}
 
 httpServer.listen(PORT, DEFAULT_HOST, () => {
   stderr(`[ipc-hub] listening on ${DEFAULT_HOST}:${PORT}`);

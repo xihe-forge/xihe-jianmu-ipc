@@ -1798,3 +1798,1025 @@ test('broadcast: session 全部被排除时不报错', { timeout: 5000 }, () => 
   assert.doesNotThrow(() => broadcast({ type: 'msg' }, 'alice'));
   assert.equal(ws._sent.length, 0, 'alice 被排除后没有人收到消息');
 });
+
+// ── D组：OpenClaw deliver 成功后 pending-cards.json 更新验证 ─────────────────
+
+import { readFileSync as _readFileSync, writeFileSync as _writeFileSync, existsSync as _existsSync, mkdirSync as _mkdirSync } from 'node:fs';
+import { join as _join, dirname as _dirname } from 'node:path';
+import { fileURLToPath as _fileURLToPath } from 'node:url';
+
+const __testDir = _dirname(_fileURLToPath(import.meta.url));
+const _pcPath = _join(__testDir, '..', 'data', 'pending-cards.json');
+
+/** 备份并替换 pending-cards.json，测试后还原（支持 async fn） */
+async function withPendingCards(testData, fn) {
+  let original = null;
+  const hadFile = _existsSync(_pcPath);
+  if (hadFile) {
+    original = _readFileSync(_pcPath, 'utf8');
+  }
+  _writeFileSync(_pcPath, JSON.stringify(testData));
+  try {
+    return await fn();
+  } finally {
+    if (hadFile && original !== null) {
+      _writeFileSync(_pcPath, original);
+    }
+  }
+}
+
+test('OpenClaw: deliver 成功后更新 pending-cards.json 中匹配任务的 stage 为 2', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  const msgId = 'msg_pending_test_001';
+  ctx.deliverToOpenClaw = async () => true;
+
+  const testData = {
+    'test-app': {
+      chatId: 'chat_test',
+      cardMessageId: 'card_test',
+      tasks: [
+        { id: msgId, preview: 'test task', stage: 1, hubMessageId: msgId },
+        { id: 'other_msg', preview: 'other', stage: 1, hubMessageId: 'other_msg' },
+      ],
+    },
+  };
+
+  await withPendingCards(testData, async () => {
+    const { routeMessage } = createRouter(ctx);
+    ctx.sessions.set('openclaw', createOnlineSession('openclaw', createMockWs()));
+
+    routeMessage(
+      { id: msgId, type: 'message', from: 'sender', to: 'openclaw', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 150));
+
+    const updated = JSON.parse(_readFileSync(_pcPath, 'utf8'));
+    const task = updated['test-app'].tasks.find(t => t.hubMessageId === msgId);
+    assert.ok(task !== undefined, '应能找到对应任务');
+    assert.equal(task.stage, 2, '匹配任务的 stage 应被更新为 2');
+
+    // 不匹配的任务不受影响
+    const otherTask = updated['test-app'].tasks.find(t => t.hubMessageId === 'other_msg');
+    assert.equal(otherTask.stage, 1, '不匹配的任务 stage 不应被修改');
+  });
+});
+
+test('OpenClaw: deliver 成功后只更新 stage<2 的匹配任务', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  const msgId = 'msg_stage2_test';
+  ctx.deliverToOpenClaw = async () => true;
+
+  const testData = {
+    'app1': {
+      tasks: [
+        { id: msgId, preview: 'already done', stage: 2, hubMessageId: msgId }, // stage 已经是 2
+        { id: 'fresh', preview: 'fresh', stage: 0, hubMessageId: msgId },       // stage < 2，同 msgId
+      ],
+    },
+  };
+
+  await withPendingCards(testData, async () => {
+    const { routeMessage } = createRouter(ctx);
+    ctx.sessions.set('openclaw', createOnlineSession('openclaw', createMockWs()));
+
+    routeMessage(
+      { id: msgId, type: 'message', from: 'sender', to: 'openclaw', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 150));
+
+    const updated = JSON.parse(_readFileSync(_pcPath, 'utf8'));
+    // stage=0 的任务应被更新为 2
+    assert.equal(updated['app1'].tasks[1].stage, 2, 'stage=0 的匹配任务应更新为 2');
+    // stage=2 的任务：stage < 2 为 false，不应被重复写入（实际仍为 2）
+    assert.equal(updated['app1'].tasks[0].stage, 2, 'stage=2 的任务保持 2');
+  });
+});
+
+test('OpenClaw: deliver 成功后多个 app 中的匹配任务都被更新', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  const msgId = 'msg_multi_app';
+  ctx.deliverToOpenClaw = async () => true;
+
+  const testData = {
+    'app-a': {
+      tasks: [{ id: msgId, preview: 'a task', stage: 1, hubMessageId: msgId }],
+    },
+    'app-b': {
+      tasks: [{ id: msgId, preview: 'b task', stage: 1, hubMessageId: msgId }],
+    },
+    'app-c': {
+      chatId: 'c1', // 没有 tasks 字段
+    },
+  };
+
+  await withPendingCards(testData, async () => {
+    const { routeMessage } = createRouter(ctx);
+    ctx.sessions.set('openclaw', createOnlineSession('openclaw', createMockWs()));
+
+    routeMessage(
+      { id: msgId, type: 'message', from: 'sender', to: 'openclaw', content: 'multi' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 150));
+
+    const updated = JSON.parse(_readFileSync(_pcPath, 'utf8'));
+    assert.equal(updated['app-a'].tasks[0].stage, 2, 'app-a 的任务应更新为 2');
+    assert.equal(updated['app-b'].tasks[0].stage, 2, 'app-b 的任务应更新为 2');
+  });
+});
+
+test('OpenClaw: deliver 成功且 pending-cards.json 不存在时 catch 块吞掉错误不 crash', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.deliverToOpenClaw = async () => true;
+
+  // 用不存在的 msgId，但先备份再恢复文件避免影响实际文件
+  const origContent = _existsSync(_pcPath) ? _readFileSync(_pcPath, 'utf8') : null;
+  // 写一个解析会失败的文件来触发 catch
+  _writeFileSync(_pcPath, 'INVALID_JSON');
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    ctx.sessions.set('openclaw', createOnlineSession('openclaw', createMockWs()));
+
+    assert.doesNotThrow(() => routeMessage(
+      { id: 'msg_bad_json', type: 'message', from: 'sender', to: 'openclaw', content: 'test' },
+      { name: 'sender' },
+    ));
+    await new Promise(r => setTimeout(r, 150));
+
+    // 不应 crash，错误被 catch{} 吞掉
+  } finally {
+    if (origContent !== null) {
+      _writeFileSync(_pcPath, origContent);
+    }
+  }
+});
+
+test('OpenClaw: deliver 失败（false）时不更新 pending-cards.json', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  const msgId = 'msg_fail_no_update';
+  ctx.deliverToOpenClaw = async () => false;
+  ctx.enqueueOpenClawRetry = () => {};
+
+  const testData = {
+    'app1': {
+      tasks: [{ id: msgId, preview: 'task', stage: 1, hubMessageId: msgId }],
+    },
+  };
+
+  await withPendingCards(testData, async () => {
+    const { routeMessage } = createRouter(ctx);
+    ctx.sessions.set('openclaw', createOnlineSession('openclaw', createMockWs()));
+
+    routeMessage(
+      { id: msgId, type: 'message', from: 'sender', to: 'openclaw', content: 'fail test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 150));
+
+    const updated = JSON.parse(_readFileSync(_pcPath, 'utf8'));
+    assert.equal(updated['app1'].tasks[0].stage, 1, 'deliver 失败时 stage 不应被更新');
+  });
+});
+
+// ── A组：feishuApps.find 条件精确性验证 ──────────────────────────────────────
+// 构造多个 app，让 filter 条件区分选中哪个，杀掉 &&→|| 或 &&→true 突变体
+
+test('feishu-group: find 条件 send&&targetOpenId 精确 —— send=false 的 app 被排除', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  // 两个 app，第一个 send=false，第二个 send=true
+  ctx.feishuApps = [
+    { name: 'no-send', send: false, targetOpenId: 'oid_nosend' },
+    { name: 'correct', send: true, targetOpenId: 'oid_correct' },
+  ];
+
+  let calledWithApp = null;
+  ctx.getFeishuToken = async (app) => {
+    calledWithApp = app;
+    return 'token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_find_1', type: 'message', from: 'sender', to: 'feishu-group:chat_multi', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(calledWithApp !== null, 'getFeishuToken 应被调用');
+    assert.equal(calledWithApp.name, 'correct', 'find 应选中 send=true 的 app，不是 no-send');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: find 条件 send&&targetOpenId 精确 —— targetOpenId 为空的 app 被排除', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  // 两个 app，第一个没有 targetOpenId，第二个有
+  ctx.feishuApps = [
+    { name: 'no-oid', send: true, targetOpenId: '' },
+    { name: 'has-oid', send: true, targetOpenId: 'oid_valid' },
+  ];
+
+  let calledWithApp = null;
+  ctx.getFeishuToken = async (app) => {
+    calledWithApp = app;
+    return 'token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_find_2', type: 'message', from: 'sender', to: 'feishu-group:chat_oid', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(calledWithApp !== null, 'getFeishuToken 应被调用');
+    assert.equal(calledWithApp.name, 'has-oid', 'find 应选中有 targetOpenId 的 app');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: find 只选第一个同时满足 send&&targetOpenId 的 app', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  // 三个 app：前两个都满足条件，第三个不满足
+  ctx.feishuApps = [
+    { name: 'first-valid', send: true, targetOpenId: 'oid_first' },
+    { name: 'second-valid', send: true, targetOpenId: 'oid_second' },
+    { name: 'no-send', send: false, targetOpenId: 'oid_third' },
+  ];
+
+  let calledWithApp = null;
+  ctx.getFeishuToken = async (app) => {
+    calledWithApp = app;
+    return 'token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_find_3', type: 'message', from: 'sender', to: 'feishu-group:chat_first', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    // find 返回第一个满足的，应为 first-valid
+    assert.equal(calledWithApp.name, 'first-valid', 'find 应返回第一个满足 send&&targetOpenId 的 app');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P 默认: find 条件 send&&(chatId||targetOpenId) 精确 —— send=false 排除', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [
+    { name: 'no-send', send: false, chatId: 'c1' },
+    { name: 'no-id', send: true },
+    { name: 'correct', send: true, chatId: 'c2' },
+  ];
+
+  let calledWithApp = null;
+  ctx.getFeishuToken = async (app) => {
+    calledWithApp = app;
+    return 'token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_find_1', type: 'message', from: 'sender', to: 'feishu', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(calledWithApp !== null, 'getFeishuToken 应被调用');
+    assert.equal(calledWithApp.name, 'correct', 'find 应选中 send=true 且有 chatId 的 app');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P 默认: find 条件 —— 无 chatId 也无 targetOpenId 的 app 被排除', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [
+    { name: 'no-id', send: true },              // 无 chatId 和 targetOpenId
+    { name: 'has-oid', send: true, targetOpenId: 'oid_x' }, // 有 targetOpenId
+  ];
+
+  let calledWithApp = null;
+  ctx.getFeishuToken = async (app) => {
+    calledWithApp = app;
+    return 'token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_find_2', type: 'message', from: 'sender', to: 'feishu', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.equal(calledWithApp.name, 'has-oid', 'find 应跳过无 chatId/targetOpenId 的 app');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P 指定 appName: find 条件 name===appName&&(chatId||targetOpenId) 精确', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  // 同名 app 但一个无 chatId/targetOpenId
+  ctx.feishuApps = [
+    { name: 'target-bot', send: false },                    // 无 chatId/targetOpenId
+    { name: 'target-bot', chatId: 'c_target' },             // 有 chatId
+  ];
+
+  let calledWithApp = null;
+  ctx.getFeishuToken = async (app) => {
+    calledWithApp = app;
+    return 'token';
+  };
+
+  const origFetch = globalThis.fetch;
+  let fetchBody = null;
+  globalThis.fetch = async (url, opts) => {
+    fetchBody = JSON.parse(opts.body);
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_named_find', type: 'message', from: 'sender', to: 'feishu:target-bot', content: 'named' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(calledWithApp !== null, 'getFeishuToken 应被调用');
+    // 应选中有 chatId 的那个
+    assert.equal(fetchBody.receive_id, 'c_target', '应选中有 chatId 的 app，不是无 id 的 app');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P 指定 appName: 只匹配指定 name 的 app，不匹配其他 name', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [
+    { name: 'other-bot', send: true, chatId: 'c_other' },
+    { name: 'wanted-bot', chatId: 'c_wanted' },
+  ];
+
+  let calledWithApp = null;
+  ctx.getFeishuToken = async (app) => {
+    calledWithApp = app;
+    return 'token';
+  };
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_named_exact', type: 'message', from: 'sender', to: 'feishu:wanted-bot', content: 'exact' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(calledWithApp !== null, 'getFeishuToken 应被调用');
+    assert.equal(calledWithApp.name, 'wanted-bot', 'find 应精确匹配 name=wanted-bot，不选 other-bot');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: chatId 优先于 targetOpenId 作为 receiveId 和 receiveIdType', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  // app 同时有 chatId 和 targetOpenId
+  ctx.feishuApps = [{ name: 'both', send: true, chatId: 'c_primary', targetOpenId: 'oid_secondary' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  let fetchUrl = null;
+  let fetchBody = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    fetchUrl = url;
+    fetchBody = JSON.parse(opts.body);
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_chatid_prio', type: 'message', from: 'sender', to: 'feishu', content: 'chatid priority' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(fetchUrl.includes('receive_id_type=chat_id'), 'chatId 存在时 URL 应用 chat_id，不是 open_id');
+    assert.equal(fetchBody.receive_id, 'c_primary', 'receive_id 应为 chatId，不是 targetOpenId');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// ── B组：routing 条件分支精确性验证 ──────────────────────────────────────────
+
+test('routeMessage: to=undefined 时不走直接路由（不创建 stub）', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const senderSession = { name: 'alice' };
+  // to=undefined，既不是 '*' 也不是具体地址
+  const msg = { id: 'no_to_1', type: 'message', from: 'alice', to: undefined, content: 'no target' };
+
+  assert.doesNotThrow(() => routeMessage(msg, senderSession));
+
+  // 不应该创建任何 stub
+  assert.equal(ctx.sessions.size, 0, 'to=undefined 时不应创建 stub session');
+});
+
+test('routeMessage: to=null 时不走直接路由（不创建 stub）', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const senderSession = { name: 'alice' };
+  const msg = { id: 'no_to_2', type: 'message', from: 'alice', to: null, content: 'no target' };
+
+  assert.doesNotThrow(() => routeMessage(msg, senderSession));
+
+  assert.equal(ctx.sessions.size, 0, 'to=null 时不应创建 stub session');
+});
+
+test('routeMessage: to="" 时不走直接路由（不创建 stub）', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const senderSession = { name: 'alice' };
+  const msg = { id: 'no_to_3', type: 'message', from: 'alice', to: '', content: 'empty to' };
+
+  assert.doesNotThrow(() => routeMessage(msg, senderSession));
+
+  assert.equal(ctx.sessions.size, 0, 'to="" 时不应创建 stub session');
+});
+
+test('routeMessage: to="*" 时不走直接路由（不创建 stub）', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsOther = createMockWs();
+  ctx.sessions.set('other', createOnlineSession('other', wsOther));
+
+  const senderSession = { name: 'alice' };
+  const msg = { id: 'bc_no_stub', type: 'message', from: 'alice', to: '*', content: 'broadcast' };
+
+  routeMessage(msg, senderSession);
+
+  // to='*' 走广播路径，sessions 里不应出现新的 stub
+  assert.equal(ctx.sessions.size, 1, 'to="*" 时不应创建 stub，sessions 仍只有 other');
+  assert.ok(ctx.sessions.has('other'), 'other session 应保持不变');
+});
+
+test('routeMessage: topic=null 时不走 topic fanout', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsBob = createMockWs();
+  const bobSession = createOnlineSession('bob', wsBob);
+  bobSession.topics.add('news');
+  ctx.sessions.set('bob', bobSession);
+
+  // 有 topic 订阅的 session，但消息 topic=null，不应走 topic fanout
+  routeMessage(
+    { id: 'no_topic_1', type: 'message', from: 'alice', to: '*', topic: null, content: 'no topic' },
+    { name: 'alice' },
+  );
+
+  // to='*' 且 topic=null，走广播，bob 应通过广播收到（而非 topic fanout）
+  // 但此测试验证：null topic 不触发 topic fanout（通过检查 bob 收到消息是广播路径）
+  assert.equal(wsBob._sent.length, 1, 'topic=null 时走广播路径，bob 应收到广播');
+});
+
+test('routeMessage: topic=undefined 时不走 topic fanout，走广播', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsSubscribed = createMockWs();
+  const wsUnsubscribed = createMockWs();
+  const subbedSession = createOnlineSession('subbed', wsSubscribed);
+  subbedSession.topics.add('news');
+  ctx.sessions.set('subbed', subbedSession);
+  ctx.sessions.set('unsubbed', createOnlineSession('unsubbed', wsUnsubscribed));
+
+  // topic=undefined，to='*'，应走广播而非 topic fanout
+  routeMessage(
+    { id: 'no_topic_2', type: 'message', from: 'sender', to: '*', topic: undefined, content: 'broadcast' },
+    { name: 'sender' },
+  );
+
+  // 广播时两个 session 都收到（不区分是否订阅）
+  assert.equal(wsSubscribed._sent.length, 1, '广播时订阅者应收到');
+  assert.equal(wsUnsubscribed._sent.length, 1, '广播时未订阅者也应收到');
+});
+
+test('routeMessage: topic+直接寻址组合时 delivered 去重防止重复', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsBob = createMockWs();
+  const bobSession = createOnlineSession('bob', wsBob);
+  bobSession.topics.add('news');
+  ctx.sessions.set('bob', bobSession);
+
+  // bob 既订阅了 news，又是 to 直接目标
+  routeMessage(
+    { id: 'dedup_topic_direct', type: 'message', from: 'alice', to: 'bob', topic: 'news', content: 'dedup' },
+    { name: 'alice' },
+  );
+
+  // bob 通过 topic fanout 已收到，直接寻址时 delivered.has('bob') 为 true，跳过
+  assert.equal(wsBob._sent.length, 1, 'topic+direct 组合时 bob 应只收到一条消息');
+});
+
+// ── B组：broadcast 内部 ws.readyState 条件 ───────────────────────────────────
+
+test('broadcast: ws 为 CLOSED（readyState=3）时不发送', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { broadcast } = createRouter(ctx);
+
+  const closedWs = createMockWs();
+  closedWs.readyState = 3; // CLOSED
+
+  ctx.sessions.set('closed-session', {
+    name: 'closed-session',
+    ws: closedWs,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  });
+
+  broadcast({ type: 'message', content: 'test' });
+
+  assert.equal(closedWs._sent.length, 0, 'CLOSED ws 不应收到 broadcast 消息');
+});
+
+test('broadcast: ws 为 CONNECTING（readyState=0）时不发送', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { broadcast } = createRouter(ctx);
+
+  const connectingWs = createMockWs();
+  connectingWs.readyState = 0; // CONNECTING
+
+  ctx.sessions.set('connecting-session', {
+    name: 'connecting-session',
+    ws: connectingWs,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  });
+
+  broadcast({ type: 'message', content: 'test' });
+
+  assert.equal(connectingWs._sent.length, 0, 'CONNECTING ws 不应收到 broadcast 消息');
+});
+
+// ── C组：feishu fetch 内部验证 ─────────────────────────────────────────────
+
+test('feishu-group: fetch code=0 时打含 chatId 的成功日志（精确匹配 sent）', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_code0', type: 'message', from: 'sender', to: 'feishu-group:chat_success', content: 'ok' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    // code=0 时应打 "sent to chat" 日志，包含 chatId
+    const successLog = ctx._logs.find(l => l.includes('sent to chat') && l.includes('chat_success'));
+    assert.ok(successLog !== undefined, 'code=0 应打含 chatId 和 "sent to chat" 的成功日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: fetch code!=0 时打错误日志，不打成功日志', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 50001, msg: 'auth failed' }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_code_err', type: 'message', from: 'sender', to: 'feishu-group:chat_err2', content: 'fail' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    const errLog = ctx._logs.find(l => l.includes('50001'));
+    assert.ok(errLog !== undefined, 'code!=0 应打包含 error code 的日志');
+
+    const sentLog = ctx._logs.find(l => l.includes('sent to chat'));
+    assert.equal(sentLog, undefined, 'code!=0 不应打成功日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch code=0 时打含 app.name 的成功日志（精确含 sent reply）', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'reply-bot', send: true, targetOpenId: 'oid_reply' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 0 }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_code0', type: 'message', from: 'sender', to: 'feishu', content: 'reply ok' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    const sentLog = ctx._logs.find(l => l.includes('sent reply') && l.includes('reply-bot'));
+    assert.ok(sentLog !== undefined, 'code=0 应打含 "sent reply" 和 app.name 的成功日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch code!=0 时打错误日志，不打成功日志', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'err-bot', send: true, targetOpenId: 'oid_err2' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ json: async () => ({ code: 40003, msg: 'no permission' }) });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_code_err', type: 'message', from: 'sender', to: 'feishu', content: 'perm fail' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    const errLog = ctx._logs.find(l => l.includes('40003') || l.includes('reply error'));
+    assert.ok(errLog !== undefined, 'code!=0 应打错误日志');
+
+    const sentLog = ctx._logs.find(l => l.includes('sent reply'));
+    assert.equal(sentLog, undefined, 'code!=0 不应打成功日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch headers 包含 Authorization 和 Content-Type', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'header-bot', send: true, targetOpenId: 'oid_header' }];
+  ctx.getFeishuToken = async () => 'header-token-xyz';
+
+  let capturedHeaders = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    capturedHeaders = opts.headers;
+    return { json: async () => ({ code: 0 }) };
+  };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_headers', type: 'message', from: 'sender', to: 'feishu', content: 'headers test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(capturedHeaders !== null, 'headers 应被捕获');
+    assert.equal(capturedHeaders['Authorization'], 'Bearer header-token-xyz', 'Authorization 应含正确 token');
+    assert.equal(capturedHeaders['Content-Type'], 'application/json', 'Content-Type 应为 application/json');
+    // 验证 headers 不是空对象（杀掉 headers: {} 突变体）
+    assert.ok(Object.keys(capturedHeaders).length >= 2, 'headers 应包含至少两个字段');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch r.json() 被调用（不是 undefined）', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'json-bot', send: true, targetOpenId: 'oid_json' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  let jsonCalled = false;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    json: async () => {
+      jsonCalled = true;
+      return { code: 0 };
+    },
+  });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_json', type: 'message', from: 'sender', to: 'feishu', content: 'json call' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(jsonCalled, 'r.json() 应被调用以获取响应数据');
+    // 如果 r.json() 未被调用，code 检查不会执行，成功日志也不会出现
+    const sentLog = ctx._logs.find(l => l.includes('sent reply'));
+    assert.ok(sentLog !== undefined, 'r.json() 被调用且 code=0 时应打成功日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: fetch r.json() 被调用（不是 undefined）', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  let jsonCalled = false;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    json: async () => {
+      jsonCalled = true;
+      return { code: 0 };
+    },
+  });
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_json', type: 'message', from: 'sender', to: 'feishu-group:chat_json', content: 'json' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(jsonCalled, 'feishu-group fetch 后 r.json() 应被调用');
+    const sentLog = ctx._logs.find(l => l.includes('sent to chat') && l.includes('chat_json'));
+    assert.ok(sentLog !== undefined, 'r.json() 被调用且 code=0 时应打成功日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// ── B组额外：to=* 广播但有 topic 时不走广播路径（验证 to==='*' && !topic 条件） ─
+
+test('routeMessage: to="*" 有 topic 时跳过广播，只走 topic fanout', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsSubbed = createMockWs();
+  const wsUnsubbed = createMockWs();
+  const subbedSession = createOnlineSession('subbed', wsSubbed);
+  subbedSession.topics.add('channel');
+  ctx.sessions.set('subbed', subbedSession);
+  ctx.sessions.set('unsubbed', createOnlineSession('unsubbed', wsUnsubbed));
+
+  routeMessage(
+    { id: 'bc_topic_guard', type: 'message', from: 'sender', to: '*', topic: 'channel', content: 'fanout only' },
+    { name: 'sender' },
+  );
+
+  // 有 topic 时只走 topic fanout，广播条件 !topic 为 false
+  assert.equal(wsSubbed._sent.length, 1, '订阅者通过 topic fanout 收到');
+  assert.equal(wsUnsubbed._sent.length, 0, '未订阅者不应通过广播收到（topic 存在，广播条件不满足）');
+});
+
+// ── 直接路由 L266：target.ws CLOSED 时走 inbox 而非 send ─────────────────────
+
+test('routeMessage: 直接寻址 target 的 ws 为 CLOSED 时消息进 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const closedWs = createMockWs();
+  closedWs.readyState = 3; // CLOSED
+
+  const targetSession = {
+    name: 'target-closed',
+    ws: closedWs,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('target-closed', targetSession);
+
+  routeMessage(
+    { id: 'direct_closed', type: 'message', from: 'sender', to: 'target-closed', content: 'closed ws' },
+    { name: 'sender' },
+  );
+
+  assert.equal(closedWs._sent.length, 0, 'CLOSED ws 不应直接发送');
+  assert.equal(targetSession.inbox.length, 1, 'CLOSED ws 的 session 消息应进 inbox');
+  assert.equal(targetSession.inbox[0].id, 'direct_closed', 'inbox 应包含正确消息');
+});
+
+test('routeMessage: 直接寻址 target 的 ws 为 CONNECTING（readyState=0）时消息进 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const connectingWs = createMockWs();
+  connectingWs.readyState = 0; // CONNECTING
+
+  const targetSession = {
+    name: 'target-connecting',
+    ws: connectingWs,
+    connectedAt: 0,
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+  };
+  ctx.sessions.set('target-connecting', targetSession);
+
+  routeMessage(
+    { id: 'direct_connecting', type: 'message', from: 'sender', to: 'target-connecting', content: 'connecting ws' },
+    { name: 'sender' },
+  );
+
+  assert.equal(connectingWs._sent.length, 0, 'CONNECTING ws 不应直接发送');
+  assert.equal(targetSession.inbox.length, 1, 'CONNECTING ws 的 session 消息应进 inbox');
+});
+
+// ── C组：catch 内 err?.message 验证 ──────────────────────────────────────────
+
+test('feishu-group: fetch 抛出非 Error 对象时 catch 也能打日志不 crash', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  // 抛出字符串而非 Error 对象（err.message 为 undefined）
+  globalThis.fetch = async () => { throw 'connection string error'; };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    assert.doesNotThrow(() => routeMessage(
+      { id: 'fg_str_err', type: 'message', from: 'sender', to: 'feishu-group:chat_str', content: 'str err' },
+      { name: 'sender' },
+    ));
+    await new Promise(r => setTimeout(r, 50));
+
+    // 字符串 error 没有 .message，??运算符后备到 err 本身
+    assert.ok(ctx._logs.some(l => l.includes('failed')), '应记录 failed 日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: fetch 抛出没有 message 属性的对象时 catch 打日志', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  // 抛出没有 .message 的普通对象
+  globalThis.fetch = async () => { throw { code: 503 }; };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    assert.doesNotThrow(() => routeMessage(
+      { id: 'fg_obj_err', type: 'message', from: 'sender', to: 'feishu-group:chat_obj', content: 'obj err' },
+      { name: 'sender' },
+    ));
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('failed')), '应记录 failed 日志（err?.message 为 undefined 时回退到 err 本身）');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu-group: fetch 抛出字符串时 catch 日志包含该字符串内容（??后备到 err 本身）', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  // 字符串 err 没有 .message，?? 应后备到 err 本身（字符串）
+  globalThis.fetch = async () => { throw 'unique_fg_error_string_xyz'; };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'fg_str_content', type: 'message', from: 'sender', to: 'feishu-group:chat_str2', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    // err?.message 为 undefined，?? 运算符后备到 err='unique_fg_error_string_xyz'
+    // 如果 ?? 被突变为 &&，则为 undefined，日志不包含该字符串
+    assert.ok(
+      ctx._logs.some(l => l.includes('unique_fg_error_string_xyz')),
+      '日志应包含抛出的字符串错误内容（?? err 后备）',
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch 抛出非 Error 对象时 catch 也能打日志不 crash', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw 'p2p string error'; };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    assert.doesNotThrow(() => routeMessage(
+      { id: 'p2p_str_err', type: 'message', from: 'sender', to: 'feishu', content: 'str err' },
+      { name: 'sender' },
+    ));
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('reply failed') || l.includes('failed')), '应记录 reply failed 日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch 抛出没有 message 属性的对象时 catch 打日志', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw { status: 502 }; };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    assert.doesNotThrow(() => routeMessage(
+      { id: 'p2p_obj_err', type: 'message', from: 'sender', to: 'feishu', content: 'obj err' },
+      { name: 'sender' },
+    ));
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.ok(ctx._logs.some(l => l.includes('failed')), '应记录 failed 日志');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('feishu P2P: fetch 抛出字符串时 catch 日志包含该字符串内容（??后备到 err 本身）', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  ctx.feishuApps = [{ name: 'bot', send: true, targetOpenId: 'oid' }];
+  ctx.getFeishuToken = async () => 'token';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw 'unique_p2p_error_string_xyz'; };
+
+  try {
+    const { routeMessage } = createRouter(ctx);
+    routeMessage(
+      { id: 'p2p_str_content', type: 'message', from: 'sender', to: 'feishu', content: 'test' },
+      { name: 'sender' },
+    );
+    await new Promise(r => setTimeout(r, 50));
+
+    // err?.message 为 undefined，?? 后备到 err='unique_p2p_error_string_xyz'
+    // 突变为 && 后为 undefined，日志不含该字符串
+    assert.ok(
+      ctx._logs.some(l => l.includes('unique_p2p_error_string_xyz')),
+      'P2P catch 日志应包含抛出的字符串错误内容（?? err 后备）',
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

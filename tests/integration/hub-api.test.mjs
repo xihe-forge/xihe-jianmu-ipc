@@ -451,3 +451,258 @@ function closeWebSocket(ws) {
     }
   });
 }
+
+test('GET /messages: peer 查询返回最新的消息历史', { timeout: TEST_TIMEOUT }, async () => {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const contents = [
+    `history-${suffix}-1`,
+    `history-${suffix}-2`,
+    `history-${suffix}-3`,
+  ];
+
+  for (const content of contents) {
+    const sendResponse = await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/send',
+      json: {
+        from: 'alice',
+        to: 'bob',
+        content,
+      },
+    });
+
+    assert.equal(sendResponse.statusCode, 200);
+    assert.equal(sendResponse.body.accepted, true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+
+  const response = await httpRequest(hub.port, {
+    method: 'GET',
+    path: '/messages?peer=alice&limit=10',
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.ok(Array.isArray(response.body));
+  assert.ok(response.body.length >= 3);
+  assert.deepEqual(
+    response.body.slice(0, 3).map(message => message.content),
+    contents.slice().reverse(),
+  );
+});
+
+test('GET /messages: from+to 双向查询返回双方消息', { timeout: TEST_TIMEOUT }, async () => {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const entries = [
+    { from: 'alice', to: 'bob', content: `between-${suffix}-1` },
+    { from: 'bob', to: 'alice', content: `between-${suffix}-2` },
+    { from: 'alice', to: 'bob', content: `between-${suffix}-3` },
+  ];
+
+  for (const entry of entries) {
+    const sendResponse = await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/send',
+      json: entry,
+    });
+
+    assert.equal(sendResponse.statusCode, 200);
+    assert.equal(sendResponse.body.accepted, true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+
+  const response = await httpRequest(hub.port, {
+    method: 'GET',
+    path: '/messages?from=alice&to=bob&limit=10',
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.ok(Array.isArray(response.body));
+  assert.ok(response.body.length >= 3);
+  assert.deepEqual(
+    response.body.slice(0, 3).map(message => message.content),
+    entries.map(entry => entry.content).reverse(),
+  );
+  assert.ok(response.body.some(message => message.from === 'bob' && message.to === 'alice'));
+});
+
+test('GET /stats: 返回最近 24 小时 per-agent 消息统计', { timeout: TEST_TIMEOUT }, async () => {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const recipients = [`worker-target-${suffix}`, `pm-target-${suffix}`, `qa-target-${suffix}`];
+  const entries = [
+    { from: 'pm', to: recipients[0], content: `stats-${suffix}-1` },
+    { from: 'worker', to: recipients[1], content: `stats-${suffix}-2` },
+    { from: 'pm', to: recipients[2], content: `stats-${suffix}-3` },
+  ];
+
+  for (const entry of entries) {
+    const sendResponse = await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/send',
+      json: entry,
+    });
+
+    assert.equal(sendResponse.statusCode, 200);
+    assert.equal(sendResponse.body.accepted, true);
+  }
+
+  const response = await httpRequest(hub.port, {
+    method: 'GET',
+    path: '/stats?hours=24',
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.period_hours, 24);
+  assert.ok(Array.isArray(response.body.agents));
+
+  const pmStats = response.body.agents.find(agent => agent.name === 'pm');
+  const workerStats = response.body.agents.find(agent => agent.name === 'worker');
+
+  assert.ok(pmStats, '统计结果应包含 pm');
+  assert.ok(workerStats, '统计结果应包含 worker');
+  assert.ok(pmStats.count >= 1);
+  assert.ok(workerStats.count >= 1);
+});
+
+test('GET /tasks/:id: 返回刚创建的任务详情', { timeout: TEST_TIMEOUT }, async () => {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const taskPayload = { batch: suffix, retry: 0 };
+  const deadline = Date.now() + 60_000;
+  const createResponse = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/task',
+    json: {
+      from: 'pm',
+      to: 'worker',
+      title: `detail-task-${suffix}`,
+      description: `detail-desc-${suffix}`,
+      priority: 2,
+      deadline,
+      payload: taskPayload,
+    },
+  });
+
+  assert.equal(createResponse.statusCode, 201);
+  assert.equal(createResponse.body.ok, true);
+
+  const response = await httpRequest(hub.port, {
+    method: 'GET',
+    path: `/tasks/${encodeURIComponent(createResponse.body.taskId)}`,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.id, createResponse.body.taskId);
+  assert.equal(response.body.from, 'pm');
+  assert.equal(response.body.to, 'worker');
+  assert.equal(response.body.title, `detail-task-${suffix}`);
+  assert.equal(response.body.description, `detail-desc-${suffix}`);
+  assert.equal(response.body.status, 'pending');
+  assert.equal(response.body.priority, 2);
+  assert.equal(response.body.deadline, deadline);
+  assert.deepEqual(response.body.payload, taskPayload);
+});
+
+test('GET /tasks/:id: 不存在的任务返回 404', { timeout: TEST_TIMEOUT }, async () => {
+  const response = await httpRequest(hub.port, {
+    method: 'GET',
+    path: '/tasks/nonexistent-id',
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, { error: 'task not found' });
+});
+
+test('PATCH /tasks/:id: 状态更新后可持久化查询', { timeout: TEST_TIMEOUT }, async () => {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const createResponse = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/task',
+    json: {
+      from: 'pm',
+      to: 'worker',
+      title: `patch-task-${suffix}`,
+      priority: 1,
+    },
+  });
+
+  assert.equal(createResponse.statusCode, 201);
+
+  const taskId = createResponse.body.taskId;
+  const startedResponse = await httpRequest(hub.port, {
+    method: 'PATCH',
+    path: `/tasks/${encodeURIComponent(taskId)}`,
+    json: { status: 'started' },
+  });
+
+  assert.equal(startedResponse.statusCode, 200);
+  assert.equal(startedResponse.body.ok, true);
+  assert.equal(startedResponse.body.task.status, 'started');
+  assert.equal(startedResponse.body.task.completed_at, null);
+
+  const completedResponse = await httpRequest(hub.port, {
+    method: 'PATCH',
+    path: `/tasks/${encodeURIComponent(taskId)}`,
+    json: { status: 'completed' },
+  });
+
+  assert.equal(completedResponse.statusCode, 200);
+  assert.equal(completedResponse.body.ok, true);
+  assert.equal(completedResponse.body.task.status, 'completed');
+  assert.ok(completedResponse.body.task.completed_at != null, 'completed_at 应被设置');
+
+  const getResponse = await httpRequest(hub.port, {
+    method: 'GET',
+    path: `/tasks/${encodeURIComponent(taskId)}`,
+  });
+
+  assert.equal(getResponse.statusCode, 200);
+  assert.equal(getResponse.body.status, 'completed');
+  assert.equal(getResponse.body.completed_at, completedResponse.body.task.completed_at);
+});
+
+test('PATCH /tasks/:id: 不存在的任务返回 404', { timeout: TEST_TIMEOUT }, async () => {
+  const response = await httpRequest(hub.port, {
+    method: 'PATCH',
+    path: '/tasks/nonexistent-id',
+    json: { status: 'started' },
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.body, { error: 'task not found' });
+});
+
+test('PATCH /tasks/:id: 无效状态返回 400 且不改动任务', { timeout: TEST_TIMEOUT }, async () => {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const createResponse = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/task',
+    json: {
+      from: 'pm',
+      to: 'worker',
+      title: `invalid-status-task-${suffix}`,
+    },
+  });
+
+  assert.equal(createResponse.statusCode, 201);
+
+  const taskId = createResponse.body.taskId;
+  const patchResponse = await httpRequest(hub.port, {
+    method: 'PATCH',
+    path: `/tasks/${encodeURIComponent(taskId)}`,
+    json: { status: 'paused' },
+  });
+
+  assert.equal(patchResponse.statusCode, 400);
+  assert.equal(
+    patchResponse.body.error,
+    'invalid status, must be one of: pending, started, completed, failed, cancelled',
+  );
+
+  const getResponse = await httpRequest(hub.port, {
+    method: 'GET',
+    path: `/tasks/${encodeURIComponent(taskId)}`,
+  });
+
+  assert.equal(getResponse.statusCode, 200);
+  assert.equal(getResponse.body.status, 'pending');
+  assert.equal(getResponse.body.completed_at, null);
+});

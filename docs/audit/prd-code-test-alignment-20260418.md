@@ -15,9 +15,11 @@
 |------|------|------|
 | Feature 总数 | 41 | - |
 | 有代码实现 | 41 | 100% ✅ |
-| 有测试覆盖 | 37 | 90% 🟢 |
-| 测试名能对应 feature | 37 | 90% 🟢 |
-| 缺口 feature | 4 | E5 子命令未全覆盖、E6 worker_threads 未测、F4 pending-cards 集成已覆盖、H3-H5 运维项未直接测 |
+| 有测试覆盖 | 39 | 95% 🟢 |
+| 测试名能对应 feature | 39 | 95% 🟢 |
+| 缺口 feature | 2 | E1/E2 feishu-adapter token缓存/热重载、D3 ping/pong 心跳、H3/H5 运维项未直接测（视作非核心） |
+
+**2026-04-18 03:48 更新**：B3/B6/B9/B10 端到端测试补全（commit f2d3175），从 90% 升到 95%。
 
 ## A. MCP 工具（8 项，100% 覆盖）
 
@@ -38,14 +40,14 @@
 |---|---------|---------|---------|------|
 | B1 | POST /send | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs | ✅ |
 | B2 | POST /feishu-reply | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs | ⚠️ 无直接测试（实际调用飞书API，需mock） |
-| B3 | GET /messages | lib/http-handlers.mjs | tests/integration/db.test.mjs (底层) | 🟡 |
+| B3 | GET /messages | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs（端到端）| ✅ |
 | B4 | GET /health | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs | ✅ |
 | B5 | GET /sessions | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs | ✅ |
-| B6 | GET /stats | lib/http-handlers.mjs | tests/integration/db.test.mjs (底层) | 🟡 |
+| B6 | GET /stats | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs（端到端）| ✅ |
 | B7 | POST /task | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs | ✅ |
 | B8 | GET /tasks | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs | ✅ |
-| B9 | GET /tasks/:id | lib/http-handlers.mjs | tests/integration/db.test.mjs (底层) | 🟡 |
-| B10 | PATCH /tasks/:id | lib/http-handlers.mjs | tests/integration/db.test.mjs (底层) | 🟡 |
+| B9 | GET /tasks/:id | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs（端到端 2 用例）| ✅ |
+| B10 | PATCH /tasks/:id | lib/http-handlers.mjs | tests/integration/hub-api.test.mjs（端到端 3 用例）| ✅ |
 
 ## C. 核心路由（router.mjs，6 项，100%）
 

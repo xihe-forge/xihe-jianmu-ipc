@@ -8,7 +8,7 @@ import { unlinkSync, existsSync } from 'node:fs';
 const DB_PATH = join(tmpdir(), `ipc-test-${Date.now()}.db`);
 process.env.IPC_DB_PATH = DB_PATH;
 
-const db = await import('../lib/db.mjs');
+const db = await import('../../lib/db.mjs');
 
 // 工具函数：生成唯一消息对象
 function makeMsg(id, from = 'alice', to = 'bob') {

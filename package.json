@@ -45,7 +45,7 @@
   },
   "scripts": {
     "hub": "node hub.mjs",
-    "test": "node --test --test-isolation=none --test-force-exit tests/*.test.mjs tests/integration/*.test.mjs tests/e2e/*.test.mjs",
+    "test": "node --test --test-force-exit tests/*.test.mjs tests/integration/*.test.mjs tests/e2e/*.test.mjs",
     "start": "pm2 start ecosystem.config.cjs",
     "stop": "pm2 stop ecosystem.config.cjs",
     "restart": "pm2 restart ecosystem.config.cjs",

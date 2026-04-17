@@ -122,14 +122,19 @@ jobs:
           if-no-files-found: warn
 
   test:
-    name: Test
+    name: Test (${{ matrix.os }})
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
       - name: Detect package manager
         id: pm
+        shell: bash
         run: |
           if [ -f "pnpm-lock.yaml" ]; then
             echo "pm=pnpm" >> "$GITHUB_OUTPUT"
@@ -156,6 +161,7 @@ jobs:
         run: npm ci
 
       - name: Run tests
+        shell: bash
         run: |
           if [ "${{ steps.pm.outputs.pm }}" = "pnpm" ]; then
             pnpm test

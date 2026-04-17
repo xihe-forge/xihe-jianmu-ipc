@@ -13,7 +13,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { createMessage } from './lib/protocol.mjs';
+import { createMcpTools } from './lib/mcp-tools.mjs';
 import {
   DEFAULT_PORT,
   HUB_AUTOSTART_TIMEOUT,
@@ -79,6 +79,17 @@ const RECONNECT_MAX_DELAY = 60000;
 
 const outgoingQueue = [];     // queued while disconnected
 
+function disconnectWs() {
+  if (!ws) return;
+  try { ws.close(); } catch {}
+  ws = null;
+}
+
+function reconnectHub() {
+  reconnectAttempts = 0;
+  connect();
+}
+
 // ---------------------------------------------------------------------------
 // Create MCP Server with Channel capability
 // ---------------------------------------------------------------------------
@@ -99,361 +110,28 @@ const server = new Server(
 // ---------------------------------------------------------------------------
 // Tool handlers
 // ---------------------------------------------------------------------------
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: 'ipc_send',
-      description: "Send a message to another Claude Code session by name, or broadcast to all with '*'",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          to: {
-            type: 'string',
-            description: "Target session name, or '*' for broadcast",
-          },
-          content: {
-            type: 'string',
-            description: 'Message content',
-          },
-          topic: {
-            type: 'string',
-            description: 'Optional topic tag for pub/sub',
-          },
-        },
-        required: ['to', 'content'],
-      },
-    },
-    {
-      name: 'ipc_sessions',
-      description: 'List all currently connected Claude Code sessions',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-    },
-    {
-      name: 'ipc_whoami',
-      description: 'Show the current session name and connection status',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-    },
-    {
-      name: 'ipc_subscribe',
-      description: 'Subscribe or unsubscribe to a topic channel. Messages sent with this topic will be delivered to all subscribers.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          topic: { type: 'string', description: 'Topic name to subscribe/unsubscribe' },
-          action: { type: 'string', enum: ['subscribe', 'unsubscribe'], description: 'subscribe or unsubscribe' },
-        },
-        required: ['topic', 'action'],
-      },
-    },
-    {
-      name: 'ipc_spawn',
-      description: 'Spawn a new Claude Code session. Background mode runs a one-shot task and reports back via IPC. Interactive mode opens a new terminal window.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: 'Session name for the new session' },
-          task: { type: 'string', description: 'Task description or initial prompt for the session' },
-          interactive: { type: 'boolean', description: 'If true, opens a new terminal window. If false (default), runs in background.' },
-          model: { type: 'string', description: 'Optional model override (e.g. claude-sonnet-4-6)' },
-        },
-        required: ['name', 'task'],
-      },
-    },
-    {
-      name: 'ipc_rename',
-      description: 'Change this session\'s IPC name. Disconnects and reconnects to Hub with the new name.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: 'New session name' },
-        },
-        required: ['name'],
-      },
-    },
-    {
-      name: 'ipc_reconnect',
-      description: 'Change the Hub address and/or port at runtime, then reconnect. Useful when the Hub moves to a different host or port without restarting the MCP server.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          host: { type: 'string', description: 'New Hub host address (e.g. "192.168.1.10" or "127.0.0.1"). Omit to keep current.' },
-          port: { type: 'number', description: 'New Hub port number. Omit to keep current.' },
-        },
-      },
-    },
-    {
-      name: 'ipc_task',
-      description: 'Create, update, or list structured tasks. Actions: create (assign task to agent), update (change task status), list (query tasks)',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', enum: ['create', 'update', 'list'], description: 'Action to perform' },
-          to: { type: 'string', description: 'Target agent name (required for create)' },
-          title: { type: 'string', description: 'Task title (required for create)' },
-          description: { type: 'string', description: 'Task description' },
-          priority: { type: 'number', description: 'Priority 1-5, default 3' },
-          taskId: { type: 'string', description: 'Task ID (required for update)' },
-          status: { type: 'string', enum: ['started', 'completed', 'failed', 'cancelled'], description: 'New status (required for update)' },
-          agent: { type: 'string', description: 'Filter by assigned agent' },
-          filterStatus: { type: 'string', description: 'Filter by status' },
-          limit: { type: 'number', description: 'Max results, default 20' },
-        },
-        required: ['action'],
-      },
-    },
-  ],
-}));
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  // -------------------------------------------------------------------------
-  // ipc_send
-  // -------------------------------------------------------------------------
-  if (name === 'ipc_send') {
-    const { to, content, topic } = args ?? {};
-    if (!to || content === undefined || content === null) {
-      return {
-        content: [{ type: 'text', text: 'ipc_send requires "to" and "content"' }],
-        isError: true,
-      };
-    }
-
-    const message = createMessage({
-      from: IPC_NAME,
-      to,
-      content: String(content),
-      topic: topic ?? null,
-    });
-
-    // Try WebSocket first; if disconnected, fallback to HTTP POST /send
-    if (ws?.readyState === 1 /* OPEN */) {
-      ws.send(JSON.stringify(message));
-      return { content: [{ type: 'text', text: JSON.stringify({ sent: true, id: message.id, via: 'ws' }) }] };
-    }
-
-    // WS not connected — use HTTP fallback
-    try {
-      const result = await httpPost(`http://${HOST}:${IPC_PORT}/send`, {
-        from: IPC_NAME,
-        to,
-        content: String(content),
-      });
-      return { content: [{ type: 'text', text: JSON.stringify({ accepted: result?.accepted ?? false, id: result?.id ?? message.id, via: 'http', online: result?.online, buffered: result?.buffered }) }] };
-    } catch (err) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ delivered: false, error: err?.message ?? String(err), via: 'http_failed' }) }],
-        isError: true,
-      };
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // ipc_sessions
-  // -------------------------------------------------------------------------
-  if (name === 'ipc_sessions') {
-    try {
-      const healthUrl = `http://${HOST}:${IPC_PORT}/health`;
-      const response = await httpGet(healthUrl);
-      return { content: [{ type: 'text', text: JSON.stringify(response.sessions ?? []) }] };
-    } catch (err) {
-      process.stderr.write(`[ipc] ipc_sessions error: ${err?.message ?? err}\n`);
-      return {
-        content: [{ type: 'text', text: `Failed to fetch sessions: ${err?.message ?? err}` }],
-        isError: true,
-      };
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // ipc_subscribe
-  // -------------------------------------------------------------------------
-  if (name === 'ipc_subscribe') {
-    const { topic, action } = args ?? {};
-    if (!topic || !action) {
-      return { content: [{ type: 'text', text: 'ipc_subscribe requires "topic" and "action"' }], isError: true };
-    }
-    if (action !== 'subscribe' && action !== 'unsubscribe') {
-      return { content: [{ type: 'text', text: 'action must be "subscribe" or "unsubscribe"' }], isError: true };
-    }
-    // Send subscribe/unsubscribe to hub via WebSocket
-    if (ws?.readyState !== 1) {
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'hub not connected' }) }], isError: true };
-    }
-    wsSend({ type: action, topic });
-    return { content: [{ type: 'text', text: JSON.stringify({ action, topic, ok: true }) }] };
-  }
-
-  if (name === 'ipc_whoami') {
-    return { content: [{ type: 'text', text: JSON.stringify({
-      name: IPC_NAME,
-      hub_connected: ws?.readyState === 1,
-      hub: `${HOST}:${IPC_PORT}`,
-      pending_outgoing: outgoingQueue.length,
-    }) }] };
-  }
-
-  // -------------------------------------------------------------------------
-  // ipc_spawn
-  // -------------------------------------------------------------------------
-  if (name === 'ipc_spawn') {
-    const { name: sessionName, task, interactive, model } = args ?? {};
-    if (!sessionName || !task) {
-      return { content: [{ type: 'text', text: 'ipc_spawn requires "name" and "task"' }], isError: true };
-    }
-
-    // Sanitize session name — allow only alphanumeric, underscore, hyphen
-    if (!/^[a-zA-Z0-9_-]+$/.test(sessionName)) {
-      return { content: [{ type: 'text', text: `Invalid session name "${sessionName}": only letters, numbers, underscore and hyphen allowed` }], isError: true };
-    }
-
-    // Check if session name is already taken
-    try {
-      const sessions = await httpGet(`http://${HOST}:${IPC_PORT}/sessions`);
-      const existing = Array.isArray(sessions) && sessions.find(s => s.name === sessionName);
-      if (existing) {
-        return { content: [{ type: 'text', text: `Session "${sessionName}" is already online. Use a different name or wait for it to disconnect.` }], isError: true };
-      }
-    } catch {
-      // Hub unreachable — proceed anyway, Hub will reject duplicate on connect
-    }
-
-    try {
-      const result = await spawnSession({ name: sessionName, task, interactive: !!interactive, model });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    } catch (err) {
-      return { content: [{ type: 'text', text: `Failed to spawn session: ${err?.message ?? err}` }], isError: true };
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // ipc_rename
-  // -------------------------------------------------------------------------
-  if (name === 'ipc_rename') {
-    const { name: newName } = args ?? {};
-    if (!newName) {
-      return { content: [{ type: 'text', text: 'ipc_rename requires "name"' }], isError: true };
-    }
-
-    // Sanitize session name — allow only alphanumeric, underscore, hyphen
-    if (!/^[a-zA-Z0-9_-]+$/.test(newName)) {
-      return { content: [{ type: 'text', text: `Invalid session name "${newName}": only letters, numbers, underscore and hyphen allowed` }], isError: true };
-    }
-
-    const oldName = IPC_NAME;
-    IPC_NAME = newName;
-
-    // Disconnect current WebSocket
-    if (ws) {
-      try { ws.close(); } catch {}
-      ws = null;
-    }
-
-    // Reconnect with new name
-    reconnectAttempts = 0;
-    connect();
-
-    process.stderr.write(`[ipc] renamed: ${oldName} → ${newName}\n`);
-    return { content: [{ type: 'text', text: JSON.stringify({ renamed: true, from: oldName, to: newName }) }] };
-  }
-
-  // -------------------------------------------------------------------------
-  // ipc_reconnect
-  // -------------------------------------------------------------------------
-  if (name === 'ipc_reconnect') {
-    const { host, port } = args ?? {};
-
-    if (host === undefined && port === undefined) {
-      return { content: [{ type: 'text', text: 'ipc_reconnect requires at least one of "host" or "port"' }], isError: true };
-    }
-
-    const oldHub = `${HOST}:${IPC_PORT}`;
-
-    if (host !== undefined) HOST = host;
-    if (port !== undefined) IPC_PORT = Number(port);
-
-    const newHub = `${HOST}:${IPC_PORT}`;
-
-    // Disconnect existing connection
-    if (ws) {
-      try { ws.close(); } catch {}
-      ws = null;
-    }
-
-    // Reconnect to new address
-    reconnectAttempts = 0;
-    connect();
-
-    process.stderr.write(`[ipc] reconnecting: ${oldHub} → ${newHub}\n`);
-    return { content: [{ type: 'text', text: JSON.stringify({ reconnecting: true, from: oldHub, to: newHub, session: IPC_NAME }) }] };
-  }
-
-  // -------------------------------------------------------------------------
-  // ipc_task
-  // -------------------------------------------------------------------------
-  if (name === 'ipc_task') {
-    const { action, to, title, description, priority, taskId, status, agent, filterStatus, limit } = args ?? {};
-    if (!action) {
-      return { content: [{ type: 'text', text: 'ipc_task requires "action"' }], isError: true };
-    }
-
-    if (action === 'create') {
-      if (!to || !title) {
-        return { content: [{ type: 'text', text: 'ipc_task create requires "to" and "title"' }], isError: true };
-      }
-      try {
-        const result = await httpPost(`http://${HOST}:${IPC_PORT}/task`, {
-          from: IPC_NAME,
-          to,
-          title,
-          description: description ?? '',
-          priority: priority ?? 3,
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      } catch (err) {
-        return { content: [{ type: 'text', text: `Failed to create task: ${err?.message ?? err}` }], isError: true };
-      }
-    }
-
-    if (action === 'update') {
-      if (!taskId || !status) {
-        return { content: [{ type: 'text', text: 'ipc_task update requires "taskId" and "status"' }], isError: true };
-      }
-      try {
-        const result = await httpPatch(`http://${HOST}:${IPC_PORT}/tasks/${encodeURIComponent(taskId)}`, { status });
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      } catch (err) {
-        return { content: [{ type: 'text', text: `Failed to update task: ${err?.message ?? err}` }], isError: true };
-      }
-    }
-
-    if (action === 'list') {
-      try {
-        const params = new URLSearchParams();
-        if (agent) params.set('agent', agent);
-        if (filterStatus) params.set('status', filterStatus);
-        params.set('limit', String(limit ?? 20));
-        const result = await httpGet(`http://${HOST}:${IPC_PORT}/tasks?${params.toString()}`);
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-      } catch (err) {
-        return { content: [{ type: 'text', text: `Failed to list tasks: ${err?.message ?? err}` }], isError: true };
-      }
-    }
-
-    return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true };
-  }
-
-  return {
-    content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-    isError: true,
-  };
+const mcpTools = createMcpTools({
+  getSessionName: () => IPC_NAME,
+  setSessionName: (name) => { IPC_NAME = name; },
+  getHubHost: () => HOST,
+  setHubHost: (host) => { HOST = host; },
+  getHubPort: () => IPC_PORT,
+  setHubPort: (port) => { IPC_PORT = port; },
+  getWs: () => ws,
+  disconnectWs,
+  reconnect: reconnectHub,
+  getPendingOutgoingCount: () => outgoingQueue.length,
+  wsSend,
+  httpGet,
+  httpPost,
+  httpPatch,
+  spawnSession,
+  stderrLog: (message) => process.stderr.write(message),
 });
+
+server.setRequestHandler(ListToolsRequestSchema, async () => mcpTools.listTools());
+server.setRequestHandler(CallToolRequestSchema, async (request) =>
+  mcpTools.handleToolCall(request.params.name, request.params.arguments));
 
 // ---------------------------------------------------------------------------
 // spawnSession — launch a new Claude Code session (background or interactive)
@@ -1015,29 +693,34 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  process.stderr.write(`[ipc] fatal: ${err?.message ?? err}\n`);
-  process.exit(1);
-});
-
 // ---------------------------------------------------------------------------
 // Source file change detection: poll own mtime, reconnect on change
 // (NOT exit — Claude Code may not auto-restart MCP servers)
 // ---------------------------------------------------------------------------
-const __mcp_file = fileURLToPath(import.meta.url);
-let __mcp_mtime = 0;
-try { __mcp_mtime = statSync(__mcp_file).mtimeMs; } catch {}
+function startSourceChangeWatcher() {
+  const __mcp_file = fileURLToPath(import.meta.url);
+  let __mcp_mtime = 0;
+  try { __mcp_mtime = statSync(__mcp_file).mtimeMs; } catch {}
 
-setInterval(() => {
-  try {
-    const mtime = statSync(__mcp_file).mtimeMs;
-    if (__mcp_mtime && mtime !== __mcp_mtime) {
-      __mcp_mtime = mtime;
-      process.stderr.write('[ipc] source file changed, re-detecting host and reconnecting...\n');
-      HOST = detectHost();
-      if (ws) { try { ws.close(); } catch {} ws = null; }
-      reconnectAttempts = 0;
-      connect();
-    }
-  } catch {}
-}, 10000).unref();
+  setInterval(() => {
+    try {
+      const mtime = statSync(__mcp_file).mtimeMs;
+      if (__mcp_mtime && mtime !== __mcp_mtime) {
+        __mcp_mtime = mtime;
+        process.stderr.write('[ipc] source file changed, re-detecting host and reconnecting...\n');
+        HOST = detectHost();
+        disconnectWs();
+        reconnectHub();
+      }
+    } catch {}
+  }, 10000).unref();
+}
+
+if (import.meta.main) {
+  main().catch((err) => {
+    process.stderr.write(`[ipc] fatal: ${err?.message ?? err}\n`);
+    process.exit(1);
+  });
+
+  startSourceChangeWatcher();
+}

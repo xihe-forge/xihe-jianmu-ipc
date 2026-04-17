@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import http from 'node:http';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 import { getTempDbPath } from '../helpers/temp-path.mjs';
 
@@ -180,37 +180,41 @@ function startHub() {
     const port = randomPort();
     const dbPath = createTempDbPath();
     const stderrChunks = [];
-    const child = spawn('node', ['hub.mjs'], {
-      cwd: ROOT_DIR,
-      env: {
-        ...process.env,
-        IPC_PORT: String(port),
-        IPC_DB_PATH: dbPath,
+    const hubUrl = pathToFileURL(join(ROOT_DIR, 'hub.mjs')).href;
+    const worker = new Worker(
+      `
+        process.env.IPC_PORT = ${JSON.stringify(String(port))};
+        process.env.IPC_DB_PATH = ${JSON.stringify(dbPath)};
+        import(${JSON.stringify(hubUrl)});
+      `,
+      {
+        eval: true,
+        stdout: true,
+        stderr: true,
       },
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
+    );
 
-    child.stderr.setEncoding('utf8');
+    worker.stderr.setEncoding('utf8');
 
     let settled = false;
     const timer = setTimeout(() => {
       finish(new Error(`Hub 启动超时\n${stderrChunks.join('')}`));
     }, HUB_START_TIMEOUT);
 
-    child.stderr.on('data', chunk => {
+    worker.stderr.on('data', chunk => {
       stderrChunks.push(chunk);
       if (!settled && chunk.includes('listening on')) {
         finish();
       }
     });
 
-    child.once('error', error => {
+    worker.once('error', error => {
       finish(error);
     });
 
-    child.once('exit', (code, signal) => {
+    worker.once('exit', code => {
       if (!settled) {
-        finish(new Error(`Hub 启动前退出 (code=${code}, signal=${signal})\n${stderrChunks.join('')}`));
+        finish(new Error(`Hub 启动前退出 (code=${code})\n${stderrChunks.join('')}`));
       }
     });
 
@@ -221,14 +225,14 @@ function startHub() {
 
       if (error) {
         try {
-          child.kill();
+          worker.terminate();
         } catch {}
         cleanupDbFiles(dbPath);
         reject(error);
         return;
       }
 
-      resolve({ child, port, dbPath, stderrChunks });
+      resolve({ worker, port, dbPath, stderrChunks });
     }
   });
 }
@@ -236,35 +240,18 @@ function startHub() {
 async function stopHub(state) {
   if (!state) return;
 
-  const { child, dbPath } = state;
+  const { worker, dbPath } = state;
 
-  if (child.exitCode === null && child.signalCode === null) {
-    await new Promise(resolve => {
-      let finished = false;
-      const timer = setTimeout(() => {
-        finish();
-      }, 2_000);
-
-      child.once('exit', () => {
-        finish();
-      });
-
-      try {
-        child.kill();
-      } catch {
-        finish();
-      }
-
-      function finish() {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        resolve();
-      }
-    });
+  try {
+    if (worker) {
+      await Promise.race([
+        worker.terminate().catch(() => {}),
+        new Promise(resolve => setTimeout(resolve, 2_000)),
+      ]);
+    }
+  } finally {
+    cleanupDbFiles(dbPath);
   }
-
-  cleanupDbFiles(dbPath);
 }
 
 function cleanupDbFiles(dbPath) {

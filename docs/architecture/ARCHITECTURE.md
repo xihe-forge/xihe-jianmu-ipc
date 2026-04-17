@@ -55,33 +55,55 @@
 
 ## 核心组件
 
-### hub.mjs — 中枢进程
+### hub.mjs — 启动入口（约300行）
 
-WebSocket服务器 + HTTP API，监听 `:3179`。
+职责纯粹：加载配置、组装 `ctx` 依赖上下文、启动 HTTP/WS server。核心业务逻辑已拆到 `lib/` 下各模块。
 
-职责：
-- **Session注册表**：维护 `name → WebSocket连接` 的映射，支持重名时踢旧连上新
-- **离线收件箱**：目标session离线时缓存消息，连接恢复后批量投递
-- **Topic pub/sub**：`ipc_subscribe` 注册主题，Hub做fanout广播
-- **心跳管理**：30秒ping/pong，60秒无响应断开
-- **OpenClaw唤醒**：目标session名含 `openclaw-` 前缀时，额外发一次HTTP `/hooks/wake`
-- **飞书出站**：收到飞书目标消息时调用Feishu Bot API发送
+### lib/router.mjs — 消息路由核心
 
-### mcp-server.mjs — MCP服务端
+导出 `createRouter(ctx)` 工厂函数。纯函数通过闭包+依赖注入，可直接 import 单元测试。
 
-由 Claude Code 或 OpenClaw 通过 stdio 加载，作为MCP工具提供者运行。
+- `routeMessage(msg, sender)` — 点对点/广播/topic fanout，消息去重（msg.id），saveMessage 持久化，ackPending 追踪
+- `pushInbox` / `flushInbox` — 离线消息写 SQLite + 重连时合并 SQLite+内存按 ts 升序投递
+- `scheduleInboxCleanup` — 离线 session TTL 过期清理
+- 四条路由路径：直接寻址 / 广播 / topic fanout / 特殊目标（feishu / openclaw）
 
-- 通过 `@modelcontextprotocol/sdk` 实现 JSON-RPC over stdio
-- 启动时连接Hub WebSocket，Hub不存在时自动启动（autostart）
-- 收到Hub推送的消息后，通过 Channel capability 以 `<channel>` 通知形式注入Claude Code上下文
-- 提供8个MCP工具：`ipc_send` / `ipc_sessions` / `ipc_whoami` / `ipc_subscribe` / `ipc_spawn` / `ipc_rename` / `ipc_task` / `ipc_reconnect`
+### lib/http-handlers.mjs — HTTP 端点处理
 
-### HTTP API
+导出 `createHttpHandler(ctx)`。10 个端点：
+- 消息：`POST /send`、`POST /feishu-reply`、`GET /messages`
+- 状态：`GET /health`、`GET /sessions`、`GET /stats`
+- 任务：`POST /task`、`GET /tasks`、`GET /tasks/:id`、`PATCH /tasks/:id`
 
-补充端点：
-- `POST /feishu-reply` — `{app, content, from?}` 直接回复飞书
-- `GET /tasks/:id` — 单个任务详情
-- `PATCH /tasks/:id` — `{status}` 更新任务状态
+### lib/feishu-adapter.mjs — 飞书适配器
+
+`feishu-apps.json` 配置加载 + `statSync` 轮询热重载 + tenant_access_token 缓存。
+
+### lib/openclaw-adapter.mjs — OpenClaw 适配器
+
+`/hooks/wake` HTTP 投递 + 重试队列（5min TTL，15s 扫描）。
+
+### lib/ci-relay.mjs — CI 通知中继
+
+飞书邮箱 API 轮询 GitHub CI 失败通知邮件，解析后通过 `ctx.routeMessage` 转发到对应 AI session（按 `ci-routes.json` 映射）。
+
+### lib/mcp-tools.mjs — MCP 工具实现
+
+导出 `createMcpTools(ctx)` 工厂函数，实现 8 个 IPC 工具的业务逻辑：`ipc_send` / `ipc_sessions` / `ipc_whoami` / `ipc_subscribe` / `ipc_spawn` / `ipc_rename` / `ipc_task` / `ipc_reconnect`。
+
+### mcp-server.mjs — MCP stdio 入口
+
+由 Claude Code 或 OpenClaw 通过 stdio 加载。负责 MCP JSON-RPC 协议 + WS 连接 Hub + 注入 Channel `<channel>` 通知。业务逻辑委托 `lib/mcp-tools.mjs`。
+
+### feishu-bridge.mjs — 飞书消息入站进程
+
+独立进程。为每个启用接收的飞书应用启动 `worker_thread`，运行 `lib/feishu-worker-thread.mjs` 持有独立 Lark SDK WSClient。命令由 `lib/command-parser.mjs` 识别后 bridge 直接处理，普通消息 `POST /send` 转发到 Hub。
+
+### mcp-wrapper.mjs — MCP 自动重启包装
+
+监视 `.mjs` 文件 mtime 变化，检测到改动后重启 `mcp-server.mjs`。使用 `statSync` 轮询规避 WSL2 NTFS `fs.watch` 不可靠问题。
+
+> Hub 本身的文件监控默认关闭（见 ADR-002），改用外部 daemon 守护（见 ADR-004）。
 
 ### feishu-bridge.mjs — 飞书编排器
 
@@ -144,12 +166,13 @@ Hub收到消息，目标为 openclaw-* session
 
 | 表 | 用途 |
 |----|------|
-| `messages` | 所有消息记录，含sender/receiver/topic/content/timestamp |
-| `tasks` | 结构化任务，含status/priority/deadline/payload |
+| `messages` | 所有已路由消息的归档记录（路由成功或失败都留档） |
+| `tasks` | 结构化任务，含 status/priority/deadline/payload |
+| `inbox` | offline session 的缓冲消息，重连时 flush 后清空（ADR-003） |
 
-- 7天TTL：Hub启动时及每小时定期清理过期记录
-- offline inbox：消息投递失败时写入messages表并标记 `buffered=true`，session重连时查询并投递
-- 查询接口：`GET /messages`（消息历史）、`GET /stats`（per-agent统计）、`GET /tasks`（任务列表）
+- 7 天 TTL：每小时定期 cleanup，清理 messages/tasks 过期记录 + 5 分钟 TTL 的 inbox 过期项
+- **offline inbox 持久化**（ADR-003）：消息目标离线时写 `inbox` 表，session 重连时合并内存+SQLite，按 ts 升序投递并清空两处
+- 查询接口：`GET /messages`（消息历史）、`GET /stats`（per-agent 统计）、`GET /tasks`（任务列表）
 
 ---
 
@@ -181,3 +204,12 @@ OpenClaw Gateway的 `/hooks/wake` 是激活空闲session的标准路径。即使
 
 **setsid脱离终端启动Hub**
 Hub autostart时用 `setsid` 创建新进程组，避免父终端关闭时SIGHUP传播杀死Hub。同时处理了stdout/stderr的EPIPE静默，防止detach后写入broken pipe崩溃。
+
+**代码分层 + ctx 依赖注入**（ADR-005）
+`hub.mjs` 从 1174 行瘦身到 300 行，核心逻辑拆到 `lib/router.mjs` 和 `lib/http-handlers.mjs` 等工厂函数。依赖通过 `ctx` 对象注入，路由函数可直接 import 单元测试（支撑 Stryker 突变测试）。
+
+**文件监控默认关闭**（ADR-002）
+Hub 源文件 mtime 轮询的 auto-restart 仅 `IPC_DEV_WATCH=1` 时启用。生产环境不会因代码提交触发 Hub 自杀。进程级守护由外部 daemon 负责（见 ADR-004）。
+
+**本地服务 daemon 守护**（ADR-004）
+Hub 和 CLIProxyAPI 都配独立的 `*-daemon.vbs` + Windows 任务计划。每 5 分钟 `curl` 功能端点验活，假活时精确 kill PID 拉起新进程。拉起失败 5 次 IPC 告警。

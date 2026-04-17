@@ -8,7 +8,11 @@
     "lib/router.mjs",
     "lib/protocol.mjs",
     "lib/redact.mjs",
-    "lib/command-parser.mjs"
+    "lib/command-parser.mjs",
+    "lib/db.mjs",
+    "lib/mcp-tools.mjs",
+    "lib/ci-relay.mjs",
+    "lib/console-cards.mjs"
   ],
   "mutator": {
     "excludedMutations": ["StringLiteral"]

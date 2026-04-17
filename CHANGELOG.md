@@ -9,40 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat: standalone feishu-bridge relay process (0 LLM tokens)
-- feat: ping auto-reply in feishu-bridge for link testing
-- feat: Feishu Bot API direct push (0 LLM tokens per notification)
-- feat: Feishu message receiving via Lark SDK WSClient (no public IP needed)
-- feat: Multi-app Feishu adapter with feishu-apps.json config
-- feat: ipc_send(to="feishu" or "feishu:app-name") sends via Feishu Bot API
-- feat: POST /feishu-reply HTTP endpoint for lightweight Feishu replies
-- feat: Stop hook auto-replies to Feishu (1 API call, no tool call needed)
-- feat: ipc_spawn checks for duplicate session name before spawning
+- feat(ci-relay): 飞书邮箱轮询 GitHub CI 失败通知，路由到对应 AI session（lib/ci-relay.mjs）
+- feat(inbox): offline inbox 持久化到 SQLite，Hub 重启不丢消息（db.mjs inbox 表）
+- feat(daemon): Windows Hub 自启自愈守护（bin/hub-daemon.vbs + install-daemon.ps1）
+- feat(daemon): CLIProxyAPI 自启自愈守护（bin/cliproxy-daemon.vbs + 拉起失败 IPC 告警）
+- feat(daemon): bin/verify-daemons.ps1 手动验证 daemon 自愈能力
+- feat(test): Stryker 突变测试配置（8 个 lib 模块，整体 62-99% 区间）
+- feat(test): WebSocket E2E 测试 10 个（tests/e2e/websocket.test.mjs）
+- feat(test): HTTP API 集成测试 8 个（tests/integration/hub-api.test.mjs）
+- feat(test): router 集成测试 30 个，真实 SQLite + 真实 createRouter（tests/integration/router-with-db.test.mjs）
+- feat(test): mcp-tools 单元测试 29 个（tests/mcp-tools.test.mjs）
 
 ### Changed
 
-- refactor: removed Feishu WSClient receiver from Hub (moved to feishu-bridge)
-- refactor: Feishu receiving is now a separate process, Hub only handles sending
-- chore: removed unused channel-server.mjs, moved local files to local/
-- chore: multi-app Feishu config replaces single FEISHU_APP_ID env vars
+- refactor(hub): 拆分 1174 行 hub.mjs 为五个职责模块（router/http-handlers/feishu-adapter/openclaw-adapter/hub），代码从 D 级升 B 级
+- refactor(mcp-server): 抽出 createMcpTools(ctx) 工厂函数到 lib/mcp-tools.mjs，支持单元测试
+- refactor(tests): 测试目录重组（tests/*.test.mjs 单元 + tests/integration/ 集成 + tests/e2e/ E2E），集成测试占比从 4% 升到 21%
+- chore(deps): npm audit fix 修 4 个漏洞（含 critical protobufjs RCE）
+- chore(temp): 测试临时文件统一到 D:/workspace/ai/research/xiheAi/temp/jianmu-ipc/（不污染 C 盘）
+- ci: test job 添加 matrix.os 跨 Ubuntu/Windows/macOS
 
 ### Fixed
 
-- fix: Lark SDK WSClient global state conflict when multiple instances in same process
-- fix: EPIPE crash prevention with synchronous stdout.write patch
-- fix: eventDispatcher must be passed to WSClient.start() not constructor (SDK confirmed)
-- fix: wsSend returns real delivery status, HTTP fallback for disconnected sessions
-- fix: MAX_RECONNECT_ATTEMPTS changed to Infinity (never give up reconnecting)
-- fix: Feishu receiver only forwards p2p messages, ignores group chats
-- fix: Feishu messages route to app-specific session via routeTo config
-- deliverToOpenClaw changed from /v1/chat/completions to /hooks/wake for real-time push
-- OpenClaw messages always route through /hooks/wake, not WebSocket (even if openclaw session is online)
-- patch-channels.mjs supports both old and new trust dialog patterns
-- WSL2 interactive spawn uses temp .ps1 file with UTF-8 BOM (fixes encoding issues)
-- MCP config changed to ~/.mcp.json auto-load (instead of --mcp-config flag timing issues)
-- WSL2 spawn prefers wt.exe (Windows Terminal), falls back to powershell.exe
-- Inject --mcp-config with ipc server into spawned CC session
-- Patch trust dialog (C2) so spawn does not require manual confirmation
+- fix(hub): 文件监控改为仅开发模式（IPC_DEV_WATCH=1），解决代码提交触发 Hub 频繁重启 P0
+- fix(router): stub session 未持久化到 SQLite inbox（创建 stub 时直接 inbox:[msg] 丢失持久化）
+- fix(router): flushInbox 合并 SQLite+内存消息后按 ts 升序发送（原顺序错）
+- fix(docs): POST /send 响应字段名 ok→accepted（文档与代码不一致 P0）
+- fix(daemon): install-daemon.ps1 用 cmd /c 包装 wscript 调用，避免 Register-ScheduledTask 参数吞噬（见 ADR-006）
+- fix(test): npm test 添加 --test-force-exit，解决 node:test 进程不退出导致 119 秒超时
+- fix(test): 移除 --test-isolation=none（性能回归 122 秒→5 秒）
+
+### Docs
+
+- docs(adr): 补齐 5 个 ADR（ADR-002 ~ ADR-006）记录架构决策历史
+- docs(readme): 增加 Windows Hub daemon 安装章节（README.md + README.zh-CN.md）
+- docs(audit): PRD-Code-Test 对齐审计报告（41 feature，90% 测试覆盖）
+- docs: 补齐 ipc_reconnect 工具文档、POST /feishu-reply 等缺失端点文档
 
 ## [0.1.0] - 2026-03-28
 

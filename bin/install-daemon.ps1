@@ -17,13 +17,15 @@ schtasks /query /tn JianmuHubDaemon 2>$null
 if ($?) { schtasks /delete /tn JianmuHubDaemon /f; Write-Host "Removed existing JianmuHubDaemon task" }
 
 # 注册新任务
-$action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument '//B "D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\hub-daemon.vbs"'
+$vbsPath = "D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\hub-daemon.vbs"
+$argString = '//B "' + $vbsPath + '"'
+$action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument $argString
+# 触发器：用户登录时 + 每10分钟重复（双保险）
+# 注意：AtStartup 需要管理员权限，这里不用，改靠 AtLogOn + Repetition 覆盖
 $trigger1 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$trigger2 = New-ScheduledTaskTrigger -AtStartup
-$trigger3 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 10)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName "JianmuHubDaemon" -Action $action -Trigger @($trigger1, $trigger2, $trigger3) -Settings $settings -Principal $principal -Force
+$trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 10) -RepetitionDuration (New-TimeSpan -Days 3650)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName "JianmuHubDaemon" -Action $action -Trigger @($trigger1, $trigger2) -Settings $settings -Force
 
 Write-Host "JianmuHubDaemon registered"
 Stop-Transcript

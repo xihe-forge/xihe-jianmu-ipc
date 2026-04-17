@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import http from 'node:http';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { getTempDbPath } from '../helpers/temp-path.mjs';
 
 const ROOT_DIR = fileURLToPath(new URL('../../', import.meta.url));
 const TEST_TIMEOUT = 10_000;
@@ -172,8 +172,7 @@ function randomPort() {
 }
 
 function createTempDbPath() {
-  const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return join(tmpdir(), `hub-api-test-${suffix}.db`);
+  return getTempDbPath('hub-api');
 }
 
 function startHub() {

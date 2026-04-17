@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { unlinkSync, existsSync } from 'node:fs';
+import { getTempDbPath } from '../helpers/temp-path.mjs';
 
 // 必须在 import db.mjs 之前设好环境变量
-const DB_PATH = join(tmpdir(), `ipc-test-${Date.now()}.db`);
+const DB_PATH = getTempDbPath('db-integration');
 process.env.IPC_DB_PATH = DB_PATH;
 
 const db = await import('../../lib/db.mjs');

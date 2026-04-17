@@ -1,3 +1,6 @@
+' [LEGACY] 此文件已废弃，请使用 bin/hub-daemon.vbs
+' hub-daemon.vbs 提供循环健康检查和自愈能力，配合 install-daemon.ps1 注册任务计划
+
 ' 静默启动 JianmuHub，无弹窗
 ' 延迟30秒等待网络就绪，检查端口，启动Hub
 WScript.Sleep 30000

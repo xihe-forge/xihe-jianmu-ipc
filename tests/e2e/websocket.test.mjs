@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import http from 'node:http';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
+import { getTempDbPath } from '../helpers/temp-path.mjs';
 
 const ROOT_DIR = fileURLToPath(new URL('../../', import.meta.url));
 const TEST_TIMEOUT = 15_000;
@@ -368,8 +368,7 @@ function randomPort() {
 }
 
 function createTempDbPath() {
-  const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return join(tmpdir(), `hub-e2e-${suffix}.db`);
+  return getTempDbPath('e2e');
 }
 
 function startHub() {

@@ -1,13 +1,9 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { getTempDbPath } from '../helpers/temp-path.mjs';
 
-const DB_PATH = join(
-  tmpdir(),
-  `ipc-router-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.db`,
-);
+const DB_PATH = getTempDbPath('router');
 process.env.IPC_DB_PATH = DB_PATH;
 
 const db = await import('../../lib/db.mjs');

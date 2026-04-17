@@ -11,9 +11,10 @@ schtasks /query /tn CliProxyDaemon 2>$null
 if ($?) { schtasks /delete /tn CliProxyDaemon /f; Write-Host "Removed existing CliProxyDaemon task" }
 
 # 注册新任务
+# 用 cmd /c 包装 wscript 调用——直接传 //B 给 Register-ScheduledTask 会被吞掉参数
 $vbsPath = "D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\cliproxy-daemon.vbs"
-$argString = '//B "' + $vbsPath + '"'
-$action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument $argString
+$argString = '/c wscript.exe //B "' + $vbsPath + '"'
+$action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $argString
 # 触发器：用户登录时 + 每10分钟重复（双保险）
 # AtStartup 需要管理员权限，这里不用，改靠 AtLogOn + Repetition 覆盖
 $trigger1 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME

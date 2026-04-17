@@ -194,6 +194,23 @@ ipc main
 ipc worker
 ```
 
+**6. Windows Hub 守护进程（推荐）/ Windows Hub daemon (recommended)**
+
+让 Hub 开机自启 + 挂了自动恢复，无需手动拉起。守护机制：Windows 任务计划 `AtLogOn` + 每 10 分钟重复触发 + VBS 内部每 5 分钟健康探测（curl `/health`），假活时精确 kill 该 PID 并拉起新进程。
+
+Make the Hub start automatically on login and self-heal when crashed. Mechanism: Windows Task Scheduler (`AtLogOn` + repeat every 10 min) triggers a VBS daemon that probes `/health` every 5 min and restarts the hub process on failure.
+
+```powershell
+# 注册守护任务（不需要管理员权限 / No admin required）
+powershell -ExecutionPolicy Bypass -File bin\install-daemon.ps1
+
+# 卸载 / Uninstall
+powershell -ExecutionPolicy Bypass -File bin\uninstall-daemon.ps1
+
+# 验证自愈能力（会 kill Hub PID 测试恢复 / will kill Hub PID to test recovery）
+powershell -ExecutionPolicy Bypass -File bin\verify-daemons.ps1 -Service Hub
+```
+
 ---
 
 ### OpenClaw 用户 / For OpenClaw Users

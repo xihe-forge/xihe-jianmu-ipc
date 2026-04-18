@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
 import { rmSync } from 'node:fs';
 import http from 'node:http';
 import { join } from 'node:path';
@@ -24,7 +25,7 @@ afterEach(async () => {
   hub = null;
 });
 
-test('POST /wake-suspended: 广播给所有 network-up 订阅者并返回 subscriber 列表', { timeout: TEST_TIMEOUT }, async () => {
+test('POST /wake-suspended: 通过 helper 广播 ADR payload 并清空 suspended_sessions', { timeout: TEST_TIMEOUT }, async () => {
   const wsA = await connectSession(hub.port, 'wake-a');
   const wsB = await connectSession(hub.port, 'wake-b');
   const wsC = await connectSession(hub.port, 'wake-c');
@@ -34,6 +35,39 @@ test('POST /wake-suspended: 广播给所有 network-up 订阅者并返回 subscr
     await subscribeToTopic(wsA, 'network-up');
     await subscribeToTopic(wsB, 'network-up');
     await subscribeToTopic(wsC, 'network-up');
+
+    await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/suspend',
+      json: {
+        from: 'suspend-a',
+        reason: 'network down',
+        task_description: 'resume task A',
+        suspended_by: 'self',
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/suspend',
+      json: {
+        from: 'suspend-b',
+        reason: 'dns failure',
+        task_description: 'resume task B',
+        suspended_by: 'watchdog',
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/suspend',
+      json: {
+        from: 'suspend-c',
+        reason: 'hub unavailable',
+        task_description: 'resume task C',
+        suspended_by: 'harness',
+      },
+    });
 
     const receiveA = waitForWebSocketMessage(wsA, message => message.type === 'network-up');
     const receiveB = waitForWebSocketMessage(wsB, message => message.type === 'network-up');
@@ -54,14 +88,20 @@ test('POST /wake-suspended: 广播给所有 network-up 订阅者并返回 subscr
       response.body.subscribers.slice().sort(),
       ['wake-a', 'wake-b', 'wake-c'],
     );
+    assert.deepEqual(response.body.clearedSessions, ['suspend-a', 'suspend-b', 'suspend-c']);
 
     for (const message of [messageA, messageB, messageC]) {
-      assert.equal(message.reason, 'manual wake');
+      assert.deepEqual(
+        Object.keys(message).sort(),
+        ['recoveredAfter', 'suspendedSessions', 'triggeredBy', 'ts', 'type'],
+      );
       assert.equal(message.triggeredBy, 'manual');
-      assert.equal(message.from, 'harness');
+      assert.equal(message.recoveredAfter, 0);
+      assert.deepEqual(message.suspendedSessions, ['suspend-a', 'suspend-b', 'suspend-c']);
       assert.equal(typeof message.ts, 'number');
       assert.ok(message.ts > 0);
     }
+    assert.deepEqual(readSuspendedSessions(hub.dbPath), []);
   } finally {
     await closeWebSocket(wsA);
     await closeWebSocket(wsB);
@@ -70,11 +110,20 @@ test('POST /wake-suspended: 广播给所有 network-up 订阅者并返回 subscr
   }
 });
 
-test('POST /wake-suspended: body 提供 reason 和 from 时广播携带覆盖值', { timeout: TEST_TIMEOUT }, async () => {
+test('POST /wake-suspended: 兼容旧 body，但广播 payload 仍严格走 helper', { timeout: TEST_TIMEOUT }, async () => {
   const ws = await connectSession(hub.port, 'wake-custom');
 
   try {
     await subscribeToTopic(ws, 'network-up');
+    await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/suspend',
+      json: {
+        from: 'legacy-suspended',
+        reason: 'legacy reason',
+        task_description: 'legacy task',
+      },
+    });
 
     const receive = waitForWebSocketMessage(ws, message => message.type === 'network-up');
     const response = await httpRequest(hub.port, {
@@ -89,9 +138,16 @@ test('POST /wake-suspended: body 提供 reason 和 from 时广播携带覆盖值
 
     assert.equal(response.statusCode, 200);
     assert.deepEqual(response.body.subscribers, ['wake-custom']);
-    assert.equal(message.reason, 'network restored');
+    assert.deepEqual(response.body.clearedSessions, ['legacy-suspended']);
+    assert.deepEqual(
+      Object.keys(message).sort(),
+      ['recoveredAfter', 'suspendedSessions', 'triggeredBy', 'ts', 'type'],
+    );
     assert.equal(message.triggeredBy, 'manual');
-    assert.equal(message.from, 'ops-script');
+    assert.equal(message.recoveredAfter, 0);
+    assert.deepEqual(message.suspendedSessions, ['legacy-suspended']);
+    assert.equal('reason' in message, false);
+    assert.equal('from' in message, false);
   } finally {
     await closeWebSocket(ws);
   }
@@ -203,6 +259,19 @@ function cleanupDbFiles(dbPath) {
     try {
       rmSync(file, { force: true });
     } catch {}
+  }
+}
+
+function readSuspendedSessions(dbPath) {
+  const db = new Database(dbPath);
+  try {
+    return db.prepare(`
+      SELECT name, reason, task_description, suspended_at, suspended_by
+      FROM suspended_sessions
+      ORDER BY suspended_at ASC
+    `).all();
+  } finally {
+    db.close();
   }
 }
 

@@ -451,16 +451,21 @@ Session self-report endpoint for network suspension. Repeated suspend requests w
 
 #### `POST /wake-suspended`
 
-临时运维 endpoint。向所有订阅 `network-up` topic 的 session 广播手动唤醒消息，用于 `network-resilience v0.4.0` 全局容错上线前的过渡方案。
+临时运维 endpoint。调用结构化 `network-up` helper，向所有订阅 `network-up` topic 的 session 广播恢复事件，并**消费/清空** `suspended_sessions` 表。
 
-Temporary ops endpoint. Broadcasts a manual wake event to every session subscribed to the `network-up` topic. This is the transition path before the `network-resilience v0.4.0` global fault-tolerance flow lands.
+Temporary ops endpoint. Calls the structured `network-up` helper, broadcasts a recovery event to every session subscribed to the `network-up` topic, and **consumes/clears** the `suspended_sessions` table.
 
 ```json
-// Request (optional body)
+// Request (optional body accepted for backward compatibility; fields are ignored)
 { "reason": "network restored", "from": "harness" }
 
 // Response
-{ "ok": true, "broadcastTo": 3, "subscribers": ["agent-a", "agent-b", "agent-c"] }
+{
+  "ok": true,
+  "broadcastTo": 3,
+  "subscribers": ["agent-a", "agent-b", "agent-c"],
+  "clearedSessions": ["houtu_builder", "taiwei_builder"]
+}
 ```
 
 #### `POST /feishu-reply`

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(db): suspended_sessions 表 + 3 个操作函数
 - feat(api): POST /suspend 端点
+- feat(network-events): broadcastNetworkDown/Up helper（watchdog Phase 3 接入点）
+- refactor(api): POST /wake-suspended 切换到 broadcastNetworkUp helper（行为变更：现在消费并清空 suspended_sessions 表）
 
 ## [0.3.0] - 2026-04-18
 

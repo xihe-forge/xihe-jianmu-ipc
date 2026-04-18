@@ -32,6 +32,7 @@ import { startCIRelay, stopCIRelay } from './lib/ci-relay.mjs';
 import { createRouter } from './lib/router.mjs';
 import { createHttpHandler } from './lib/http-handlers.mjs';
 import { getFeishuApps, getFeishuToken, startFeishuConfigPoller } from './lib/feishu-adapter.mjs';
+import { createNetworkEventBroadcaster } from './lib/network-events.mjs';
 import { isOpenClawSession, deliverToOpenClaw, enqueueOpenClawRetry, startOpenClawRetryTimer } from './lib/openclaw-adapter.mjs';
 
 // 从项目根目录加载.env
@@ -72,6 +73,8 @@ import {
   getInboxMessages,
   clearInbox,
   clearExpiredInbox,
+  listSuspendedSessions,
+  clearSuspendedSessions,
   suspendSession,
 } from './lib/db.mjs';
 
@@ -164,8 +167,17 @@ const ctx = {
 };
 
 const { routeMessage, send, broadcast, broadcastToTopic, pushInbox, flushInbox, scheduleInboxCleanup } = createRouter(ctx);
+const { broadcastNetworkDown, broadcastNetworkUp } = createNetworkEventBroadcaster({
+  router: { broadcastToTopic },
+  db: {
+    listSuspendedSessions,
+    clearSuspendedSessions,
+  },
+});
 ctx.routeMessage = routeMessage;
 ctx.broadcastToTopic = broadcastToTopic;
+ctx.broadcastNetworkDown = broadcastNetworkDown;
+ctx.broadcastNetworkUp = broadcastNetworkUp;
 const handleRequest = createHttpHandler(ctx);
 
 // HTTP + WebSocket servers
@@ -283,7 +295,7 @@ setInterval(() => {
 // 轮询源文件变更——仅开发模式启用（IPC_DEV_WATCH=1）
 // 生产环境默认关闭，避免代码提交触发Hub重启导致全员断线
 if (process.env.IPC_DEV_WATCH === '1') {
-  const __hubWatchFiles = ['hub.mjs', 'lib/router.mjs', 'lib/http-handlers.mjs', 'lib/db.mjs', 'lib/protocol.mjs', 'lib/constants.mjs'];
+  const __hubWatchFiles = ['hub.mjs', 'lib/router.mjs', 'lib/http-handlers.mjs', 'lib/db.mjs', 'lib/network-events.mjs', 'lib/protocol.mjs', 'lib/constants.mjs'];
   const __hubFileMtimes = new Map();
   for (const file of __hubWatchFiles) {
     try { __hubFileMtimes.set(file, statSync(join(__hubDir, file)).mtimeMs); } catch {}

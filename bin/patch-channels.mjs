@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 /**
- * Patches Claude Code's cli.js to skip the dev channels warning dialog.
- * Run this right before starting claude with --dangerously-load-development-channels.
+ * [LEGACY] 此脚本已废弃（2026-04-18）
  *
- * Usage: node patch-channels.mjs && claude --dangerously-load-development-channels server:ipc
+ * 原理：patch Claude Code 的 minified cli.js 跳过 dev channels/trust 对话框。
+ * 失效原因：Claude Code 2.x+ 改为 native binary 分发（bin/claude.exe），不再有 cli.js。
+ *
+ * 替代方案：
+ *   - dev channels 警告：Claude Code 2.x+ 已默认不弹
+ *   - trust 对话框：通过 ~/.claude/settings.json 配置永久信任路径
+ *
+ * 保留文件仅供参考旧版 Claude Code 1.x 的 patch 机制。
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';

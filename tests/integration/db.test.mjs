@@ -18,6 +18,10 @@ function makeTask(id, from = 'pm', to = 'dev') {
   return { id, from, to, title: `task-${id}`, description: '', status: 'pending', priority: 3, deadline: null, payload: null, ts: Date.now() };
 }
 
+function wait(ms = 5) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // ── saveMessage + getMessages ─────────────────────────────────────────────────
 
 test('saveMessage + getMessages: 保存后可查询', () => {
@@ -231,6 +235,93 @@ test('clearExpiredInbox: 超过 TTL 的 inbox 消息会被删除', () => {
   db.clearExpiredInbox(1);
 
   assert.deepEqual(db.getInboxMessages(sessionName), []);
+});
+
+// ── suspended_sessions ────────────────────────────────────────────────────────
+
+test('listSuspendedSessions: 空表返回 []', () => {
+  db.clearSuspendedSessions();
+  assert.deepEqual(db.listSuspendedSessions(), []);
+});
+
+test('suspendSession + listSuspendedSessions: 可插入并按 suspended_at 升序返回', async () => {
+  db.clearSuspendedSessions();
+
+  const first = db.suspendSession({
+    name: `suspend_first_${Date.now()}`,
+    reason: 'network down',
+    task_description: 'resume task A',
+    suspended_by: 'self',
+  });
+  await wait();
+  const second = db.suspendSession({
+    name: `suspend_second_${Date.now()}`,
+    reason: 'dns failure',
+    task_description: 'resume task B',
+    suspended_by: 'watchdog',
+  });
+
+  const rows = db.listSuspendedSessions();
+
+  assert.deepEqual(rows.map(row => row.name), [first.name, second.name]);
+  assert.equal(rows[0].reason, 'network down');
+  assert.equal(rows[0].task_description, 'resume task A');
+  assert.equal(rows[0].suspended_by, 'self');
+  assert.equal(rows[1].reason, 'dns failure');
+  assert.equal(rows[1].task_description, 'resume task B');
+  assert.equal(rows[1].suspended_by, 'watchdog');
+});
+
+test('suspendSession: 同 name 重复 suspend 走 ON CONFLICT UPDATE 且字段覆盖', async () => {
+  db.clearSuspendedSessions();
+
+  const name = `suspend_update_${Date.now()}`;
+  const initial = db.suspendSession({
+    name,
+    reason: 'old reason',
+    task_description: 'old task',
+    suspended_by: 'self',
+  });
+  await wait();
+  const updated = db.suspendSession({
+    name,
+    reason: 'new reason',
+    task_description: 'new task',
+    suspended_by: 'harness',
+  });
+
+  const rows = db.listSuspendedSessions();
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, name);
+  assert.equal(rows[0].reason, 'new reason');
+  assert.equal(rows[0].task_description, 'new task');
+  assert.equal(rows[0].suspended_by, 'harness');
+  assert.ok(rows[0].suspended_at >= initial.suspended_at);
+  assert.equal(rows[0].suspended_at, updated.suspended_at);
+});
+
+test('clearSuspendedSessions: 返回被删除的 name 数组', async () => {
+  db.clearSuspendedSessions();
+
+  const first = db.suspendSession({
+    name: `suspend_clear_first_${Date.now()}`,
+    reason: 'r1',
+    task_description: 't1',
+    suspended_by: 'self',
+  });
+  await wait();
+  const second = db.suspendSession({
+    name: `suspend_clear_second_${Date.now()}`,
+    reason: 'r2',
+    task_description: 't2',
+    suspended_by: 'watchdog',
+  });
+
+  const cleared = db.clearSuspendedSessions();
+
+  assert.deepEqual(cleared, [first.name, second.name]);
+  assert.deepEqual(db.listSuspendedSessions(), []);
 });
 
 // ── cleanup ───────────────────────────────────────────────────────────────────

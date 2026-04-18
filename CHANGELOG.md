@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- feat(db): suspended_sessions 表 + 3 个操作函数
+
 ## [0.3.0] - 2026-04-18
 
 ### Added

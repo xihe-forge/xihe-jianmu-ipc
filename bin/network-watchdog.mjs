@@ -1,7 +1,8 @@
+import http from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStateMachine } from '../lib/network-state.mjs';
-import { loadInternalToken } from '../lib/internal-auth.mjs';
+import { isLoopbackAddress, loadInternalToken } from '../lib/internal-auth.mjs';
 import {
   probeAnthropic,
   probeCliProxy,
@@ -13,6 +14,7 @@ export const DEFAULT_IPC_PORT = 3179;
 export const DEFAULT_WATCHDOG_PORT = 3180;
 export const DEFAULT_WATCHDOG_INTERVAL_MS = 30_000;
 export const WATCHDOG_RETRY_DELAYS_MS = [1_000, 5_000, 15_000];
+export const WATCHDOG_HOST = '127.0.0.1';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
@@ -89,6 +91,34 @@ export function createDefaultWatchdogProbes({ ipcPort = DEFAULT_IPC_PORT } = {})
   };
 }
 
+export function createWatchdogStatusHandler({
+  getSnapshot,
+  getUptime,
+} = {}) {
+  return function handleStatus(req, res) {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'forbidden' }));
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/status') {
+      const snapshot = getSnapshot();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        state: snapshot.state,
+        failing: [...snapshot.failing],
+        lastChecks: snapshot.lastChecks,
+        uptime: getUptime(),
+      }));
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'not found' }));
+  };
+}
+
 export function createNetworkWatchdog({
   probes = createDefaultWatchdogProbes(),
   ipcPort = DEFAULT_IPC_PORT,
@@ -102,6 +132,8 @@ export function createNetworkWatchdog({
   clearTimeoutImpl = clearTimeout,
   waitImpl,
   createStateMachineImpl = createStateMachine,
+  createServerImpl = http.createServer,
+  watchdogHost = WATCHDOG_HOST,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -109,8 +141,12 @@ export function createNetworkWatchdog({
 
   let timer = null;
   let stopped = false;
+  let started = false;
   let unhealthySince = null;
   let downSince = null;
+  let startedAt = null;
+  let currentWatchdogPort = watchdogPort;
+  let statusServer = null;
   const wait = createWait(waitImpl, setTimeoutImpl);
   const pendingTransitions = new Set();
 
@@ -208,19 +244,71 @@ export function createNetworkWatchdog({
     await Promise.allSettled([...pendingTransitions]);
   }
 
-  function start() {
+  async function start({ runImmediately = true } = {}) {
+    if (started) {
+      return controller;
+    }
+
+    started = true;
     stopped = false;
-    void runTick({ scheduleNext: true });
+    startedAt = now();
+    if (!statusServer) {
+      const statusHandler = createWatchdogStatusHandler({
+        getSnapshot: () => stateMachine.getState(),
+        getUptime: () => (startedAt == null ? 0 : Math.max(0, now() - startedAt)),
+      });
+      statusServer = createServerImpl(statusHandler);
+      await new Promise((resolveStart, rejectStart) => {
+        const onError = (error) => {
+          statusServer?.off('listening', onListening);
+          rejectStart(error);
+        };
+        const onListening = () => {
+          statusServer?.off('error', onError);
+          const address = statusServer?.address();
+          if (typeof address === 'object' && address) {
+            currentWatchdogPort = address.port;
+          }
+          resolveStart();
+        };
+
+        statusServer.once('error', onError);
+        statusServer.once('listening', onListening);
+        statusServer.listen(watchdogPort, watchdogHost);
+      });
+    }
+
+    if (runImmediately) {
+      void runTick({ scheduleNext: true });
+    }
     return controller;
   }
 
   async function stop() {
+    if (!started) {
+      return;
+    }
+
     stopped = true;
     if (timer !== null) {
       clearTimeoutImpl(timer);
       timer = null;
     }
     await waitForIdle();
+    if (statusServer) {
+      const server = statusServer;
+      statusServer = null;
+      await new Promise((resolveClose, rejectClose) => {
+        server.close((error) => {
+          if (error) {
+            rejectClose(error);
+            return;
+          }
+          resolveClose();
+        });
+      });
+    }
+    started = false;
   }
 
   const controller = {
@@ -231,7 +319,7 @@ export function createNetworkWatchdog({
     getState: () => stateMachine.getState(),
     getConfig: () => ({
       ipcPort,
-      watchdogPort,
+      watchdogPort: currentWatchdogPort,
       intervalMs,
     }),
   };
@@ -266,7 +354,7 @@ export async function startWatchdog(options = {}) {
     internalToken,
   });
 
-  watchdog.start();
+  await watchdog.start();
   return watchdog;
 }
 
@@ -293,8 +381,13 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const exitCode = await main();
-  if (exitCode !== 0) {
-    process.exit(exitCode);
+  try {
+    const exitCode = await main();
+    if (exitCode !== 0) {
+      process.exit(exitCode);
+    }
+  } catch (error) {
+    process.stderr.write(`[network-watchdog] failed to start: ${error?.message ?? error}\n`);
+    process.exit(1);
   }
 }

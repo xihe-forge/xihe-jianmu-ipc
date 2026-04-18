@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- feat(ops): POST /wake-suspended 临时 endpoint——广播 IPC topic network-up 手动唤醒挂起 session（network-resilience v0.4.0 过渡方案）
 - feat(ci-relay): 飞书邮箱轮询 GitHub CI 失败通知，路由到对应 AI session（lib/ci-relay.mjs）
 - feat(inbox): offline inbox 持久化到 SQLite，Hub 重启不丢消息（db.mjs inbox 表）
 - feat(daemon): Windows Hub 自启自愈守护（bin/hub-daemon.vbs + install-daemon.ps1）

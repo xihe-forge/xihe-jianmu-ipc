@@ -423,6 +423,20 @@ curl -s -X POST http://localhost:3179/send \
   -d '{"from":"ci","to":"main","content":"tests passed"}'
 ```
 
+#### `POST /wake-suspended`
+
+临时运维 endpoint。向所有订阅 `network-up` topic 的 session 广播手动唤醒消息，用于 `network-resilience v0.4.0` 全局容错上线前的过渡方案。
+
+Temporary ops endpoint. Broadcasts a manual wake event to every session subscribed to the `network-up` topic. This is the transition path before the `network-resilience v0.4.0` global fault-tolerance flow lands.
+
+```json
+// Request (optional body)
+{ "reason": "network restored", "from": "harness" }
+
+// Response
+{ "ok": true, "broadcastTo": 3, "subscribers": ["agent-a", "agent-b", "agent-c"] }
+```
+
 #### `POST /feishu-reply`
 
 直接回复飞书，跳过 IPC 路由。

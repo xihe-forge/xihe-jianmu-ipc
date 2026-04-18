@@ -136,6 +136,15 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 
 ---
 
+## HTTP API
+
+- `POST /send`：`{from, to, content}` 发送消息，返回 `{accepted, id, online, buffered}`
+- `POST /wake-suspended`：`{reason?, from?}` 临时运维 endpoint，通过 topic fanout 向所有订阅 `network-up` 的 session 广播手动唤醒消息，返回 `{ok, broadcastTo, subscribers}`
+- `POST /task`：`{from, to, title, ...}` 创建结构化任务，返回 `{ok, taskId, online, buffered}`
+- `GET /health`：返回 Hub 状态、session 列表与消息计数
+
+---
+
 ## 关于曦和 AI
 
 曦和（Xihe）得名于中国神话中驾驭太阳的女神。[xihe-forge](https://github.com/xihe-forge) 是曦和 AI 的开源锻造炉——我们在这里把实用的 AI 工具从想法锤炼成可以直接上手的开源项目。`xihe-jianmu-ipc` 是锻造炉中的第三个开源作品，也是我们多 AI 协作基础设施方向的重要一环。

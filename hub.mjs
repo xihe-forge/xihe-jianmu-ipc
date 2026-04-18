@@ -161,8 +161,9 @@ const ctx = {
   hubDir: __hubDir,
 };
 
-const { routeMessage, send, broadcast, pushInbox, flushInbox, scheduleInboxCleanup } = createRouter(ctx);
+const { routeMessage, send, broadcast, broadcastToTopic, pushInbox, flushInbox, scheduleInboxCleanup } = createRouter(ctx);
 ctx.routeMessage = routeMessage;
+ctx.broadcastToTopic = broadcastToTopic;
 const handleRequest = createHttpHandler(ctx);
 
 // HTTP + WebSocket servers

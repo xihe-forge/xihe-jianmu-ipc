@@ -54,10 +54,13 @@
     "test:e2e": "node bin/run-tests.mjs tests/e2e",
     "test:mutation": "stryker run",
     "status": "node bin/jianmu.mjs status",
+    "watchdog": "node bin/network-watchdog.mjs",
     "logs": "tail -n 50 data/hub.log",
     "daemon:install": "powershell -ExecutionPolicy Bypass -File bin/install-daemon.ps1",
     "daemon:uninstall": "powershell -ExecutionPolicy Bypass -File bin/uninstall-daemon.ps1",
-    "daemon:verify": "powershell -ExecutionPolicy Bypass -File bin/verify-daemons.ps1"
+    "daemon:verify": "powershell -ExecutionPolicy Bypass -File bin/verify-daemons.ps1",
+    "daemon:watchdog:install": "powershell -File bin/install-network-watchdog-daemon.ps1",
+    "daemon:watchdog:uninstall": "powershell -File bin/uninstall-network-watchdog-daemon.ps1"
   },
   "devDependencies": {
     "@stryker-mutator/core": "^9.6.1"

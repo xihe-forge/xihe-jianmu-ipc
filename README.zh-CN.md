@@ -151,7 +151,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 | `xihe-rinian-seo` | SEO 工具 |
 | `heartreadAI` | AI 心理健康产品 |
 | `xihe-jinwu-epet` | 桌面宠物 |
-| `xihe-tiangang-mesh` | 多 Agent 协作平台 |
+| `xihe-taiwei-bridge` | 多 Agent 协作平台 |
 
 ### 网站链接
 

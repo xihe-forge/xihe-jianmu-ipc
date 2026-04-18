@@ -10,9 +10,9 @@ import {
 } from '../lib/ci-relay.mjs';
 
 test('parseGitHubCISubject: 解析标准失败主题', () => {
-  const parsed = parseGitHubCISubject('[xihe-forge/xihe-tiangang-mesh] Run failed: CI - main (abc1234)');
-  assert.equal(parsed.repoFullName, 'xihe-forge/xihe-tiangang-mesh');
-  assert.equal(parsed.repoName, 'xihe-tiangang-mesh');
+  const parsed = parseGitHubCISubject('[xihe-forge/xihe-taiwei-bridge] Run failed: CI - main (abc1234)');
+  assert.equal(parsed.repoFullName, 'xihe-forge/xihe-taiwei-bridge');
+  assert.equal(parsed.repoName, 'xihe-taiwei-bridge');
   assert.equal(parsed.workflow, 'CI');
   assert.equal(parsed.branch, 'main');
   assert.equal(parsed.commitHash, 'abc1234');

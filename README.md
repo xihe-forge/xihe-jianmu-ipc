@@ -760,7 +760,7 @@ Xihe is named after the sun goddess who drives the solar chariot in Chinese myth
 | `xihe-rinian-seo` | SEO 工具 / SEO toolkit |
 | `heartreadAI` | AI 心理健康产品 / AI mental wellness product |
 | `xihe-jinwu-epet` | 桌面宠物 / Desktop pet |
-| `xihe-tiangang-mesh` | 多 Agent 协作平台 / Multi-agent collaboration platform |
+| `xihe-taiwei-bridge` | 多 Agent 协作平台 / Multi-agent collaboration platform |
 
 ### 网站链接 / Links
 

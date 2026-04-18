@@ -125,11 +125,71 @@ Watchdog 进程绑定 `localhost:3180`（Hub+1）提供内部状态查询：`GET
 - Hub 挂了 watchdog 无法广播 → 降级到日志，等人工介入。如果 Hub 长期挂，watchdog 探测结果堆积本地，恢复后应补发广播（v0.4.1 考虑）
 - Anthropic API 探测端点选择：`/v1/messages` 无鉴权返 401 算正常；如 Anthropic 改端点行为，探测逻辑需要更新（风险低）
 
+## Phase 3 实现补充（2026-04-18）
+
+Phase 2 完成后发现：`broadcastNetworkDown/Up` helper 落在 Hub 进程内（持 `router` / `db` 引用）。独立 watchdog 进程若直接 `import` Hub 内部模块会违反进程边界，必须通过薄 HTTP 桥。
+
+### 跨进程桥接
+
+Hub 端新增内部端点 **`POST /internal/network-event`**：
+- **bind 地址**：`127.0.0.1`（只接受本机进程访问）
+- **认证**：请求 header `X-Internal-Token` 必须匹配共享密钥
+- **密钥来源**：
+  - 优先读环境变量 `IPC_INTERNAL_TOKEN`
+  - 未设则 Hub 启动时 `crypto.randomUUID()` 生成，写入项目根 `.ipc-internal-token`（权限 600，加入 .gitignore）
+  - watchdog 启动时同样读此密钥（env → 文件兜底）
+- **payload**：
+  ```json
+  {
+    "event": "network-down" | "network-up",
+    "failing": [...],           // network-down 必填
+    "since": <ms>,              // network-down 必填
+    "recoveredAfter": <ms>,     // network-up 必填
+    "triggeredBy": "watchdog",
+    "ts": <ms>
+  }
+  ```
+- **行为**：Hub 调 `broadcastNetworkDown/Up` helper 完成实际广播和清表
+- **去重**：同一 event（`triggeredBy + ts + failing 哈希`）5 秒内重复请求静默 ack，不二次广播（防 watchdog 网络抖动重试重复发）
+
+### Watchdog 进程
+
+`bin/network-watchdog.mjs` 独立 Node 进程：
+- **探测循环**：**串行 setTimeout**（每轮结束再排下轮），不用 `setInterval` —— 避免 Anthropic 10s 超时和 30s 周期并发堆积
+- **onTransition 钩子**：状态机转移时 POST Hub `/internal/network-event`
+  - `to === 'down'` → event: network-down
+  - `from === 'down' && to === 'OK'` → event: network-up
+- **失败重试**：HTTP 调失败 3 次退避（1s/5s/15s）后放弃，记 stderr + 下轮正常继续（不堵塞探测）
+
+### Watchdog self /status
+
+`GET http://127.0.0.1:3180/status`（bind 127.0.0.1，Hub+1 端口）：
+```json
+{
+  "state": "OK" | "degraded" | "down",
+  "failing": [...],
+  "lastChecks": {...},
+  "uptime": <ms>
+}
+```
+daemon functional check 探这个端点，非 200 视为 watchdog 挂了。
+
+### daemon 复用 ADR-004
+
+- `bin/network-watchdog-daemon.vbs`：5 分钟健康探测 `curl 127.0.0.1:3180/status`
+- `bin/install-network-watchdog-daemon.ps1`：Task Scheduler 注册（复用 ADR-006 参数转义规避）
+- 拉起失败 5 次 → Hub IPC 告警 harness
+
 ## 实现分解
 
-1. **Phase 1（0.4.0-alpha）**：`network-watchdog.mjs` 框架 + 4 项探测 + 状态机 + 单元测试
-2. **Phase 2（0.4.0-beta）**：IPC 广播 + `/suspended` 表 + Hub `POST /suspend` 端点 + 集成测试
-3. **Phase 3（0.4.0）**：daemon 三件套 + README / OPERATIONS 文档 + 发版
+1. **Phase 1（0.4.0-alpha）**：`lib/network-probes.mjs` + `lib/network-state.mjs` + 单元测试 ✅ 已完成
+2. **Phase 2（0.4.0-beta）**：`suspended_sessions` 表 + `POST /suspend` + `lib/network-events.mjs` + 端到端测试 ✅ 已完成
+3. **Phase 3（0.4.0）**：
+   1. `POST /internal/network-event` 认证端点 + 幂等去重 + 单元测试
+   2. `bin/network-watchdog.mjs` 探测循环 + `onTransition` 调内部端点
+   3. Watchdog `GET /status` 端点
+   4. daemon 三件套（vbs + install.ps1）
+   5. `docs/OPERATIONS.md` + `CHANGELOG.md`
 
 每 phase 独立 commit，便于回滚。
 
@@ -138,5 +198,7 @@ Watchdog 进程绑定 `localhost:3180`（Hub+1）提供内部状态查询：`GET
 - 规范：`xihe-tianshu-harness/domains/software/knowledge/network-resilience.md`（§4）
 - ADR-004: 本地服务 daemon 模式（复用）
 - ADR-005: Hub 代码分层（watchdog 独立进程延续分层原则）
-- 0.3.0 的 `POST /wake-suspended` 是本 ADR 的临时前置方案（v0.4.0 后可废弃或保留作人工触发入口）
+- ADR-006: Register-ScheduledTask 参数转义规避
+- 0.3.0 的 `POST /wake-suspended` 保留作人工降级触发入口（Phase 2 已切换到 `broadcastNetworkUp` helper）
+- Phase 2 实现：`lib/network-events.mjs` `createNetworkEventBroadcaster`
 - `lib/router.mjs` `broadcastToTopic(topic, payload)` helper（0.3.0 已实现）

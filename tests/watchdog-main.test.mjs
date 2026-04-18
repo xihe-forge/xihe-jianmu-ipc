@@ -1,17 +1,9 @@
-import { afterEach, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import {
   createNetworkWatchdog,
   WATCHDOG_RETRY_DELAYS_MS,
 } from '../bin/network-watchdog.mjs';
-
-const openServers = new Set();
-
-afterEach(async () => {
-  await Promise.allSettled([...openServers].map(closeServer));
-  openServers.clear();
-});
 
 function ok(latencyMs = 1) {
   return { ok: true, latencyMs };
@@ -39,10 +31,11 @@ function createTickNow(start = 0, step = 1_000) {
 }
 
 test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', async () => {
-  const capture = await startCaptureServer();
+  const capture = createFetchCapture();
   const watchdog = createNetworkWatchdog({
-    ipcPort: capture.port,
+    ipcPort: 3179,
     internalToken: 'watchdog-token',
+    fetchImpl: capture.fetchImpl,
     probes: {
       cliProxy: async () => fail('HTTP 503'),
       hub: async () => fail('HTTP 503'),
@@ -57,7 +50,7 @@ test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', a
   assert.equal(state.state, 'down');
   assert.equal(capture.requests.length, 1);
   assert.equal(capture.requests[0].method, 'POST');
-  assert.equal(capture.requests[0].url, '/internal/network-event');
+  assert.equal(capture.requests[0].url, 'http://127.0.0.1:3179/internal/network-event');
   assert.equal(capture.requests[0].headers['x-internal-token'], 'watchdog-token');
   assert.deepEqual(capture.requests[0].body, {
     event: 'network-down',
@@ -69,10 +62,11 @@ test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', a
 });
 
 test('createNetworkWatchdog: down 恢复到 OK 时会发送 network-up', async () => {
-  const capture = await startCaptureServer();
+  const capture = createFetchCapture();
   const watchdog = createNetworkWatchdog({
-    ipcPort: capture.port,
+    ipcPort: 3179,
     internalToken: 'watchdog-token',
+    fetchImpl: capture.fetchImpl,
     now: createTickNow(),
     probes: {
       cliProxy: createSequenceProbe([fail('HTTP 503'), ok(), ok(), ok()]),
@@ -153,47 +147,32 @@ test('createNetworkWatchdog: HTTP 首发加 3 次重试失败后记 stderr，后
   );
 });
 
-async function startCaptureServer() {
+function createFetchCapture() {
   const requests = [];
-  const server = http.createServer((req, res) => {
-    let body = '';
-    req.setEncoding('utf8');
-    req.on('data', chunk => {
-      body += chunk;
-    });
-    req.on('end', () => {
-      requests.push({
-        method: req.method,
-        url: req.url,
-        headers: req.headers,
-        body: JSON.parse(body),
-      });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-    });
-  });
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-
-  openServers.add(server);
-  const address = server.address();
   return {
-    port: typeof address === 'object' && address ? address.port : null,
     requests,
+    fetchImpl: async (url, init = {}) => {
+      requests.push({
+        method: init.method ?? 'GET',
+        url: String(url),
+        headers: normalizeHeaders(init.headers),
+        body: typeof init.body === 'string' ? JSON.parse(init.body) : init.body,
+      });
+      return { status: 200 };
+    },
   };
 }
 
-function closeServer(server) {
-  return new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
+function normalizeHeaders(headers) {
+  const normalized = {};
+  if (!headers) {
+    return normalized;
+  }
+
+  for (const [key, value] of Object.entries(headers)) {
+    normalized[String(key).toLowerCase()] = String(value);
+  }
+
+  return normalized;
 }

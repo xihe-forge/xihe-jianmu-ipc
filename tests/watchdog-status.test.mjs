@@ -1,4 +1,4 @@
-import { afterEach, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {
@@ -6,21 +6,11 @@ import {
   createWatchdogStatusHandler,
 } from '../bin/network-watchdog.mjs';
 
-const openServers = new Set();
-const openWatchdogs = new Set();
-
-afterEach(async () => {
-  await Promise.allSettled([...openWatchdogs].map((watchdog) => watchdog.stop()));
-  openWatchdogs.clear();
-  await Promise.allSettled([...openServers].map(closeServer));
-  openServers.clear();
-});
-
 function ok(latencyMs = 1) {
   return { ok: true, latencyMs };
 }
 
-test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组', async () => {
+test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组', async (t) => {
   const watchdog = createNetworkWatchdog({
     watchdogPort: 0,
     internalToken: 'watchdog-token',
@@ -32,7 +22,9 @@ test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组',
       dns: async () => ok(13),
     },
   });
-  openWatchdogs.add(watchdog);
+  t.after(async () => {
+    await watchdog.stop();
+  });
 
   await watchdog.start({ runImmediately: false });
   await watchdog.runTick();
@@ -56,7 +48,7 @@ test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组',
   assert.equal(typeof response.body.uptime, 'number');
 });
 
-test('watchdog /status: 未知路径返回 404', async () => {
+test('watchdog /status: 未知路径返回 404', async (t) => {
   const watchdog = createNetworkWatchdog({
     watchdogPort: 0,
     internalToken: 'watchdog-token',
@@ -68,7 +60,9 @@ test('watchdog /status: 未知路径返回 404', async () => {
       dns: async () => ok(),
     },
   });
-  openWatchdogs.add(watchdog);
+  t.after(async () => {
+    await watchdog.stop();
+  });
 
   await watchdog.start({ runImmediately: false });
   const response = await httpRequest(watchdog.getConfig().watchdogPort, {
@@ -79,7 +73,7 @@ test('watchdog /status: 未知路径返回 404', async () => {
   assert.equal(response.statusCode, 404);
 });
 
-test('watchdog /status: 非 127.0.0.1 访问返回 403', async () => {
+test('watchdog /status: 非 127.0.0.1 访问返回 403', async (t) => {
   const handler = createWatchdogStatusHandler({
     getSnapshot: () => ({
       state: 'OK',
@@ -95,11 +89,13 @@ test('watchdog /status: 非 127.0.0.1 访问返回 403', async () => {
     });
     handler(req, res);
   });
-  openServers.add(server);
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(async () => {
+    await closeServer(server);
   });
 
   const address = server.address();
@@ -117,9 +113,13 @@ function httpRequest(port, { method, path }) {
   return new Promise((resolve, reject) => {
     const request = http.request(
       {
+        agent: false,
         hostname: '127.0.0.1',
         port,
         path,
+        headers: {
+          Connection: 'close',
+        },
         method,
       },
       response => {

@@ -14,8 +14,10 @@ const ROOT_DIR = fileURLToPath(new URL('../../', import.meta.url));
 const INTERNAL_TOKEN = 'test-internal-token';
 const TEST_TIMEOUT = 20_000;
 const HUB_START_TIMEOUT = 3_000;
+const WORKER_CONTROL_TIMEOUT = 1_000;
 const WS_TIMEOUT = 3_000;
 const DEDUPE_WAIT_MS = 5_200;
+const HUB_CLOCK_START_MS = 1_776_516_000_000;
 
 let hub = null;
 
@@ -218,7 +220,7 @@ test('POST /internal/network-event: 5 秒内同一事件按 sorted failing 去�
     const secondResponse = await postInternalEvent(hub.port, secondPayload);
     await expectNoWebSocketMessage(ws, message => message.type === 'network-down');
 
-    await new Promise(resolve => setTimeout(resolve, DEDUPE_WAIT_MS));
+    await advanceHubClock(hub.worker, DEDUPE_WAIT_MS);
 
     const receiveThird = waitForWebSocketMessage(ws, message => message.type === 'network-down');
     const thirdResponse = await postInternalEvent(hub.port, secondPayload);
@@ -294,6 +296,32 @@ function startHub() {
     const hubUrl = pathToFileURL(join(ROOT_DIR, 'hub.mjs')).href;
     const worker = new Worker(
       `
+        const { parentPort } = require('node:worker_threads');
+        let fakeNow = ${JSON.stringify(HUB_CLOCK_START_MS)};
+
+        Date.now = () => {
+          fakeNow += 1;
+          return fakeNow;
+        };
+
+        parentPort.on('message', (message) => {
+          if (!message || message.type !== 'test-clock') {
+            return;
+          }
+
+          if (message.command === 'advance') {
+            fakeNow += Number(message.deltaMs) || 0;
+          } else if (message.command === 'set') {
+            fakeNow = Number(message.value) || fakeNow;
+          }
+
+          parentPort.postMessage({
+            type: 'test-clock:ack',
+            requestId: message.requestId,
+            now: fakeNow,
+          });
+        });
+
         process.env.IPC_PORT = ${JSON.stringify(String(port))};
         process.env.IPC_DB_PATH = ${JSON.stringify(dbPath)};
         process.env.IPC_INTERNAL_TOKEN = ${JSON.stringify(INTERNAL_TOKEN)};
@@ -374,6 +402,52 @@ function cleanupDbFiles(dbPath) {
   }
 }
 
+function advanceHubClock(worker, deltaMs) {
+  return sendClockCommand(worker, {
+    command: 'advance',
+    deltaMs,
+  });
+}
+
+function sendClockCommand(worker, payload) {
+  return new Promise((resolve, reject) => {
+    const requestId = `clock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(new Error(`worker clock command timeout: ${payload.command}`));
+    }, WORKER_CONTROL_TIMEOUT);
+
+    const onMessage = (message) => {
+      if (message?.type !== 'test-clock:ack' || message.requestId !== requestId) {
+        return;
+      }
+
+      finish(null, message.now);
+    };
+
+    worker.on('message', onMessage);
+    worker.postMessage({
+      type: 'test-clock',
+      requestId,
+      ...payload,
+    });
+
+    function finish(error = null, result = null) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.off('message', onMessage);
+
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(result);
+    }
+  });
+}
+
 function findAvailablePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -439,7 +513,10 @@ function postSuspend(port, payload) {
 function httpRequest(port, { method, path, json, body, headers = {} }) {
   return new Promise((resolve, reject) => {
     const payload = json === undefined ? body : JSON.stringify(json);
-    const requestHeaders = { ...headers };
+    const requestHeaders = {
+      Connection: 'close',
+      ...headers,
+    };
 
     if (json !== undefined && !requestHeaders['Content-Type']) {
       requestHeaders['Content-Type'] = 'application/json';
@@ -451,6 +528,7 @@ function httpRequest(port, { method, path, json, body, headers = {} }) {
 
     const request = http.request(
       {
+        agent: false,
         hostname: '127.0.0.1',
         port,
         path,

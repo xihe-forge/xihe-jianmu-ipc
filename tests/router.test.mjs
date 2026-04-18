@@ -4,9 +4,40 @@
  * 通过依赖注入构造 mock ctx，不启动任何 HTTP/WebSocket server，纯单元测试。
  */
 
-import { test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRouter } from '../lib/router.mjs';
+
+const originalSetTimeout = globalThis.setTimeout.bind(globalThis);
+const originalClearTimeout = globalThis.clearTimeout.bind(globalThis);
+const activeTimers = new Set();
+
+globalThis.setTimeout = function trackedSetTimeout(callback, delay, ...args) {
+  let timer = null;
+  timer = originalSetTimeout((...callbackArgs) => {
+    activeTimers.delete(timer);
+    callback(...callbackArgs);
+  }, delay, ...args);
+  activeTimers.add(timer);
+  return timer;
+};
+
+globalThis.clearTimeout = function trackedClearTimeout(timer) {
+  activeTimers.delete(timer);
+  return originalClearTimeout(timer);
+};
+
+afterEach(() => {
+  for (const timer of activeTimers) {
+    originalClearTimeout(timer);
+  }
+  activeTimers.clear();
+});
+
+after(() => {
+  globalThis.setTimeout = originalSetTimeout;
+  globalThis.clearTimeout = originalClearTimeout;
+});
 
 // ── 测试工具函数 ──────────────────────────────────────────────────────────────
 

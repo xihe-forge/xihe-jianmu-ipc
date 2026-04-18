@@ -1,6 +1,6 @@
 {
   "name": "xihe-jianmu-ipc",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "建木 — Real-time IPC hub for multi-AI-agent communication. WebSocket message routing between Claude Code, OpenClaw, Codex, and any HTTP client.",
   "type": "module",
   "main": "hub.mjs",

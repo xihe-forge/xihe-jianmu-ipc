@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-18
+
 ### Added
 
 - feat(ci-relay): 飞书邮箱轮询 GitHub CI 失败通知，路由到对应 AI session（lib/ci-relay.mjs）
@@ -19,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat(test): HTTP API 集成测试 8 个（tests/integration/hub-api.test.mjs）
 - feat(test): router 集成测试 30 个，真实 SQLite + 真实 createRouter（tests/integration/router-with-db.test.mjs）
 - feat(test): mcp-tools 单元测试 29 个（tests/mcp-tools.test.mjs）
+- feat(test): D3 WebSocket ping/pong 心跳集成测试 3 个（tests/integration/heartbeat.test.mjs，总测试 350）
+- docs(research): operations.mjs 契约优先设计调研（docs/research/operations-contract-design.md，推荐 shared contract first 渐进式重构）
 
 ### Changed
 
@@ -64,5 +68,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate messages, unbounded queue, body size limit, hardcoded paths
 - OpenClaw adapter uses HTTP API instead of CLI
 
-[Unreleased]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/xihe-forge/xihe-jianmu-ipc/releases/tag/v0.1.0

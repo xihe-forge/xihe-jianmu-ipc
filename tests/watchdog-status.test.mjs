@@ -52,6 +52,7 @@ test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组',
     Object.keys(response.body.lastChecks).sort(),
     ['anthropic', 'cliProxy', 'dns', 'hub'],
   );
+  assert.equal(typeof response.body.lastChecks.cliProxy.ts, 'number');
   assert.equal(typeof response.body.uptime, 'number');
 });
 

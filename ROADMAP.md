@@ -60,6 +60,6 @@ Hub只负责消息路由，业务逻辑在agent侧。
 
 ## 其他待办
 
-- [ ] npm发布0.3.0 (同步所有新功能)
-- [ ] 依赖漏洞修复 (npm audit fix)
+- [ ] npm发布0.4.0 (含 network-watchdog 全局容错)
+- [x] 依赖漏洞修复 (npm audit = 0)
 - [ ] Dashboard深化: 实时消息流、告警、日志查看器

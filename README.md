@@ -60,10 +60,10 @@ The standard path for multi-agent coordination — routing messages through the 
 ┌──────▼───────┐  ┌───────▼──────────┐  ┌───▼──────────────────┐
 │  MCP Server  │  │  HTTP API        │  │  Dashboard           │
 │  (mcp-       │  │  /send /health   │  │  GET /dashboard/*    │
-│  server.mjs) │  │  /sessions       │  │  实时监控面板         │
+│  server.mjs) │  │  /suspend        │  │  实时监控面板         │
 │              │  │  /messages       │  │  Real-time monitor   │
-│  Claude Code │  │  /stats /task    │  └──────────────────────┘
-│  & OpenClaw  │  │  /tasks          │
+│  Claude Code │  │  /wake-suspended │  └──────────────────────┘
+│  & OpenClaw  │  │  /internal/*     │
 │  via stdio   │  │                  │
 └──────┬───────┘  └──────────────────┘
        │
@@ -101,6 +101,13 @@ The standard path for multi-agent coordination — routing messages through the 
 │  Forwards messages to Hub via HTTP POST /send                │
 │  AI控制台: 8种命令 · Agent状态追踪 · 卡片交互 · 日报推送    │
 │  AI Console: 8 commands · agent tracking · cards · reports   │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│  network-watchdog (bin/network-watchdog.mjs)                │
+│  4 probes every 30s: cliProxy / hub / anthropic / dns       │
+│  POST /internal/network-event -> Hub                        │
+│  GET 127.0.0.1:3180/status for daemon health checks         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -174,7 +181,27 @@ node hub.mjs
 setsid node hub.mjs &
 ```
 
-**4. 发送消息 / Send messages**
+**4. 启动 network-watchdog（推荐无人值守时启用） / Start the network-watchdog (recommended for unattended runs)**
+
+```bash
+npm run watchdog
+# 或 / or
+node bin/network-watchdog.mjs
+
+# 健康检查 / health check
+curl http://127.0.0.1:3180/status
+```
+
+Windows 上也可以注册 watchdog 守护任务：
+
+On Windows, you can also register the watchdog daemon:
+
+```powershell
+npm run daemon:watchdog:install
+npm run daemon:watchdog:uninstall
+```
+
+**5. 发送消息 / Send messages**
 
 From the `main` session:
 ```
@@ -183,7 +210,7 @@ ipc_send(to="worker", content="Start processing task A")
 
 Incoming messages arrive in the `worker` session as `<channel>` notifications that wake idle sessions.
 
-**5. Windows PowerShell 快捷方式（可选）/ Windows PowerShell shortcut (optional)**
+**6. Windows PowerShell 快捷方式（可选）/ Windows PowerShell shortcut (optional)**
 
 ```powershell
 # 安装 ipc 函数到 PowerShell profile / Install the `ipc` function into your PowerShell profile:
@@ -194,7 +221,7 @@ ipc main
 ipc worker
 ```
 
-**6. Windows Hub 守护进程（推荐）/ Windows Hub daemon (recommended)**
+**7. Windows Hub 守护进程（推荐）/ Windows Hub daemon (recommended)**
 
 让 Hub 开机自启 + 挂了自动恢复，无需手动拉起。守护机制：Windows 任务计划 `AtLogOn` + 每 10 分钟重复触发 + VBS 内部每 5 分钟健康探测（curl `/health`），假活时精确 kill 该 PID 并拉起新进程。
 
@@ -468,6 +495,12 @@ Temporary ops endpoint. Calls the structured `network-up` helper, broadcasts a r
 }
 ```
 
+#### `POST /internal/network-event`
+
+内部桥接 endpoint，仅接受 `127.0.0.1` / `::1` 调用，并要求 `X-Internal-Token`。`network-watchdog` 使用它把 `network-down` / `network-up` 事件桥接到 Hub 内部广播 helper。
+
+Internal bridge endpoint. It only accepts loopback callers (`127.0.0.1` / `::1`) and requires `X-Internal-Token`. `network-watchdog` uses it to bridge `network-down` / `network-up` events into the hub's broadcast helpers.
+
 #### `POST /feishu-reply`
 
 直接回复飞书，跳过 IPC 路由。
@@ -687,9 +720,12 @@ This means Claude Code can push messages to OpenClaw in real-time — all throug
 | `IPC_NAME` | `session-<pid>` | Session 显示名称 / Session display name |
 | `IPC_DEFAULT_NAME` | — | `.mcp.json` 中的默认名，`IPC_NAME` 优先 / Default name in `.mcp.json`, `IPC_NAME` takes priority |
 | `IPC_PORT` | `3179` | Hub WebSocket + HTTP 端口 / Hub port |
+| `IPC_WATCHDOG_PORT` | `3180` | network-watchdog `/status` 端口 / network-watchdog status port |
+| `IPC_WATCHDOG_INTERVAL_MS` | `30000` | network-watchdog probe interval in milliseconds |
 | `IPC_HUB_HOST` | auto-detect | Hub 主机；WSL2 自动从 `/etc/resolv.conf` 读取 / Hub host; auto-detects WSL2 Windows host |
 | `IPC_HUB_AUTOSTART` | `true` | MCP server 连接时自动启动 Hub / Auto-start hub when MCP server connects |
 | `IPC_AUTH_TOKEN` | (empty) | 认证 token / Auth token. If set, all connections must provide it |
+| `IPC_INTERNAL_TOKEN` | file fallback | Shared loopback token for hub/watchdog internal endpoints |
 | `IPC_DB_PATH` | `data/messages.db` | SQLite 数据库路径 / SQLite database path |
 | `IPC_REPORT_HOUR` | `9` | 日报定时推送小时（0-23）/ Daily report push hour (0-23) |
 | `IPC_CHANNEL_URL` | — | Channel Server HTTP 端点 / Channel Server HTTP endpoint |

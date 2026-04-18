@@ -38,7 +38,7 @@ curl "http://127.0.0.1:3179/messages?from=harness&to=jianmu-pm&limit=20" | pytho
 
 ## Daemon 管理
 
-Hub 和 CLIProxyAPI 通过 Windows 任务计划自动守护。
+Hub、CLIProxyAPI 和 network-watchdog 都支持通过 Windows 任务计划自动守护。
 
 ### 安装 daemon
 
@@ -49,6 +49,10 @@ npm run daemon:install
 
 # CliProxy daemon
 powershell -ExecutionPolicy Bypass -File bin\install-cliproxy-daemon.ps1
+
+# network-watchdog daemon
+npm run daemon:watchdog:install
+# 或 powershell -File bin\install-network-watchdog-daemon.ps1
 ```
 
 ### 验证自愈能力
@@ -69,6 +73,7 @@ npm run daemon:verify
 ```cmd
 schtasks /query /tn JianmuHubDaemon /fo LIST /V
 schtasks /query /tn CliProxyDaemon /fo LIST /V
+schtasks /query /tn NetworkWatchdogDaemon /fo LIST /V
 ```
 
 ### 卸载 daemon
@@ -77,6 +82,63 @@ schtasks /query /tn CliProxyDaemon /fo LIST /V
 npm run daemon:uninstall
 # 同时清理旧版 JianmuHub startup 快捷方式
 ```
+
+## network-watchdog 运维
+
+### 手动启动
+
+```bash
+npm run watchdog
+# 或 node bin/network-watchdog.mjs
+```
+
+手动启动时，watchdog 的错误日志会直接打到当前终端 stderr。
+
+### daemon 启停
+
+```powershell
+npm run daemon:watchdog:install
+npm run daemon:watchdog:uninstall
+```
+
+### 查看 /status
+
+```bash
+curl http://127.0.0.1:3180/status
+```
+
+返回示例：
+
+```json
+{
+  "state": "OK",
+  "failing": [],
+  "lastChecks": {
+    "cliProxy": {"ok": true, "latencyMs": 12, "ts": 1776516090000},
+    "hub": {"ok": true, "latencyMs": 4, "ts": 1776516090000},
+    "anthropic": {"ok": true, "latencyMs": 231, "ts": 1776516090000},
+    "dns": {"ok": true, "latencyMs": 8, "ts": 1776516090000}
+  },
+  "uptime": 153422
+}
+```
+
+### 人工触发恢复
+
+自动恢复以外，仍可用 Hub 的兼容入口手工广播恢复事件：
+
+```bash
+curl -X POST http://127.0.0.1:3179/wake-suspended
+```
+
+这会继续调用结构化 `network-up` helper，并清空 `suspended_sessions` 表。
+
+### 故障排查
+
+1. 看 watchdog 当前 stderr；若走 daemon，查看 `D:/workspace/ai/research/xiheAi/temp/jianmu-ipc/logs/network-watchdog-daemon.log`
+2. 查 `curl http://127.0.0.1:3180/status`，确认 `state`、`failing` 和各 probe `lastChecks`
+3. 查 `data/audit.log` 中 `http_internal_network_event` / `/internal/network-event` 记录，确认 Hub 是否实际收到 down/up 事件
+4. 如 watchdog 已恢复但 session 仍未继续，检查 `POST /wake-suspended` 是否被人工误用或 `suspended_sessions` 是否已清空
 
 ## 故障排查
 
@@ -145,14 +207,14 @@ grep "file watch" data/hub.log | tail -3
 
 ```bash
 npm test
-# 330+ 测试，~5 秒
+# 400+ 测试，视机器性能约 5 分钟
 ```
 
 ### 分层测试
 
 ```bash
-npm run test:unit         # 单元测试（228 个）
-npm run test:integration  # 集成测试（63 个）
+npm run test:unit         # 单元测试
+npm run test:integration  # 集成测试
 npm run test:e2e          # E2E 测试（10 个）
 ```
 
@@ -172,6 +234,7 @@ npm run test:mutation
 | `feishu-apps.example.json` | 飞书配置模板 | ✅ |
 | `ci-routes.json` | GitHub 仓库 → AI session 路由表 | ✅ |
 | `auth-tokens.json` | Per-session WebSocket token | ❌ .gitignore |
+| `.ipc-internal-token` | Hub/watchdog 内部共享 token（env 缺失时自动生成） | ❌ .gitignore |
 | `.env` | OpenClaw 集成配置 | ❌ .gitignore |
 | `stryker.config.json` | 突变测试配置 | ✅ |
 
@@ -193,6 +256,7 @@ npm run test:mutation
 `D:/workspace/ai/research/xiheAi/temp/jianmu-ipc/` 下：
 - `logs/install.log` / `uninstall.log` / `verify-daemons.log`
 - `logs/cliproxy-daemon.log`
+- `logs/network-watchdog-daemon.log`
 - 测试数据库临时文件
 
 ## 相关决策

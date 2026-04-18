@@ -7,13 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-18
+
 ### Added
 
-- feat(db): suspended_sessions 表 + 3 个操作函数
-- feat(api): POST /suspend 端点
-- feat(network-events): broadcastNetworkDown/Up helper（watchdog Phase 3 接入点）
-- refactor(api): POST /wake-suspended 切换到 broadcastNetworkUp helper（行为变更：现在消费并清空 suspended_sessions 表）
+- network resilience probes for CliProxy, Hub, Anthropic, and DNS (`lib/network-probes.mjs`)
+- watchdog-oriented state machine with `OK` / `degraded` / `down` transitions plus recovery hysteresis (`lib/network-state.mjs`)
+- structured network event helpers for `network-down` / `network-up`, including suspended session fanout payloads (`lib/network-events.mjs`)
+- `POST /suspend` session self-report endpoint with `suspended_sessions` SQLite persistence
+- loopback-only `POST /internal/network-event` bridge with shared-token authentication and 5-second idempotent dedupe
+- standalone `bin/network-watchdog.mjs` process with `/status` health endpoint on `127.0.0.1:3180`
+- Windows Task Scheduler daemon bundle for watchdog auto-heal (`network-watchdog-daemon.vbs` + install/uninstall scripts)
 
+### Changed
+
+- `POST /wake-suspended` now routes through `broadcastNetworkUp` helper, broadcasts structured payloads, and consumes `suspended_sessions`
+
+### Security
+
+- internal watchdog bridge now requires `X-Internal-Token`, persists the fallback token in `.ipc-internal-token`, and rejects non-loopback callers
 ## [0.3.0] - 2026-04-18
 
 ### Added
@@ -76,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate messages, unbounded queue, body size limit, hardcoded paths
 - OpenClaw adapter uses HTTP API instead of CLI
 
-[Unreleased]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/xihe-forge/xihe-jianmu-ipc/releases/tag/v0.1.0

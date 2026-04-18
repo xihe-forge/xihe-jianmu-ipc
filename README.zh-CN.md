@@ -80,7 +80,24 @@ npm install
 node hub.mjs
 ```
 
-4. 在任意连接的 session 中发送消息：
+4. 建议同时启动 `network-watchdog`，自动探测 CliProxy / Hub / Anthropic / DNS：
+
+```bash
+npm run watchdog
+# 或 node bin/network-watchdog.mjs
+
+# 健康检查
+curl http://127.0.0.1:3180/status
+```
+
+Windows 上也可以注册 watchdog 守护任务：
+
+```powershell
+npm run daemon:watchdog:install
+npm run daemon:watchdog:uninstall
+```
+
+5. 在任意连接的 session 中发送消息：
 
 ```text
 ipc_send(to="worker", content="Start processing task A")
@@ -120,6 +137,7 @@ powershell -ExecutionPolicy Bypass -File bin\verify-daemons.ps1 -Service Hub
 核心组件如下：
 
 - `hub.mjs`：Hub 主进程，提供 WebSocket 服务与 HTTP API
+- `bin/network-watchdog.mjs`：独立 watchdog 进程，负责 4 路探测、`POST /internal/network-event` 和 `GET /status`
 - `mcp-server.mjs`：MCP 接入层，供 Claude Code、OpenClaw 等工具使用
 - `lib/db.mjs`：SQLite 持久化，保存消息历史、任务状态与统计数据
 - `dashboard/`：监控面板，查看 session、消息流和任务状态
@@ -129,6 +147,8 @@ powershell -ExecutionPolicy Bypass -File bin\verify-daemons.ps1 -Service Hub
 
 ```text
 AI Session -> MCP Server -> Hub
+network-watchdog -> POST /internal/network-event -> Hub
+Daemon -> GET http://127.0.0.1:3180/status -> network-watchdog
 Hub -> WebSocket / HTTP -> Target Session
 Hub -> SQLite -> Message / Task History
 Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
@@ -139,7 +159,9 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 ## HTTP API
 
 - `POST /send`：`{from, to, content}` 发送消息，返回 `{accepted, id, online, buffered}`
-- `POST /wake-suspended`：`{reason?, from?}` 临时运维 endpoint，通过 topic fanout 向所有订阅 `network-up` 的 session 广播手动唤醒消息，返回 `{ok, broadcastTo, subscribers}`
+- `POST /suspend`：`{from, reason?, task_description?, suspended_by?}` 记录挂起 session，返回 `{ok, name, suspended_at, suspended_by}`
+- `POST /wake-suspended`：`{reason?, from?}` 临时运维 endpoint，通过 topic fanout 向所有订阅 `network-up` 的 session 广播手动唤醒消息，返回 `{ok, broadcastTo, subscribers, clearedSessions}`
+- `POST /internal/network-event`：内部端点，仅 `127.0.0.1` + `X-Internal-Token` 可访问，接收 `network-down` / `network-up`
 - `POST /task`：`{from, to, title, ...}` 创建结构化任务，返回 `{ok, taskId, online, buffered}`
 - `GET /health`：返回 Hub 状态、session 列表与消息计数
 

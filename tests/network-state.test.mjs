@@ -191,3 +191,111 @@ test('createStateMachine: onTransition 只在真实状态变化时触发', async
     { from: 'degraded', to: 'OK' },
   ]);
 });
+
+test('createStateMachine: probe rejection 会按失败结果记录并进入 degraded', async () => {
+  const transitions = [];
+  const machine = createStateMachine({
+    probes: {
+      cliProxy: async () => {
+        throw new Error('boom');
+      },
+      hub: createSequenceProbe([ok(2)]),
+    },
+    onTransition: (transition) => transitions.push({ from: transition.from, to: transition.to }),
+    now: createTickNow(),
+  });
+
+  const state = await machine.tick();
+
+  assert.equal(state.state, 'degraded');
+  assert.deepEqual(state.failing, ['cliProxy']);
+  assert.deepEqual(state.consecutive, { cliProxy: 1, hub: 0 });
+  assert.equal(state.lastChecks.cliProxy.ok, false);
+  assert.equal(state.lastChecks.cliProxy.latencyMs, 0);
+  assert.match(state.lastChecks.cliProxy.error, /boom/);
+  assert.deepEqual(transitions, [{ from: 'OK', to: 'degraded' }]);
+});
+
+test('createStateMachine: reset 会清空状态并从初始条件重新计算', async () => {
+  const machine = createStateMachine({
+    probes: {
+      cliProxy: createSequenceProbe([
+        fail('HTTP 503'),
+        fail('HTTP 503'),
+        fail('HTTP 503'),
+        fail('HTTP 503'),
+        fail('HTTP 503'),
+        fail('HTTP 503'),
+        fail('HTTP 503'),
+        ok(),
+        ok(),
+        fail('HTTP 503'),
+        ok(),
+        ok(),
+        ok(),
+      ]),
+      hub: createSequenceProbe([
+        ok(),
+        ok(),
+        ok(),
+        ok(),
+        ok(),
+        ok(),
+        fail('HTTP 503'),
+        ok(),
+        ok(),
+        fail('HTTP 503'),
+        ok(),
+        ok(),
+        ok(),
+      ]),
+    },
+    now: createTickNow(),
+  });
+
+  for (let index = 0; index < 5; index += 1) {
+    await machine.tick();
+  }
+
+  const beforeReset = machine.getState();
+  assert.equal(beforeReset.state, 'down');
+  assert.equal(beforeReset.history.length, 5);
+  assert.deepEqual(beforeReset.consecutive, { cliProxy: 5, hub: 0 });
+
+  machine.reset();
+
+  assert.deepEqual(machine.getState(), {
+    state: 'OK',
+    failing: [],
+    consecutive: { cliProxy: 0, hub: 0 },
+    lastChecks: {},
+    history: [],
+  });
+
+  const degradedAfterReset = await machine.tick();
+  assert.equal(degradedAfterReset.state, 'degraded');
+  assert.deepEqual(degradedAfterReset.consecutive, { cliProxy: 1, hub: 0 });
+
+  await machine.tick();
+  await machine.tick();
+  await machine.tick();
+
+  machine.reset();
+
+  assert.deepEqual(machine.getState(), {
+    state: 'OK',
+    failing: [],
+    consecutive: { cliProxy: 0, hub: 0 },
+    lastChecks: {},
+    history: [],
+  });
+
+  await machine.tick();
+
+  const firstRecoveryTick = await machine.tick();
+  assert.equal(firstRecoveryTick.state, 'down');
+
+  await machine.tick();
+  const recovered = await machine.tick();
+  assert.equal(recovered.state, 'OK');
+});

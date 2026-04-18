@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - feat(db): suspended_sessions 表 + 3 个操作函数
+- feat(api): POST /suspend 端点
 
 ## [0.3.0] - 2026-04-18
 

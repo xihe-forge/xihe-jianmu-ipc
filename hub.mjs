@@ -72,6 +72,7 @@ import {
   getInboxMessages,
   clearInbox,
   clearExpiredInbox,
+  suspendSession,
 } from './lib/db.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
@@ -144,6 +145,7 @@ const ctx = {
   saveInboxMessage,
   getInboxMessages,
   clearInbox,
+  suspendSession,
   checkAuth,
   authTokens,
   AUTH_TOKEN,

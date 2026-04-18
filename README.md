@@ -423,6 +423,32 @@ curl -s -X POST http://localhost:3179/send \
   -d '{"from":"ci","to":"main","content":"tests passed"}'
 ```
 
+#### `POST /suspend`
+
+session 主动上报自己已挂起，供 `network-up` 恢复广播时携带挂起名单。重复上报同名 session 会覆盖 `reason` / `task_description` / `suspended_at` / `suspended_by`。
+
+Session self-report endpoint for network suspension. Repeated suspend requests with the same session name are idempotent and overwrite the stored reason, task description, timestamp, and source.
+
+`suspended_by` allowed values: `self` / `watchdog` / `harness`
+
+```json
+// Request
+{
+  "from": "xihe-builder",
+  "reason": "Anthropic timeout",
+  "task_description": "resume AC-AUTH-08 implementation",
+  "suspended_by": "self"
+}
+
+// Response
+{
+  "ok": true,
+  "name": "xihe-builder",
+  "suspended_at": 1776516090000,
+  "suspended_by": "self"
+}
+```
+
 #### `POST /wake-suspended`
 
 临时运维 endpoint。向所有订阅 `network-up` topic 的 session 广播手动唤醒消息，用于 `network-resilience v0.4.0` 全局容错上线前的过渡方案。

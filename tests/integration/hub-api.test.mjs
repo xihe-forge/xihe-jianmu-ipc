@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
 import { rmSync } from 'node:fs';
 import http from 'node:http';
 import { join } from 'node:path';
@@ -114,6 +115,112 @@ test('POST /send + WebSocket: HTTP 消息能路由到在线 session', { timeout:
   } finally {
     await closeWebSocket(ws);
   }
+});
+
+test('POST /suspend: 写入 suspended_sessions 并返回挂起信息', { timeout: TEST_TIMEOUT }, async () => {
+  const response = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/suspend',
+    json: {
+      from: 'suspended-worker',
+      reason: 'network down',
+      task_description: 'resume AC-AUTH-08',
+      suspended_by: 'watchdog',
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.name, 'suspended-worker');
+  assert.equal(response.body.suspended_by, 'watchdog');
+  assert.equal(typeof response.body.suspended_at, 'number');
+
+  assert.deepEqual(readSuspendedSessions(hub.dbPath), [{
+    name: 'suspended-worker',
+    reason: 'network down',
+    task_description: 'resume AC-AUTH-08',
+    suspended_at: response.body.suspended_at,
+    suspended_by: 'watchdog',
+  }]);
+});
+
+test('POST /suspend: 缺少 from 返回 400', { timeout: TEST_TIMEOUT }, async () => {
+  const response = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/suspend',
+    json: {
+      reason: 'network down',
+    },
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body, { ok: false, error: 'missing required field: from' });
+});
+
+test('POST /suspend: 非法 suspended_by 返回 400', { timeout: TEST_TIMEOUT }, async () => {
+  const response = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/suspend',
+    json: {
+      from: 'suspended-worker',
+      suspended_by: 'operator',
+    },
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body, { ok: false, error: 'invalid suspended_by' });
+});
+
+test('POST /suspend: 同名重复请求幂等更新同一条记录', { timeout: TEST_TIMEOUT }, async () => {
+  const first = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/suspend',
+    json: {
+      from: 'dup-worker',
+      reason: 'first reason',
+      task_description: 'first task',
+      suspended_by: 'self',
+    },
+  });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const second = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/suspend',
+    json: {
+      from: 'dup-worker',
+      reason: 'second reason',
+      task_description: 'second task',
+      suspended_by: 'harness',
+    },
+  });
+
+  const rows = readSuspendedSessions(hub.dbPath);
+
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0], {
+    name: 'dup-worker',
+    reason: 'second reason',
+    task_description: 'second task',
+    suspended_at: second.body.suspended_at,
+    suspended_by: 'harness',
+  });
+  assert.ok(second.body.suspended_at > first.body.suspended_at);
+});
+
+test('POST /suspend: 非 JSON body 返回 400', { timeout: TEST_TIMEOUT }, async () => {
+  const response = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/suspend',
+    body: '{"from"',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body, { ok: false, error: 'invalid json' });
 });
 
 test('GET /sessions: 返回已连接的 session', { timeout: TEST_TIMEOUT }, async () => {
@@ -259,6 +366,19 @@ function cleanupDbFiles(dbPath) {
     try {
       rmSync(file, { force: true });
     } catch {}
+  }
+}
+
+function readSuspendedSessions(dbPath) {
+  const db = new Database(dbPath);
+  try {
+    return db.prepare(`
+      SELECT name, reason, task_description, suspended_at, suspended_by
+      FROM suspended_sessions
+      ORDER BY suspended_at ASC
+    `).all();
+  } finally {
+    db.close();
   }
 }
 

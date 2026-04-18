@@ -43,6 +43,9 @@
     "better-sqlite3": "^12.8.0",
     "ws": "^8.18.0"
   },
+  "overrides": {
+    "axios": "1.15.0"
+  },
   "scripts": {
     "hub": "node hub.mjs",
     "test": "node --test --test-force-exit tests/*.test.mjs tests/integration/*.test.mjs tests/e2e/*.test.mjs",

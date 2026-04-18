@@ -26,6 +26,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
+import { parentPort } from 'node:worker_threads';
 import { WebSocketServer } from 'ws';
 import { audit } from './lib/audit.mjs';
 import { startCIRelay, stopCIRelay } from './lib/ci-relay.mjs';
@@ -179,6 +180,45 @@ ctx.broadcastToTopic = broadcastToTopic;
 ctx.broadcastNetworkDown = broadcastNetworkDown;
 ctx.broadcastNetworkUp = broadcastNetworkUp;
 const handleRequest = createHttpHandler(ctx);
+
+if (process.env.IPC_ENABLE_TEST_HOOKS === '1' && parentPort) {
+  parentPort.on('message', async (message) => {
+    if (!message || typeof message !== 'object' || !message.requestId || !message.action) {
+      return;
+    }
+
+    try {
+      let result;
+      switch (message.action) {
+        case 'broadcastNetworkDown':
+          result = await broadcastNetworkDown(message.payload ?? {});
+          break;
+        case 'broadcastNetworkUp':
+          result = await broadcastNetworkUp(message.payload ?? {});
+          break;
+        case 'listSuspendedSessions':
+          result = listSuspendedSessions();
+          break;
+        default:
+          return;
+      }
+
+      parentPort.postMessage({
+        type: 'test-hook:result',
+        requestId: message.requestId,
+        ok: true,
+        result,
+      });
+    } catch (error) {
+      parentPort.postMessage({
+        type: 'test-hook:result',
+        requestId: message.requestId,
+        ok: false,
+        error: error?.message ?? String(error),
+      });
+    }
+  });
+}
 
 // HTTP + WebSocket servers
 const httpServer = http.createServer(handleRequest);

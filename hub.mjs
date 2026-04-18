@@ -34,6 +34,7 @@ import { createRouter } from './lib/router.mjs';
 import { createHttpHandler } from './lib/http-handlers.mjs';
 import { getFeishuApps, getFeishuToken, startFeishuConfigPoller } from './lib/feishu-adapter.mjs';
 import { createNetworkEventBroadcaster } from './lib/network-events.mjs';
+import { loadInternalToken } from './lib/internal-auth.mjs';
 import { isOpenClawSession, deliverToOpenClaw, enqueueOpenClawRetry, startOpenClawRetryTimer } from './lib/openclaw-adapter.mjs';
 
 // 从项目根目录加载.env
@@ -83,6 +84,7 @@ const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
 const __hubDir = dirname(fileURLToPath(import.meta.url));
 function stderr(...args) { process.stderr.write(args.join(' ') + '\n'); }
+const INTERNAL_TOKEN = await loadInternalToken({ rootDir: __hubDir });
 
 // Per-session认证token（auth-tokens.json）
 let authTokens = null;
@@ -153,6 +155,7 @@ const ctx = {
   checkAuth,
   authTokens,
   AUTH_TOKEN,
+  INTERNAL_TOKEN,
   createMessage,
   createTask,
   TASK_STATUSES,

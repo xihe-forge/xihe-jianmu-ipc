@@ -4,6 +4,7 @@ node_modules/
 data/
 feishu-apps.json
 auth-tokens.json
+.ipc-internal-token
 .clawhub/
 local/
 skills/

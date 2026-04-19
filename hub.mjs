@@ -60,6 +60,7 @@ import {
 } from './lib/constants.mjs';
 import { createMessage, createSystemEvent, createTask, validateMessage, TASK_STATUSES } from './lib/protocol.mjs';
 import {
+  ERR_REBIND_PENDING,
   saveMessage,
   getMessages,
   getMessageCount,
@@ -76,6 +77,11 @@ import {
   getRecipientRecent,
   clearInbox,
   clearExpiredInbox,
+  createPendingRebind,
+  findPendingRebind,
+  appendBufferedMessage,
+  clearPendingRebind,
+  cleanupExpiredPendingRebind,
   listSuspendedSessions,
   clearSuspendedSessions,
   suspendSession,
@@ -170,6 +176,12 @@ const ctx = {
   getMessageCount,
   getMessageCountByAgent,
   hubDir: __hubDir,
+  ERR_REBIND_PENDING,
+  createPendingRebind,
+  findPendingRebind,
+  appendBufferedMessage,
+  clearPendingRebind,
+  cleanupExpiredPendingRebind,
 };
 
 const { routeMessage, send, broadcast, broadcastToTopic, pushInbox, flushInbox, scheduleInboxCleanup } = createRouter(ctx);

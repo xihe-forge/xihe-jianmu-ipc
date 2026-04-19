@@ -73,6 +73,7 @@ import {
   getTaskStats,
   saveInboxMessage,
   getInboxMessages,
+  getRecipientRecent,
   clearInbox,
   clearExpiredInbox,
   listSuspendedSessions,
@@ -150,6 +151,7 @@ const ctx = {
   saveMessage,
   saveInboxMessage,
   getInboxMessages,
+  getRecipientRecent,
   clearInbox,
   suspendSession,
   checkAuth,
@@ -240,6 +242,7 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://localhost`);
   const name = url.searchParams.get('name');
   const token = url.searchParams.get('token');
+  const forceRebind = url.searchParams.get('force') === '1';
 
   if (!checkAuth(token, name)) {
     audit('ws_auth_fail', { name: name || '<none>', ip: req.socket.remoteAddress });
@@ -250,8 +253,22 @@ wss.on('connection', (ws, req) => {
 
   const existing = sessions.get(name);
   if (existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
-    ws.close(4001, 'name taken');
-    return;
+    const staleForMs = Date.now() - (existing.connectedAt || 0);
+    const zombieDetected = existing.ws.isAlive === false || (staleForMs > 2 * HEARTBEAT_INTERVAL && existing.ws.isAlive === false);
+
+    if (forceRebind || zombieDetected) {
+      audit(forceRebind ? 'force_rebind' : 'zombie_rebind', {
+        name,
+        staleForMs,
+        previousConnectedAt: existing.connectedAt || 0,
+        previousIsAlive: existing.ws.isAlive ?? null,
+        remoteAddress: req.socket.remoteAddress,
+      });
+      existing.ws.terminate();
+    } else {
+      ws.close(4001, 'name taken');
+      return;
+    }
   }
   if (existing && existing.inboxExpiry !== null) {
     clearTimeout(existing.inboxExpiry);
@@ -299,6 +316,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    if (session.ws !== ws) return;
     session.ws = null;
     audit('session_disconnect', { name, inboxSize: session.inbox.length });
     stderr(`[ipc-hub] session disconnected: ${name} (inbox: ${session.inbox.length} msgs)`);

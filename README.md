@@ -374,6 +374,7 @@ Spawn a new Claude Code session (background or interactive).
 | `interactive` | boolean | no | `true` opens a new terminal window; `false` (default) runs headless |
 | `model` | string | no | Model override, e.g. `claude-sonnet-4-6` |
 | `host` | string | no | Spawn host: `wt`, `vscode-terminal`, or `external` (default) |
+| `cwd` | string | no | Working directory for the spawned session; defaults to caller `process.cwd()` |
 
 ```
 ipc_spawn(name="reviewer", task="Review the PR diff and report back via ipc_send")
@@ -387,6 +388,8 @@ Spawned sessions automatically know their IPC name and are instructed to report 
 `host="external"` 保持兼容旧行为，只返回 `command_hint` / fallback 信息而不真正起进程；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起进程；`host="vscode-terminal"` 当前返回 not implemented 提示。
 
 `host="wt"` / `spawn-fallback` 的 canonical 启动命令为 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC auth，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
+
+`cwd` 是 spawn 契约的一部分。调用方若显式传入，则新 session 从该目录启动；未传时保持兼容，回退到调用方 `process.cwd()`。
 
 ### `ipc_rename`
 
@@ -604,7 +607,7 @@ Query recent persisted messages addressed to a specific session (including broad
 - `network-watchdog` 已扩成 5 路探测：`cliProxy / hub / anthropic / dns / harness`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，包含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
-- 当 harness 进入 `degraded` 或 `down`，watchdog 可调用 `triggerHarnessSelfHandover()`：读取 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-YYYYMMDD-HHMM.md`，并通过 `ipc_spawn(host="wt")` 续起新 harness
+- 当 harness 进入 `degraded` 或 `down`，watchdog 可调用 `triggerHarnessSelfHandover()`：读取 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-YYYYMMDD-HHMM.md`，并通过 `ipc_spawn(host="wt", cwd=handoverRepoPath)` 续起新 harness
 - `lib/lineage.mjs` 用 SQLite `lineage` 表限制递归 handover 深度和滑动窗口频次，避免 watchdog 无限自拉起
 
 ### 会话接力 / Session Handover

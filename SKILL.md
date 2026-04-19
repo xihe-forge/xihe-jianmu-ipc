@@ -78,6 +78,7 @@ Start a new Claude Code session with a task.
 
 ```
 ipc_spawn(name="worker-1", task="run the test suite")
+ipc_spawn(name="harness", task="resume from handover", host="wt", cwd="D:/workspace/ai/research/xiheAi/xihe-tianshu-harness")
 ```
 
 ### `ipc_rename`

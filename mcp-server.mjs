@@ -260,7 +260,15 @@ async function sendSpawnFallbackIpc({
   return content;
 }
 
-export async function spawnSession({ name: sessionName, task, interactive, model, host, dryRun = false }) {
+export async function spawnSession({
+  name: sessionName,
+  task,
+  interactive,
+  model,
+  host,
+  dryRun = false,
+  cwd = null,
+}) {
   // Sanitize session name — allow only alphanumeric, underscore, hyphen
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionName)) {
     throw new Error(`Invalid session name: only letters, numbers, underscore and hyphen allowed`);
@@ -278,7 +286,7 @@ export async function spawnSession({ name: sessionName, task, interactive, model
 
   const fullPrompt = `${ipcInstruction}\n\nTask: ${task}`;
   const requestedHost = host;
-  const spawnCwd = process.cwd();
+  const spawnCwd = cwd || process.cwd();
 
   if (requestedHost === 'wt') {
     if (process.platform !== 'win32') {

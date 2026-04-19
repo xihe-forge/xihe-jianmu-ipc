@@ -39,7 +39,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_sessions()` — 在线session列表
 - `ipc_whoami()` — 当前session身份
 - `ipc_subscribe(topic, action)` — 订阅/退订topic
-- `ipc_spawn(name, task, interactive?, model?, host?)` — 启动新session；`host=wt|vscode-terminal|external`，默认 `external`。`wt` / `external` 都以 `IPC_NAME` 环境变量传 session 名，不使用 `--session-name` / `--resume`；canonical cmdline 是 `"...\\bin\\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`
+- `ipc_spawn(name, task, interactive?, model?, host?, cwd?)` — 启动新session；`host=wt|vscode-terminal|external`，默认 `external`；`cwd` 未传时回退到调用方 `process.cwd()`。`wt` / `external` 都以 `IPC_NAME` 环境变量传 session 名，不使用 `--session-name` / `--resume`；canonical cmdline 是 `"...\\bin\\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`
 - `ipc_rename(name)` — 重命名当前session
 - `ipc_task(action, ...)` — 结构化任务管理（create/update/list）
 - `ipc_reconnect(host?, port?)` — 重连到新的Hub地址
@@ -68,7 +68,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `bin/network-watchdog.mjs` 现在探测 5 项：`cliProxy / hub / anthropic / dns / harness`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
-- harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host='wt')` 续起新 harness
+- harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host='wt', cwd=handoverRepoPath)` 续起新 harness
 
 ## 会话接力
 

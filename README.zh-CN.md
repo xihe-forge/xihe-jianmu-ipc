@@ -180,7 +180,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `ipc_sessions()`：查看当前在线 session
 - `ipc_whoami()`：查看当前 session 名称、Hub 地址和连接状态
 - `ipc_subscribe(topic, action)`：订阅 / 退订 topic
-- `ipc_spawn(name, task, interactive?, model?, host?)`：拉起新的 Claude Code session；`host=wt|vscode-terminal|external`，默认 `external`
+- `ipc_spawn(name, task, interactive?, model?, host?, cwd?)`：拉起新的 Claude Code session；`host=wt|vscode-terminal|external`，默认 `external`；`cwd` 未传时回退到调用方 `process.cwd()`
 - `ipc_rename(name)`：重命名当前 session
 - `ipc_reconnect(host?, port?)`：切换 Hub 地址并重连
 - `ipc_task(action, ...)`：结构化任务 create / update / list
@@ -190,11 +190,13 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 
 `host="wt"` / `spawn-fallback` 的标准启动命令是 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC 认证，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
 
+`cwd` 属于 spawn 契约：调用方显式传什么目录，新 session 就从什么目录启动；不传则为兼容旧行为，回退到调用方 `process.cwd()`。
+
 ## Harness 自交接
 
 - watchdog 订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
-- harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读取 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host="wt")` 续起新 harness
+- harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读取 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host="wt", cwd=handoverRepoPath)` 续起新 harness
 - `lib/lineage.mjs` 用 SQLite `lineage` 表限制递归 handover 深度与频次，防止自拉起雪崩
 
 ---

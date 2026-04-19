@@ -127,6 +127,13 @@ test('listTools: 暴露 9 个 MCP 工具', () => {
   );
 });
 
+test('ipc_spawn schema: 暴露 cwd 参数', () => {
+  const { tools } = createHarness();
+  const spawnTool = tools.listTools().tools.find((tool) => tool.name === 'ipc_spawn');
+
+  assert.equal(spawnTool.inputSchema.properties.cwd.type, 'string');
+});
+
 test('ipc_send: 缺少参数时返回错误', async () => {
   const { tools } = createHarness();
   const result = await tools.handleToolCall('ipc_send', { to: 'beta' });
@@ -325,7 +332,7 @@ test('ipc_spawn: 已存在的 session 名会报错', async () => {
   assert.equal(getText(result), 'Session "worker-b" is already online. Use a different name or wait for it to disconnect.');
 });
 
-test('ipc_spawn: 调用 spawnSession 并透传 interactive/model', async () => {
+test('ipc_spawn: 未传 cwd 时调用 spawnSession 并透传 interactive/model', async () => {
   const { tools, calls } = createHarness({
     impl: {
       httpGet: async () => [],
@@ -343,12 +350,31 @@ test('ipc_spawn: 调用 spawnSession 并透传 interactive/model', async () => {
     task: 'solve bug',
     interactive: true,
     model: 'claude-sonnet-4-6',
+    cwd: undefined,
   }]);
+  assert.equal(calls.spawnSession[0].cwd, undefined);
   assert.deepEqual(getJson(result), {
     name: 'worker-b',
     mode: 'interactive',
     status: 'spawned',
   });
+});
+
+test('ipc_spawn: 传 cwd 时透传给 spawnSession', async () => {
+  const { tools, calls } = createHarness({
+    impl: {
+      httpGet: async () => [],
+    },
+  });
+
+  await tools.handleToolCall('ipc_spawn', {
+    name: 'worker-b',
+    task: 'resume handover',
+    cwd: '/foo',
+  });
+
+  assert.equal(calls.spawnSession.length, 1);
+  assert.equal(calls.spawnSession[0].cwd, '/foo');
 });
 
 test('ipc_spawn: 显式 host=wt 时透传给 spawnSession', async () => {
@@ -370,6 +396,7 @@ test('ipc_spawn: 显式 host=wt 时透传给 spawnSession', async () => {
     interactive: false,
     model: undefined,
     host: 'wt',
+    cwd: undefined,
   }]);
 });
 

@@ -73,6 +73,8 @@ function createMockCtx() {
     },
     getInboxMessages: (sessionName) => [...(persistedInbox.get(sessionName) ?? [])],
     getRecipientRecent: () => [],
+    findPendingRebind: () => null,
+    appendBufferedMessage: () => 0,
     clearInbox: (sessionName) => {
       clearedInboxSessions.push(sessionName);
       persistedInbox.delete(sessionName);
@@ -367,6 +369,45 @@ test('flushInbox: openclaw session 时清空 inbox 但不发送', { timeout: 500
   assert.deepEqual(ctx._clearedInboxSessions, ['openclaw']);
 });
 
+test('flushPendingRebind: 合并 SQLite inbox 与 buffered_messages，按 ts 升序发送并去重', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  ctx.getRecipientRecent = () => [{
+    id: 'recent-only',
+    type: 'message',
+    from: 'sender',
+    to: 'rebind-agent',
+    content: 'should-not-be-used',
+    content_type: 'text',
+    topic: null,
+    ts: 999,
+  }];
+  const { flushPendingRebind } = createRouter(ctx);
+
+  const ws = createMockWs();
+  const session = createOnlineSession('rebind-agent', ws);
+  ctx._persistedInbox.set('rebind-agent', [
+    { id: 'persisted-1', content: 'persisted', ts: 10 },
+    { id: 'dup-id', content: 'persisted duplicate', ts: 20 },
+  ]);
+
+  const count = flushPendingRebind(session, {
+    bufferedMessages: [
+      { id: 'dup-id', content: 'buffered duplicate', ts: 20 },
+      { id: 'buffered-2', content: 'buffered', ts: 30 },
+    ],
+  });
+
+  assert.equal(count, 3);
+  assert.equal(ws._sent.length, 1);
+  assert.deepEqual(
+    ws._sent[0].messages.map((message) => message.id),
+    ['persisted-1', 'dup-id', 'buffered-2'],
+  );
+  assert.equal(session.inbox.length, 0);
+  assert.deepEqual(ctx._clearedInboxSessions, ['rebind-agent']);
+  assert.ok(ws._sent[0].messages.every((message) => message.id !== 'recent-only'));
+});
+
 // ── routeMessage — 直接寻址（路径4：普通 IPC 会话） ───────────────────────────
 
 test('routeMessage: 发送到在线 session — 目标 ws 收到消息', { timeout: 5000 }, () => {
@@ -400,6 +441,33 @@ test('routeMessage: 发送到离线 session — 消息进入 inbox', { timeout: 
 
   assert.equal(offlineSession.inbox.length, 1);
   assert.equal(offlineSession.inbox[0].content, 'for offline eve');
+});
+
+test('routeMessage: 命中 pending_rebind 时写入 buffered_messages，不走在线直投或 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const buffered = [];
+  ctx.findPendingRebind = (name) => name === 'eve'
+    ? { name, lastTopics: ['ops'], bufferedMessages: [], releasedAt: Date.now(), ttlSeconds: 5, nextSessionHint: null }
+    : null;
+  ctx.appendBufferedMessage = (name, msg) => {
+    buffered.push({ name, msg });
+    return 1;
+  };
+  const { routeMessage } = createRouter(ctx);
+
+  const wsTarget = createMockWs();
+  ctx.sessions.set('eve', createOnlineSession('eve', wsTarget));
+  const senderSession = { name: 'alice' };
+  const msg = { id: 'msg_pending_rebind', type: 'message', from: 'alice', to: 'eve', content: 'buffer for successor' };
+
+  routeMessage(msg, senderSession);
+
+  assert.equal(wsTarget._sent.length, 0, 'pending_rebind 命中时旧连接不应继续收消息');
+  assert.equal(buffered.length, 1);
+  assert.equal(buffered[0].name, 'eve');
+  assert.equal(buffered[0].msg.id, 'msg_pending_rebind');
+  assert.equal(ctx._savedInboxMessages.length, 0, '不应回落到 inbox');
+  assert.ok(ctx._audits.some((entry) => entry.event === 'rebind_buffered' && entry.to === 'eve' && entry.id === 'msg_pending_rebind'));
 });
 
 test('routeMessage: 发送到不存在的 session — 创建 stub 并缓冲', { timeout: 5000 }, () => {

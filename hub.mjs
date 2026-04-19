@@ -110,7 +110,7 @@ function checkAuth(providedToken, sessionName = null) {
   return true;
 }
 
-/** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null}>} */
+/** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null, gracefulReleasing?:boolean}>} */
 const sessions = new Map();
 const ackPending = new Map();        // messageId → { sender, ts }
 const deliveredMessageIds = new Map(); // messageId → timestamp（去重）
@@ -184,7 +184,16 @@ const ctx = {
   cleanupExpiredPendingRebind,
 };
 
-const { routeMessage, send, broadcast, broadcastToTopic, pushInbox, flushInbox, scheduleInboxCleanup } = createRouter(ctx);
+const {
+  routeMessage,
+  send,
+  broadcast,
+  broadcastToTopic,
+  pushInbox,
+  flushInbox,
+  flushPendingRebind,
+  scheduleInboxCleanup,
+} = createRouter(ctx);
 const { broadcastNetworkDown, broadcastNetworkUp } = createNetworkEventBroadcaster({
   router: { broadcastToTopic },
   db: {
@@ -263,8 +272,15 @@ wss.on('connection', (ws, req) => {
   }
   if (!name) { ws.close(4000, 'name query param required'); return; }
 
+  const pendingRebind = findPendingRebind(name);
   const existing = sessions.get(name);
-  if (existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
+  if (pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
+    // Explicit release-rebind has priority over ?force=1. While the current owner
+    // is still connected, the successor must wait instead of zombie-killing it.
+    ws.close(4001, 'name taken');
+    return;
+  }
+  if (!pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
     const staleForMs = Date.now() - (existing.connectedAt || 0);
     const zombieDetected = existing.ws.isAlive === false || (staleForMs > 2 * HEARTBEAT_INTERVAL && existing.ws.isAlive === false);
 
@@ -286,15 +302,37 @@ wss.on('connection', (ws, req) => {
     clearTimeout(existing.inboxExpiry);
     existing.inboxExpiry = null;
   }
-  const session = existing ?? { name, ws: null, connectedAt: Date.now(), topics: new Set(), inbox: [], inboxExpiry: null };
+  const session = existing ?? {
+    name,
+    ws: null,
+    connectedAt: Date.now(),
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+    gracefulReleasing: false,
+  };
   session.ws = ws;
   session.connectedAt = Date.now();
+  session.gracefulReleasing = false;
+  if (pendingRebind) {
+    session.topics = new Set(pendingRebind.lastTopics);
+  }
   sessions.set(name, session);
   resetIdleTimer();
   audit('session_connect', { name, total: countLive() });
   stderr(`[ipc-hub] session connected: ${name} (total: ${countLive()})`);
-  broadcast(createSystemEvent({ event: 'session_joined', session: name }), name);
-  flushInbox(session);
+  if (pendingRebind) {
+    flushPendingRebind(session, pendingRebind);
+    clearPendingRebind(name);
+    audit('rebind_inherit', {
+      name,
+      topicsCount: session.topics.size,
+      bufferedCount: pendingRebind.bufferedMessages.length,
+    });
+  } else {
+    broadcast(createSystemEvent({ event: 'session_joined', session: name }), name);
+    flushInbox(session);
+  }
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
@@ -333,7 +371,19 @@ wss.on('connection', (ws, req) => {
     audit('session_disconnect', { name, inboxSize: session.inbox.length });
     stderr(`[ipc-hub] session disconnected: ${name} (inbox: ${session.inbox.length} msgs)`);
     broadcast(createSystemEvent({ event: 'session_left', session: name }), name);
-    scheduleInboxCleanup(session);
+    const activePendingRebind = session.gracefulReleasing ? findPendingRebind(name) : null;
+    if (session.gracefulReleasing && activePendingRebind) {
+      session.inbox.length = 0;
+      session.gracefulReleasing = false;
+      if (session.inboxExpiry !== null) {
+        clearTimeout(session.inboxExpiry);
+        session.inboxExpiry = null;
+      }
+      sessions.delete(name);
+    } else {
+      session.gracefulReleasing = false;
+      scheduleInboxCleanup(session);
+    }
     if (countLive() === 0) startIdleTimer();
   });
 
@@ -364,6 +414,12 @@ setInterval(() => {
   cleanup();
   clearExpiredInbox();
 }, 60 * 60 * 1000).unref();
+setInterval(() => {
+  const deleted = cleanupExpiredPendingRebind();
+  if (deleted > 0) {
+    audit('rebind_expired', { count: deleted });
+  }
+}, 5_000).unref();
 
 // 轮询源文件变更——仅开发模式启用（IPC_DEV_WATCH=1）
 // 生产环境默认关闭，避免代码提交触发Hub重启导致全员断线

@@ -21,7 +21,6 @@ import {
 } from './lib/constants.mjs';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'fs';
 import { spawn } from 'child_process';
-import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import http from 'http';
@@ -107,7 +106,6 @@ const server = new Server(
       'IPC messages from other sessions arrive as <channel> tags. When you receive one, read the content and act on it. If the sender expects a reply, use ipc_send to respond.',
   },
 );
-const SESSION_INSTANCE_ID = randomUUID();
 
 // ---------------------------------------------------------------------------
 // Tool handlers
@@ -652,7 +650,6 @@ function autostartHub() {
 // ---------------------------------------------------------------------------
 function buildWsUrl() {
   let url = `ws://${HOST}:${IPC_PORT}/ws?name=${encodeURIComponent(IPC_NAME)}`;
-  url += `&instance=${encodeURIComponent(SESSION_INSTANCE_ID)}`;
   if (AUTH_TOKEN) url += `&token=${encodeURIComponent(AUTH_TOKEN)}`;
   return url;
 }

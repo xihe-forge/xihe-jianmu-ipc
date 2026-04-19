@@ -102,16 +102,13 @@ import {
   appendBufferedMessage,
   clearPendingRebind,
   cleanupExpiredPendingRebind,
-  hasSeenSessionInstance,
   listSuspendedSessions,
-  rememberSessionInstance,
   clearSuspendedSessions,
   suspendSession,
 } from './lib/db.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
-const RECONNECT_WINDOW_MS = 30 * 60 * 1000;
 const __hubDir = dirname(fileURLToPath(import.meta.url));
 function stderr(...args) {
   process.stderr.write(args.join(' ') + '\n');
@@ -138,7 +135,7 @@ function checkAuth(providedToken, sessionName = null) {
   return true;
 }
 
-/** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, instanceId:string|null, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null, gracefulReleasing?:boolean}>} */
+/** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null, gracefulReleasing?:boolean}>} */
 const sessions = new Map();
 const ackPending = new Map(); // messageId → { sender, ts }
 const deliveredMessageIds = new Map(); // messageId → timestamp（去重）
@@ -330,9 +327,7 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://localhost`);
   const name = url.searchParams.get('name');
   const token = url.searchParams.get('token');
-  const instanceId = url.searchParams.get('instance') || null;
   const forceRebind = url.searchParams.get('force') === '1';
-  const now = Date.now();
 
   if (!checkAuth(token, name)) {
     audit('ws_auth_fail', { name: name || '<none>', ip: req.socket.remoteAddress });
@@ -346,19 +341,6 @@ wss.on('connection', (ws, req) => {
 
   const pendingRebind = findPendingRebind(name);
   const existing = sessions.get(name);
-  const recentlyConnected = Boolean(
-    existing &&
-    Number.isFinite(existing.connectedAt) &&
-    existing.connectedAt > 0 &&
-    now - existing.connectedAt < RECONNECT_WINDOW_MS,
-  );
-  const isSameInstance = Boolean(
-    existing?.instanceId && instanceId && existing.instanceId === instanceId,
-  );
-  const hasSeenInstance = instanceId ? hasSeenSessionInstance(name, instanceId) : false;
-  const isReconnect = instanceId
-    ? hasSeenInstance || isSameInstance || (!existing?.instanceId && recentlyConnected)
-    : recentlyConnected;
   if (pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
     // Explicit release-rebind has priority over ?force=1. While the current owner
     // is still connected, the successor must wait instead of zombie-killing it.
@@ -392,20 +374,15 @@ wss.on('connection', (ws, req) => {
   const session = existing ?? {
     name,
     ws: null,
-    connectedAt: now,
-    instanceId,
+    connectedAt: Date.now(),
     topics: new Set(),
     inbox: [],
     inboxExpiry: null,
     gracefulReleasing: false,
   };
   session.ws = ws;
-  session.connectedAt = now;
-  session.instanceId = instanceId;
+  session.connectedAt = Date.now();
   session.gracefulReleasing = false;
-  if (instanceId) {
-    rememberSessionInstance(name, instanceId, now);
-  }
   if (pendingRebind) {
     session.topics = new Set(pendingRebind.lastTopics);
   }
@@ -423,7 +400,7 @@ wss.on('connection', (ws, req) => {
     });
   } else {
     broadcast(createSystemEvent({ event: 'session_joined', session: name }), name);
-    flushInbox(session, { includeRecentMessages: !isReconnect });
+    flushInbox(session);
   }
   ws.isAlive = true;
   ws.on('pong', () => {

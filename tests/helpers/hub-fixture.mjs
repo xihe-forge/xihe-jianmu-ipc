@@ -26,7 +26,6 @@ export function buildSessionUrl(port, name, options = {}) {
   const params = new URLSearchParams({ name });
   if (options.token) params.set('token', options.token);
   if (options.force) params.set('force', '1');
-  if (options.instance) params.set('instance', options.instance);
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined && value !== null) {
       params.set(key, String(value));

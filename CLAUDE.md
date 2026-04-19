@@ -39,7 +39,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_sessions()` — 在线session列表
 - `ipc_whoami()` — 当前session身份
 - `ipc_subscribe(topic, action)` — 订阅/退订topic
-- `ipc_spawn(name, task, interactive?, model?)` — 启动新session
+- `ipc_spawn(name, task, interactive?, model?, host?)` — 启动新session；`host=wt|vscode-terminal|external`，默认 `external`
 - `ipc_rename(name)` — 重命名当前session
 - `ipc_task(action, ...)` — 结构化任务管理（create/update/list）
 - `ipc_reconnect(host?, port?)` — 重连到新的Hub地址
@@ -62,6 +62,13 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `GET /tasks?agent=&status=&limit=` — 任务列表+统计
 - `GET /tasks/:id` — 单个任务详情
 - `PATCH /tasks/:id` — `{status}` 更新任务状态（pending/started/completed/failed/cancelled）
+
+## Watchdog
+
+- `bin/network-watchdog.mjs` 现在探测 5 项：`cliProxy / hub / anthropic / dns / harness`
+- watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
+- `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
+- harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host='wt')` 续起新 harness
 
 ## 会话接力
 

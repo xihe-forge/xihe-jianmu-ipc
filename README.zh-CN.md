@@ -80,7 +80,7 @@ npm install
 node hub.mjs
 ```
 
-4. 建议同时启动 `network-watchdog`，自动探测 CliProxy / Hub / Anthropic / DNS：
+4. 建议同时启动 `network-watchdog`，自动探测 `CliProxy / Hub / Anthropic / DNS / harness`：
 
 ```bash
 npm run watchdog
@@ -137,7 +137,7 @@ powershell -ExecutionPolicy Bypass -File bin\verify-daemons.ps1 -Service Hub
 核心组件如下：
 
 - `hub.mjs`：Hub 主进程，提供 WebSocket 服务与 HTTP API
-- `bin/network-watchdog.mjs`：独立 watchdog 进程，负责 4 路探测、`POST /internal/network-event` 和 `GET /status`
+- `bin/network-watchdog.mjs`：独立 watchdog 进程，负责 5 路探测、`POST /internal/network-event`、订阅 `harness-heartbeat`，并提供 `GET /status`
 - `mcp-server.mjs`：MCP 接入层，供 Claude Code、OpenClaw 等工具使用
 - `lib/db.mjs`：SQLite 持久化，保存消息历史、任务状态与统计数据
 - `dashboard/`：监控面板，查看 session、消息流和任务状态
@@ -180,11 +180,20 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `ipc_sessions()`：查看当前在线 session
 - `ipc_whoami()`：查看当前 session 名称、Hub 地址和连接状态
 - `ipc_subscribe(topic, action)`：订阅 / 退订 topic
-- `ipc_spawn(name, task, interactive?, model?)`：拉起新的 Claude Code session
+- `ipc_spawn(name, task, interactive?, model?, host?)`：拉起新的 Claude Code session；`host=wt|vscode-terminal|external`，默认 `external`
 - `ipc_rename(name)`：重命名当前 session
 - `ipc_reconnect(host?, port?)`：切换 Hub 地址并重连
 - `ipc_task(action, ...)`：结构化任务 create / update / list
 - `ipc_recent_messages(name?, since?, limit?)`：拉取当前或指定 session 的近期持久化 backlog（默认 6h / 50 条）
+
+`host="external"` 保持旧行为，只返回 `command_hint` 或 fallback 信息；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起新会话；`host="vscode-terminal"` 当前返回 not implemented 提示。
+
+## Harness 自交接
+
+- watchdog 订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
+- `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
+- harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读取 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host="wt")` 续起新 harness
+- `lib/lineage.mjs` 用 SQLite `lineage` 表限制递归 handover 深度与频次，防止自拉起雪崩
 
 ---
 

@@ -5,7 +5,13 @@ import WebSocket from 'ws';
 import { createStateMachine } from '../lib/network-state.mjs';
 import { createHarnessStateMachine } from '../lib/harness-state.mjs';
 import { probeHarnessHeartbeat } from '../lib/harness-heartbeat.mjs';
-import { triggerHarnessSelfHandover } from '../lib/harness-handover.mjs';
+import {
+  DEFAULT_CHECKPOINT_PATH,
+  DEFAULT_HANDOVER_REPO_PATH,
+  DEFAULT_LAST_BREATH_PATH,
+  DEFAULT_STATUS_PATH,
+  triggerHarnessSelfHandover,
+} from '../lib/harness-handover.mjs';
 import { createLineageTracker } from '../lib/lineage.mjs';
 import { isLoopbackAddress, loadInternalToken } from '../lib/internal-auth.mjs';
 import {
@@ -195,6 +201,30 @@ export function createWatchdogIpcClient({
   let stopped = false;
   const pendingPongs = new Set();
 
+  function buildSendHeaders() {
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    if (typeof hubAuthToken === 'string' && hubAuthToken.trim() !== '') {
+      headers.Authorization = `Bearer ${hubAuthToken}`;
+    }
+    return headers;
+  }
+
+  async function postSend(body, errorLabel) {
+    try {
+      const response = await fetchImpl(`${buildHubUrl(ipcPort)}/send`, {
+        method: 'POST',
+        headers: buildSendHeaders(),
+        body: JSON.stringify(body),
+      });
+      return isSuccessfulResponse(response);
+    } catch (error) {
+      stderr(`[network-watchdog] ${errorLabel}: ${toErrorMessage(error)}`);
+      return false;
+    }
+  }
+
   function handleInboundMessage(message) {
     if (!message || typeof message !== 'object') {
       return;
@@ -288,28 +318,20 @@ export function createWatchdogIpcClient({
   }
 
   async function sendPing({ content = 'harness-heartbeat-ping' } = {}) {
-    const headers = {
-      'Content-Type': 'application/json',
-    };
-    if (typeof hubAuthToken === 'string' && hubAuthToken.trim() !== '') {
-      headers.Authorization = `Bearer ${hubAuthToken}`;
-    }
+    return postSend({
+      from: sessionName,
+      to: harnessSessionName,
+      content,
+    }, 'harness ping send failed');
+  }
 
-    try {
-      const response = await fetchImpl(`${buildHubUrl(ipcPort)}/send`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          from: sessionName,
-          to: harnessSessionName,
-          content,
-        }),
-      });
-      return isSuccessfulResponse(response);
-    } catch (error) {
-      stderr(`[network-watchdog] harness ping send failed: ${toErrorMessage(error)}`);
-      return false;
-    }
+  async function sendMessage({ to, topic = null, content } = {}) {
+    return postSend({
+      from: sessionName,
+      to,
+      ...(topic == null ? {} : { topic }),
+      content,
+    }, 'watchdog message send failed');
   }
 
   function waitForPong({ timeoutMs }) {
@@ -352,6 +374,7 @@ export function createWatchdogIpcClient({
       }
     },
     sendPing,
+    sendMessage,
     waitForPong,
   };
 }
@@ -462,6 +485,7 @@ export function createNetworkWatchdog({
     && typeof ipcSpawn === 'function'
     && handoverConfig
     && typeof handoverConfig === 'object';
+  let resolvedHandoverIpcSend = handoverConfig?.ipcSend ?? null;
 
   function trackPending(promise) {
     pendingTransitions.add(promise);
@@ -550,6 +574,7 @@ export function createNetworkWatchdog({
         const promise = Promise.resolve()
           .then(() => triggerHarnessSelfHandoverImpl({
             ...handoverConfig,
+            ipcSend: resolvedHandoverIpcSend,
             lineage,
             ipcSpawn,
             reason: mapHarnessTransitionToHandoverReason(transition.reason),
@@ -603,6 +628,9 @@ export function createNetworkWatchdog({
       harnessStateMachine.ingestHeartbeat(heartbeat);
     },
   });
+  if (resolvedHandoverIpcSend == null && typeof watchdogIpcClient.sendMessage === 'function') {
+    resolvedHandoverIpcSend = (message) => watchdogIpcClient.sendMessage(message);
+  }
 
   function buildCompositeState() {
     const snapshot = networkStateMachine.getState();
@@ -838,6 +866,7 @@ export async function startWatchdog(options = {}) {
   const lineage = options.lineage ?? createLineageTracker({
     dbPath: process.env.IPC_DB_PATH || join(PROJECT_ROOT, 'data', 'messages.db'),
   });
+  const baseHandoverConfig = options.handoverConfig ?? {};
 
   const watchdog = createNetworkWatchdog({
     ...options,
@@ -848,7 +877,13 @@ export async function startWatchdog(options = {}) {
     ipcSpawn,
     lineage,
     triggerHarnessSelfHandoverImpl: options.triggerHarnessSelfHandoverImpl ?? triggerHarnessSelfHandover,
-    handoverConfig: options.handoverConfig ?? {},
+    handoverConfig: {
+      checkpointPath: baseHandoverConfig.checkpointPath ?? DEFAULT_CHECKPOINT_PATH,
+      lastBreathPath: baseHandoverConfig.lastBreathPath ?? DEFAULT_LAST_BREATH_PATH,
+      statusPath: baseHandoverConfig.statusPath ?? DEFAULT_STATUS_PATH,
+      handoverRepoPath: baseHandoverConfig.handoverRepoPath ?? DEFAULT_HANDOVER_REPO_PATH,
+      ...baseHandoverConfig,
+    },
   });
 
   await watchdog.start();

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  createWatchdogIpcClient,
   createNetworkWatchdog,
   WATCHDOG_RETRY_DELAYS_MS,
 } from '../bin/network-watchdog.mjs';
@@ -164,6 +165,34 @@ test('createNetworkWatchdog: HTTP 首发加 3 次重试失败后记 stderr，后
     logs.some((line) => line.includes('failed to POST /internal/network-event after 4 attempt(s)')),
     '应记录重试耗尽后的 stderr',
   );
+});
+
+test('createWatchdogIpcClient: sendMessage 走 POST /send 并带上 from/topic', async () => {
+  const capture = createFetchCapture();
+  const client = createWatchdogIpcClient({
+    ipcPort: TEST_IPC_PORT,
+    sessionName: 'network-watchdog',
+    hubAuthToken: 'watchdog-token',
+    fetchImpl: capture.fetchImpl,
+  });
+
+  const accepted = await client.sendMessage({
+    to: 'tech-worker',
+    topic: 'run-check-sh',
+    content: 'trigger check.sh',
+  });
+
+  assert.equal(accepted, true);
+  assert.equal(capture.requests.length, 1);
+  assert.equal(capture.requests[0].method, 'POST');
+  assert.equal(capture.requests[0].url, `http://127.0.0.1:${TEST_IPC_PORT}/send`);
+  assert.equal(capture.requests[0].headers.authorization, 'Bearer watchdog-token');
+  assert.deepEqual(capture.requests[0].body, {
+    from: 'network-watchdog',
+    to: 'tech-worker',
+    topic: 'run-check-sh',
+    content: 'trigger check.sh',
+  });
 });
 
 function createFetchCapture() {

@@ -153,8 +153,65 @@ function buildClaudeLaunchArgs({ model } = {}) {
   return `--dangerously-skip-permissions --dangerously-load-development-channels server:ipc${model ? ` --model ${model}` : ''}`;
 }
 
+function escapeForCmdQuotedArgument(value) {
+  return String(value).replace(/"/g, '""');
+}
+
+function quoteForCmd(value) {
+  return `"${escapeForCmdQuotedArgument(value)}"`;
+}
+
 function buildWtLaunchCommand({ sessionName, model }) {
-  return `set IPC_NAME=${sessionName} && "${getClaudeBinPath()}" ${buildClaudeLaunchArgs({ model })}`;
+  return `set IPC_NAME=${sessionName} && ${quoteForCmd(getClaudeBinPath())} ${buildClaudeLaunchArgs({ model })}`;
+}
+
+function buildWtStartCommand({ sessionName, model, cwd }) {
+  return `start "" wt.exe new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} cmd /c ${quoteForCmd(buildWtLaunchCommand({ sessionName, model }))}`;
+}
+
+function countWindowsTerminalProcesses() {
+  if (process.platform !== 'win32') {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolveCount) => {
+    let stdout = '';
+    const child = spawn('tasklist', ['/FI', 'IMAGENAME eq WindowsTerminal.exe', '/NH', '/FO', 'CSV'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.once('error', () => {
+      resolveCount(null);
+    });
+    child.once('close', () => {
+      const count = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => /^"WindowsTerminal\.exe"/i.test(line))
+        .length;
+      resolveCount(count);
+    });
+  });
+}
+
+function scheduleWtSilentFailureProbe({ baselineCount }) {
+  if (baselineCount !== 0) {
+    return;
+  }
+
+  const timer = setTimeout(async () => {
+    const afterCount = await countWindowsTerminalProcesses();
+    if (afterCount === 0) {
+      process.stderr.write('[ipc] wt spawn silent-failure: no WindowsTerminal.exe process detected after start\n');
+    }
+  }, 500);
+  if (typeof timer?.unref === 'function') {
+    timer.unref();
+  }
 }
 
 function maskEnvValue(key, value) {
@@ -322,24 +379,30 @@ export async function spawnSession({
       };
     }
 
-    const command = buildWtLaunchCommand({ sessionName, model });
-    const wtArgs = ['new-tab', '--title', sessionName, '--starting-directory', spawnCwd, 'cmd', '/c', command];
+    const startCommand = buildWtStartCommand({ sessionName, model, cwd: spawnCwd });
+    const commandHint = `cmd /c ${startCommand}`;
     if (dryRun) {
       return {
         spawned: false,
         host: 'wt',
         dryRun: true,
-        command_hint: command,
+        command_hint: commandHint,
         cwd: normalizeDisplayPath(spawnCwd),
       };
     }
 
-    const child = spawn('wt', wtArgs, {
+    const baselineTerminalCount = await countWindowsTerminalProcesses();
+    const child = spawn('cmd', ['/c', startCommand], {
       detached: true,
       stdio: 'ignore',
       env: ipcEnv,
+      shell: false,
+    });
+    child.once('error', (error) => {
+      process.stderr.write(`[ipc] wt spawn launch failed: ${error?.message ?? error}\n`);
     });
     child.unref();
+    scheduleWtSilentFailureProbe({ baselineCount: baselineTerminalCount });
     process.stderr.write(`[ipc] spawned wt session "${sessionName}"\n`);
     return { name: sessionName, host: 'wt', spawned: true, status: 'spawned', pid: child.pid };
   }

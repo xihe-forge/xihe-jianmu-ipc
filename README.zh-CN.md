@@ -185,6 +185,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `ipc_reconnect(host?, port?)`：切换 Hub 地址并重连
 - `ipc_task(action, ...)`：结构化任务 create / update / list
 - `ipc_recent_messages(name?, since?, limit?)`：拉取当前或指定 session 的近期持久化 backlog（默认 6h / 50 条）
+- `ipc_recall(project, since?, limit?, ipc_name?, tool_name?, tags?, keyword?)`：查询 `~/.claude/project-state/<project>/observations.db` 的近期 observation，支持 `project="*"` 跨项目合并检索；`tool_input` / `tool_output` 预览会截断到 500 chars
 
 `host="external"` 保持旧行为，只返回 `command_hint` 或 fallback 信息；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起新会话；`host="vscode-terminal"` 当前返回 not implemented 提示。
 
@@ -207,16 +208,16 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 
 ### 项目矩阵
 
-| 项目 | 简介 |
-|---|---|
-| `xihe-jizhu-scaffold` | AI 项目脚手架 |
-| `xihe-jianmu-ipc` | 多 AI 通信 Hub（本项目） |
-| `xihe-core` | 核心库 |
-| `lumidrive-site` | 光影随行官网 |
-| `xihe-rinian-seo` | SEO 工具 |
-| `heartreadAI` | AI 心理健康产品 |
-| `xihe-jinwu-epet` | 桌面宠物 |
-| `xihe-taiwei-bridge` | 多 Agent 协作平台 |
+| 项目                  | 简介                     |
+| --------------------- | ------------------------ |
+| `xihe-jizhu-scaffold` | AI 项目脚手架            |
+| `xihe-jianmu-ipc`     | 多 AI 通信 Hub（本项目） |
+| `xihe-core`           | 核心库                   |
+| `lumidrive-site`      | 光影随行官网             |
+| `xihe-rinian-seo`     | SEO 工具                 |
+| `heartreadAI`         | AI 心理健康产品          |
+| `xihe-jinwu-epet`     | 桌面宠物                 |
+| `xihe-taiwei-bridge`  | 多 Agent 协作平台        |
 
 ### 网站链接
 

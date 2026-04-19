@@ -1,9 +1,9 @@
 ---
 name: xihe-jianmu-ipc
-description: "建木 IPC — Real-time cross-AI communication hub. Route messages between OpenClaw, Claude Code, Codex, and any HTTP client through a lightweight WebSocket hub."
+description: '建木 IPC — Real-time cross-AI communication hub. Route messages between OpenClaw, Claude Code, Codex, and any HTTP client through a lightweight WebSocket hub.'
 metadata:
   openclaw:
-    emoji: "🌳"
+    emoji: '🌳'
     homepage: https://github.com/xihe-forge/xihe-jianmu-ipc
     os:
       - darwin
@@ -45,6 +45,7 @@ Before using IPC tools, ensure the MCP server is configured in `openclaw.json`:
 ## Available Tools
 
 ### `ipc_send`
+
 Send a message to another AI session by name, or broadcast to all with `*`.
 
 ```
@@ -53,6 +54,7 @@ ipc_send(to="*", content="shutting down for maintenance", topic="system")
 ```
 
 ### `ipc_sessions`
+
 List all currently connected sessions across all AI tools.
 
 ```
@@ -60,6 +62,7 @@ ipc_sessions()
 ```
 
 ### `ipc_whoami`
+
 Show your session name and hub connection status.
 
 ```
@@ -67,6 +70,7 @@ ipc_whoami()
 ```
 
 ### `ipc_subscribe`
+
 Subscribe to topic channels for filtered message delivery.
 
 ```
@@ -74,6 +78,7 @@ ipc_subscribe(topic="alerts", action="subscribe")
 ```
 
 ### `ipc_spawn`
+
 Start a new Claude Code session with a task.
 
 ```
@@ -82,6 +87,7 @@ ipc_spawn(name="harness", task="resume from handover", host="wt", cwd="D:/worksp
 ```
 
 ### `ipc_rename`
+
 Rename the current session.
 
 ```
@@ -89,6 +95,7 @@ ipc_rename(name="my-new-name")
 ```
 
 ### `ipc_task`
+
 Manage structured tasks (create/update/list).
 
 ```
@@ -96,6 +103,7 @@ ipc_task(action="create", to="worker-1", title="fix lint errors")
 ```
 
 ### `ipc_reconnect`
+
 Reconnect to a different hub address.
 
 ```
@@ -103,11 +111,21 @@ ipc_reconnect(host="192.168.1.100", port=3179)
 ```
 
 ### `ipc_recent_messages`
+
 Fetch recent persisted messages addressed to the current session (or a specified session), including broadcast backlog after a crash or reconnect.
 
 ```
 ipc_recent_messages()
 ipc_recent_messages(name="worker-1", since=3600000, limit=20)
+```
+
+### `ipc_recall`
+
+Query recent project observations from `~/.claude/project-state/<project>/observations.db`, with optional filters for session, tool, tags, and keyword.
+
+```
+ipc_recall(project="xihe-jianmu-ipc")
+ipc_recall(project="*", since=3600000, limit=5, tags=["ship"], keyword="unpublish")
 ```
 
 ## Rules

@@ -46,11 +46,17 @@ function createHarness(options = {}) {
   const impl = options.impl ?? {};
   const ctx = {
     getSessionName: () => state.sessionName,
-    setSessionName: (name) => { state.sessionName = name; },
+    setSessionName: (name) => {
+      state.sessionName = name;
+    },
     getHubHost: () => state.hubHost,
-    setHubHost: (host) => { state.hubHost = host; },
+    setHubHost: (host) => {
+      state.hubHost = host;
+    },
     getHubPort: () => state.hubPort,
-    setHubPort: (port) => { state.hubPort = port; },
+    setHubPort: (port) => {
+      state.hubPort = port;
+    },
     getWs: () => state.ws,
     disconnectWs: () => {
       calls.disconnectWs += 1;
@@ -84,7 +90,11 @@ function createHarness(options = {}) {
     spawnSession: async (params) => {
       calls.spawnSession.push(params);
       if (impl.spawnSession) return impl.spawnSession(params, { state, calls });
-      return { name: params.name, mode: params.interactive ? 'interactive' : 'background', status: 'spawned' };
+      return {
+        name: params.name,
+        mode: params.interactive ? 'interactive' : 'background',
+        status: 'spawned',
+      };
     },
     stderrLog: (message) => {
       calls.stderr.push(message);
@@ -116,14 +126,25 @@ async function importMcpServerModule() {
   return import(`${moduleUrl.href}?test=${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
-test('listTools: 暴露 9 个 MCP 工具', () => {
+test('listTools: 暴露 10 个 MCP 工具', () => {
   const { tools } = createHarness();
   const result = tools.listTools();
 
-  assert.equal(result.tools.length, 9);
+  assert.equal(result.tools.length, 10);
   assert.deepEqual(
     result.tools.map((tool) => tool.name),
-    ['ipc_send', 'ipc_sessions', 'ipc_whoami', 'ipc_subscribe', 'ipc_spawn', 'ipc_rename', 'ipc_reconnect', 'ipc_task', 'ipc_recent_messages'],
+    [
+      'ipc_send',
+      'ipc_sessions',
+      'ipc_whoami',
+      'ipc_subscribe',
+      'ipc_spawn',
+      'ipc_rename',
+      'ipc_reconnect',
+      'ipc_task',
+      'ipc_recent_messages',
+      'ipc_recall',
+    ],
   );
 });
 
@@ -144,7 +165,11 @@ test('ipc_send: 缺少参数时返回错误', async () => {
 
 test('ipc_send: WebSocket 已连接时发送标准消息', async () => {
   const { tools, state, calls } = createHarness();
-  const result = await tools.handleToolCall('ipc_send', { to: 'beta', content: 'hello', topic: 'build' });
+  const result = await tools.handleToolCall('ipc_send', {
+    to: 'beta',
+    content: 'hello',
+    topic: 'build',
+  });
   const payload = state.ws._sent[0];
 
   assert.equal(result.isError, undefined);
@@ -170,7 +195,11 @@ test('ipc_send: WebSocket 未连接时回退 HTTP /send', async () => {
   const { tools, calls } = createHarness({
     state: { ws: createMockWs(3) },
   });
-  const result = await tools.handleToolCall('ipc_send', { to: 'beta', content: 'fallback', topic: 'ops' });
+  const result = await tools.handleToolCall('ipc_send', {
+    to: 'beta',
+    content: 'fallback',
+    topic: 'ops',
+  });
 
   assert.equal(calls.httpPost.length, 1);
   assert.deepEqual(calls.httpPost[0], {
@@ -286,7 +315,10 @@ test('ipc_subscribe: WebSocket 未连接时返回错误', async () => {
   const { tools } = createHarness({
     state: { ws: null },
   });
-  const result = await tools.handleToolCall('ipc_subscribe', { topic: 'build', action: 'subscribe' });
+  const result = await tools.handleToolCall('ipc_subscribe', {
+    topic: 'build',
+    action: 'subscribe',
+  });
 
   assert.equal(result.isError, true);
   assert.deepEqual(getJson(result), { ok: false, error: 'hub not connected' });
@@ -294,7 +326,10 @@ test('ipc_subscribe: WebSocket 未连接时返回错误', async () => {
 
 test('ipc_subscribe: 通过 wsSend 发送 subscribe 指令', async () => {
   const { tools, calls } = createHarness();
-  const result = await tools.handleToolCall('ipc_subscribe', { topic: 'build', action: 'subscribe' });
+  const result = await tools.handleToolCall('ipc_subscribe', {
+    topic: 'build',
+    action: 'subscribe',
+  });
 
   assert.deepEqual(calls.wsSend, [{ type: 'subscribe', topic: 'build' }]);
   assert.deepEqual(getJson(result), { action: 'subscribe', topic: 'build', ok: true });
@@ -313,7 +348,10 @@ test('ipc_spawn: 非法 session 名被拒绝', async () => {
   const result = await tools.handleToolCall('ipc_spawn', { name: 'bad name', task: 'run' });
 
   assert.equal(result.isError, true);
-  assert.equal(getText(result), 'Invalid session name "bad name": only letters, numbers, underscore and hyphen allowed');
+  assert.equal(
+    getText(result),
+    'Invalid session name "bad name": only letters, numbers, underscore and hyphen allowed',
+  );
 });
 
 test('ipc_spawn: 已存在的 session 名会报错', async () => {
@@ -329,7 +367,10 @@ test('ipc_spawn: 已存在的 session 名会报错', async () => {
 
   assert.equal(result.isError, true);
   assert.equal(calls.spawnSession.length, 0);
-  assert.equal(getText(result), 'Session "worker-b" is already online. Use a different name or wait for it to disconnect.');
+  assert.equal(
+    getText(result),
+    'Session "worker-b" is already online. Use a different name or wait for it to disconnect.',
+  );
 });
 
 test('ipc_spawn: 未传 cwd 时调用 spawnSession 并透传 interactive/model', async () => {
@@ -345,13 +386,15 @@ test('ipc_spawn: 未传 cwd 时调用 spawnSession 并透传 interactive/model',
     model: 'claude-sonnet-4-6',
   });
 
-  assert.deepEqual(calls.spawnSession, [{
-    name: 'worker-b',
-    task: 'solve bug',
-    interactive: true,
-    model: 'claude-sonnet-4-6',
-    cwd: undefined,
-  }]);
+  assert.deepEqual(calls.spawnSession, [
+    {
+      name: 'worker-b',
+      task: 'solve bug',
+      interactive: true,
+      model: 'claude-sonnet-4-6',
+      cwd: undefined,
+    },
+  ]);
   assert.equal(calls.spawnSession[0].cwd, undefined);
   assert.deepEqual(getJson(result), {
     name: 'worker-b',
@@ -390,14 +433,16 @@ test('ipc_spawn: 显式 host=wt 时透传给 spawnSession', async () => {
     host: 'wt',
   });
 
-  assert.deepEqual(calls.spawnSession, [{
-    name: 'worker-b',
-    task: 'resume handover',
-    interactive: false,
-    model: undefined,
-    host: 'wt',
-    cwd: undefined,
-  }]);
+  assert.deepEqual(calls.spawnSession, [
+    {
+      name: 'worker-b',
+      task: 'resume handover',
+      interactive: false,
+      model: undefined,
+      host: 'wt',
+      cwd: undefined,
+    },
+  ]);
 });
 
 test('ipc_spawn: host=external dryRun 返回修正后的 spawn-fallback IPC content', async () => {
@@ -406,15 +451,23 @@ test('ipc_spawn: host=external dryRun 返回修正后的 spawn-fallback IPC cont
   const configPath = join(sandbox, '.mcp.json');
 
   try {
-    writeFileSync(configPath, JSON.stringify({
-      mcpServers: {
-        ipc: {
-          env: {
-            IPC_AUTH_TOKEN: '0123456789abcdef-token',
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          mcpServers: {
+            ipc: {
+              env: {
+                IPC_AUTH_TOKEN: '0123456789abcdef-token',
+              },
+            },
           },
         },
-      },
-    }, null, 2), 'utf8');
+        null,
+        2,
+      ),
+      'utf8',
+    );
     process.chdir(sandbox);
 
     const { spawnSession } = await importMcpServerModule();
@@ -434,11 +487,20 @@ test('ipc_spawn: host=external dryRun 返回修正后的 spawn-fallback IPC cont
 
     assert.equal(payload.host, 'external');
     assert.equal(payload.dryRun, true);
-    assert.match(payload.ipc_content, /cmdline: "C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc/);
+    assert.match(
+      payload.ipc_content,
+      /cmdline: "C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc/,
+    );
     assert.doesNotMatch(payload.ipc_content, /--session-name/);
     assert.doesNotMatch(payload.ipc_content, /--resume/);
-    assert.match(payload.ipc_content, new RegExp(`cwd: ${escapeRegex(sandbox.replace(/\\/g, '/'))}`));
-    assert.match(payload.ipc_content, /env: IPC_NAME=worker-b IPC_AUTH_TOKEN=0123456789\.\.\. \(完整 token 从 cwd \.mcp\.json 读\)/);
+    assert.match(
+      payload.ipc_content,
+      new RegExp(`cwd: ${escapeRegex(sandbox.replace(/\\/g, '/'))}`),
+    );
+    assert.match(
+      payload.ipc_content,
+      /env: IPC_NAME=worker-b IPC_AUTH_TOKEN=0123456789\.\.\. \(完整 token 从 cwd \.mcp\.json 读\)/,
+    );
     assert.match(payload.ipc_content, /task_hint: resume handover/);
     assert.match(payload.ipc_content, /post_spawn_action: 新 session 冷启清单 step 3 ipc_whoami/);
   } finally {
@@ -447,38 +509,51 @@ test('ipc_spawn: host=external dryRun 返回修正后的 spawn-fallback IPC cont
   }
 });
 
-test('ipc_spawn: host=wt dryRun 返回 cmd /c start 包装后的 command_hint', { skip: process.platform !== 'win32' }, async () => {
-  const sandbox = mkdtempSync(join(os.tmpdir(), 'ipc-spawn-wt-'));
+test(
+  'ipc_spawn: host=wt dryRun 返回 cmd /c start 包装后的 command_hint',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    const sandbox = mkdtempSync(join(os.tmpdir(), 'ipc-spawn-wt-'));
 
-  try {
-    const { spawnSession } = await importMcpServerModule();
-    const { tools } = createHarness({
-      impl: {
-        httpGet: async () => [],
-        spawnSession: async (params) => spawnSession({ ...params, dryRun: true }),
-      },
-    });
+    try {
+      const { spawnSession } = await importMcpServerModule();
+      const { tools } = createHarness({
+        impl: {
+          httpGet: async () => [],
+          spawnSession: async (params) => spawnSession({ ...params, dryRun: true }),
+        },
+      });
 
-    const result = await tools.handleToolCall('ipc_spawn', {
-      name: 'worker-b',
-      task: 'resume handover',
-      host: 'wt',
-      cwd: sandbox,
-      model: 'opus',
-    });
-    const payload = getJson(result);
-    const normalizedSandbox = sandbox.replace(/\\/g, '/');
+      const result = await tools.handleToolCall('ipc_spawn', {
+        name: 'worker-b',
+        task: 'resume handover',
+        host: 'wt',
+        cwd: sandbox,
+        model: 'opus',
+      });
+      const payload = getJson(result);
+      const normalizedSandbox = sandbox.replace(/\\/g, '/');
 
-    assert.equal(payload.host, 'wt');
-    assert.equal(payload.dryRun, true);
-    assert.equal(payload.cwd, normalizedSandbox);
-    assert.match(payload.command_hint, /^cmd \/c start "" wt\.exe new-tab --title "worker-b" --starting-directory "/);
-    assert.match(payload.command_hint, new RegExp(`--starting-directory "${escapeRegex(sandbox)}"`));
-    assert.match(payload.command_hint, /cmd \/c "set IPC_NAME=worker-b && ""C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe"" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus"$/);
-  } finally {
-    rmSync(sandbox, { recursive: true, force: true });
-  }
-});
+      assert.equal(payload.host, 'wt');
+      assert.equal(payload.dryRun, true);
+      assert.equal(payload.cwd, normalizedSandbox);
+      assert.match(
+        payload.command_hint,
+        /^cmd \/c start "" wt\.exe new-tab --title "worker-b" --starting-directory "/,
+      );
+      assert.match(
+        payload.command_hint,
+        new RegExp(`--starting-directory "${escapeRegex(sandbox)}"`),
+      );
+      assert.match(
+        payload.command_hint,
+        /cmd \/c "set IPC_NAME=worker-b && ""C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe"" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus"$/,
+      );
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  },
+);
 
 test('ipc_spawn: host=vscode-terminal 也会透传给 spawnSession', async () => {
   const { tools, calls } = createHarness({
@@ -506,7 +581,10 @@ test('ipc_spawn: 非法 host 会被拒绝', async () => {
 
   assert.equal(result.isError, true);
   assert.equal(calls.spawnSession.length, 0);
-  assert.equal(getText(result), 'Invalid host "tmux": must be one of wt, vscode-terminal, external');
+  assert.equal(
+    getText(result),
+    'Invalid host "tmux": must be one of wt, vscode-terminal, external',
+  );
 });
 
 test('ipc_rename: 更新 session 名并触发断开重连', async () => {
@@ -569,16 +647,18 @@ test('ipc_task create: 调用 /task 并使用默认 priority', async () => {
     title: '修复队列',
   });
 
-  assert.deepEqual(calls.httpPost, [{
-    url: 'http://127.0.0.1:8765/task',
-    body: {
-      from: 'alpha',
-      to: 'worker-b',
-      title: '修复队列',
-      description: '',
-      priority: 3,
+  assert.deepEqual(calls.httpPost, [
+    {
+      url: 'http://127.0.0.1:8765/task',
+      body: {
+        from: 'alpha',
+        to: 'worker-b',
+        title: '修复队列',
+        description: '',
+        priority: 3,
+      },
     },
-  }]);
+  ]);
   assert.deepEqual(getJson(result), { taskId: 'task-1', ok: true });
 });
 
@@ -602,10 +682,12 @@ test('ipc_task update: 调用 PATCH /tasks/{id}', async () => {
     status: 'completed',
   });
 
-  assert.deepEqual(calls.httpPatch, [{
-    url: 'http://127.0.0.1:8765/tasks/task%201',
-    body: { status: 'completed' },
-  }]);
+  assert.deepEqual(calls.httpPatch, [
+    {
+      url: 'http://127.0.0.1:8765/tasks/task%201',
+      body: { status: 'completed' },
+    },
+  ]);
   assert.deepEqual(getJson(result), { ok: true, status: 'completed' });
 });
 
@@ -622,7 +704,9 @@ test('ipc_task list: 构造查询参数并透传结果', async () => {
     limit: 10,
   });
 
-  assert.deepEqual(calls.httpGet, ['http://127.0.0.1:8765/tasks?agent=worker-b&status=started&limit=10']);
+  assert.deepEqual(calls.httpGet, [
+    'http://127.0.0.1:8765/tasks?agent=worker-b&status=started&limit=10',
+  ]);
   assert.deepEqual(getJson(result), { tasks: [{ id: 'task-1' }] });
 });
 
@@ -647,7 +731,9 @@ test('ipc_recent_messages: 使用当前 session 和默认参数请求 recent bac
   });
   const result = await tools.handleToolCall('ipc_recent_messages', {});
 
-  assert.deepEqual(calls.httpGet, ['http://127.0.0.1:8765/recent-messages?name=alpha&since=21600000&limit=50']);
+  assert.deepEqual(calls.httpGet, [
+    'http://127.0.0.1:8765/recent-messages?name=alpha&since=21600000&limit=50',
+  ]);
   assert.deepEqual(getJson(result), {
     messages: [{ id: 'msg-1' }, { id: 'msg-2' }],
     count: 2,
@@ -673,7 +759,9 @@ test('ipc_recent_messages: 透传 name/since/limit 到 HTTP 端点', async () =>
     limit: 20,
   });
 
-  assert.deepEqual(calls.httpGet, ['http://127.0.0.1:8765/recent-messages?name=worker-b&since=5000&limit=20']);
+  assert.deepEqual(calls.httpGet, [
+    'http://127.0.0.1:8765/recent-messages?name=worker-b&since=5000&limit=20',
+  ]);
   assert.deepEqual(getJson(result), {
     messages: [{ id: 'msg-3' }],
     count: 1,

@@ -10,6 +10,7 @@ mcp-server.mjs       — MCP server (Claude Code / OpenClaw 通过stdio加载)
 lib/constants.mjs    — 端口、超时常量
 lib/protocol.mjs     — 消息格式、校验
 lib/db.mjs           — SQLite消息持久化（better-sqlite3）
+lib/observation-query.mjs — ADR-005 observation 检索层（project-state/*.db + FTS5）
 lib/feishu-worker-thread.mjs — 飞书WSClient worker_thread（每app独立线程，避免Lark SDK全局状态冲突）
 lib/command-parser.mjs — 飞书命令解析器（7种指令：状态/帮助/派发/广播/重启/历史/日报）
 lib/agent-status.mjs — Agent在线状态追踪（15秒轮询Hub，上下线变更通知）
@@ -44,6 +45,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_task(action, ...)` — 结构化任务管理（create/update/list）
 - `ipc_reconnect(host?, port?)` — 重连到新的Hub地址
 - `ipc_recent_messages(name?, since?, limit?)` — 拉取当前session近期持久化 backlog（默认6h/50条）
+- `ipc_recall(project, since?, limit?, ipc_name?, tool_name?, tags?, keyword?)` — 查询 `~/.claude/project-state/<project>/observations.db` 里的近期 observation；支持 `project="*"` 跨项目合并检索，文本字段预览截断为 500 chars
 
 ## HTTP API
 

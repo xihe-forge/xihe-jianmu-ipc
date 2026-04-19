@@ -339,6 +339,57 @@ test('ipc_spawn: 调用 spawnSession 并透传 interactive/model', async () => {
   });
 });
 
+test('ipc_spawn: 显式 host=wt 时透传给 spawnSession', async () => {
+  const { tools, calls } = createHarness({
+    impl: {
+      httpGet: async () => [],
+    },
+  });
+
+  await tools.handleToolCall('ipc_spawn', {
+    name: 'worker-b',
+    task: 'resume handover',
+    host: 'wt',
+  });
+
+  assert.deepEqual(calls.spawnSession, [{
+    name: 'worker-b',
+    task: 'resume handover',
+    interactive: false,
+    model: undefined,
+    host: 'wt',
+  }]);
+});
+
+test('ipc_spawn: host=vscode-terminal 也会透传给 spawnSession', async () => {
+  const { tools, calls } = createHarness({
+    impl: {
+      httpGet: async () => [],
+    },
+  });
+
+  await tools.handleToolCall('ipc_spawn', {
+    name: 'worker-b',
+    task: 'open terminal',
+    host: 'vscode-terminal',
+  });
+
+  assert.equal(calls.spawnSession[0].host, 'vscode-terminal');
+});
+
+test('ipc_spawn: 非法 host 会被拒绝', async () => {
+  const { tools, calls } = createHarness();
+  const result = await tools.handleToolCall('ipc_spawn', {
+    name: 'worker-b',
+    task: 'run',
+    host: 'tmux',
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(calls.spawnSession.length, 0);
+  assert.equal(getText(result), 'Invalid host "tmux": must be one of wt, vscode-terminal, external');
+});
+
 test('ipc_rename: 更新 session 名并触发断开重连', async () => {
   const { tools, state, calls } = createHarness();
   const result = await tools.handleToolCall('ipc_rename', { name: 'worker-renamed' });

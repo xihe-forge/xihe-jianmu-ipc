@@ -136,7 +136,82 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
 // ---------------------------------------------------------------------------
 // spawnSession — launch a new Claude Code session (background or interactive)
 // ---------------------------------------------------------------------------
-async function spawnSession({ name: sessionName, task, interactive, model }) {
+function buildInteractiveCommand({ sessionName, model }) {
+  const patchScript = join(PROJECT_DIR, 'bin', 'patch-channels.mjs').replace(/\\/g, '\\\\');
+  const extraArgs = model ? ` --model ${model}` : '';
+  return `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
+}
+
+function maskEnvValue(key, value) {
+  if (/(KEY|TOKEN|SECRET|PASSWORD)/i.test(String(key))) {
+    return '***';
+  }
+  return String(value);
+}
+
+function buildMaskedEnv(env = {}) {
+  const entries = Object.entries(env);
+  if (entries.length === 0) {
+    return '(none)';
+  }
+  return entries
+    .map(([key, value]) => `${key}=${maskEnvValue(key, value)}`)
+    .join('; ');
+}
+
+function buildSpawnFallbackContent({
+  sessionName,
+  task,
+  reason = 'manual',
+  cwd = 'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness',
+  resumeSessionId = null,
+  taskHint = null,
+  env = {},
+}) {
+  const iso = new Date().toISOString();
+  const claudeCli = process.env.CLAUDE_CLI_PATH
+    || 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js';
+  const resumePart = resumeSessionId ? ` --resume ${resumeSessionId}` : '';
+  return (
+    `【jianmu-pm ${iso} · spawn-fallback】\n`
+    + `cmdline: "${claudeCli}" --session-name ${sessionName}${resumePart}\n`
+    + `cwd: ${cwd}\n`
+    + `task_hint: ${taskHint || task}\n`
+    + `env: ${buildMaskedEnv(env)}\n`
+    + `spawn_reason: ${reason}`
+  );
+}
+
+async function sendSpawnFallbackIpc({
+  sessionName,
+  task,
+  reason,
+  cwd,
+  resumeSessionId,
+  taskHint,
+  env = {},
+}) {
+  const content = buildSpawnFallbackContent({
+    sessionName,
+    task,
+    reason,
+    cwd,
+    resumeSessionId,
+    taskHint,
+    env,
+  });
+
+  await httpPost(`http://${HOST}:${IPC_PORT}/send`, {
+    from: IPC_NAME,
+    to: 'tech-worker',
+    topic: 'spawn-fallback',
+    content,
+  });
+
+  return content;
+}
+
+async function spawnSession({ name: sessionName, task, interactive, model, host, dryRun = false }) {
   // Sanitize session name — allow only alphanumeric, underscore, hyphen
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionName)) {
     throw new Error(`Invalid session name: only letters, numbers, underscore and hyphen allowed`);
@@ -153,13 +228,95 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
   const ipcInstruction = `Your IPC session name is "${sessionName}". You are connected to the IPC hub. When you complete your task, report back using ipc_send(to="${IPC_NAME}", content="your result"). You can also receive messages from other sessions.`;
 
   const fullPrompt = `${ipcInstruction}\n\nTask: ${task}`;
+  const requestedHost = host;
+
+  if (requestedHost === 'wt') {
+    if (process.platform !== 'win32') {
+      const content = buildSpawnFallbackContent({
+        sessionName,
+        task,
+      });
+      if (dryRun) {
+        return {
+          spawned: false,
+          host: 'external',
+          fallbackIpcSent: false,
+          dryRun: true,
+          warning: 'wt is only supported on win32, downgraded to external',
+          ipc_content: content,
+        };
+      }
+      await sendSpawnFallbackIpc({
+        sessionName,
+        task,
+      });
+      return {
+        spawned: false,
+        host: 'external',
+        fallbackIpcSent: true,
+        warning: 'wt is only supported on win32, downgraded to external',
+      };
+    }
+
+    const command = buildInteractiveCommand({ sessionName, model });
+    if (dryRun) {
+      return {
+        spawned: false,
+        host: 'wt',
+        dryRun: true,
+        command_hint: command,
+      };
+    }
+
+    const child = spawn('wt', ['new-tab', '--title', sessionName, 'cmd', '/k', command], {
+      detached: true,
+      stdio: 'ignore',
+      env: ipcEnv,
+    });
+    child.unref();
+    process.stderr.write(`[ipc] spawned wt session "${sessionName}"\n`);
+    return { name: sessionName, host: 'wt', spawned: true, status: 'spawned', pid: child.pid };
+  }
+
+  if (requestedHost === 'vscode-terminal') {
+    return {
+      spawned: false,
+      host: 'vscode-terminal',
+      error: 'not implemented, use external',
+    };
+  }
+
+  if (requestedHost === 'external' && !interactive) {
+    const content = buildSpawnFallbackContent({
+      sessionName,
+      task,
+    });
+    if (dryRun) {
+      return {
+        spawned: false,
+        host: 'external',
+        fallbackIpcSent: false,
+        dryRun: true,
+        ipc_content: content,
+      };
+    }
+
+    await sendSpawnFallbackIpc({
+      sessionName,
+      task,
+    });
+    return {
+      spawned: false,
+      host: 'external',
+      fallbackIpcSent: true,
+      command_hint: content,
+    };
+  }
 
   if (interactive) {
     // Interactive mode: open a new terminal window with Claude Code
     // Patch Claude Code to skip dev channels warning, then launch
-    const patchScript = join(PROJECT_DIR, 'bin', 'patch-channels.mjs').replace(/\\/g, '\\\\');
-    const extraArgs = model ? ` --model ${model}` : '';
-    const psCommand = `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
+    const psCommand = buildInteractiveCommand({ sessionName, model });
 
     if (process.platform === 'win32') {
       // Windows: use cmd /c start to open new PowerShell window
@@ -269,7 +426,7 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
     }
 
     process.stderr.write(`[ipc] spawned interactive session "${sessionName}" in new terminal\n`);
-    return { name: sessionName, mode: 'interactive', status: 'spawned' };
+    return { name: sessionName, mode: 'interactive', host: requestedHost ?? 'legacy', status: 'spawned' };
 
   } else {
     // Background mode: run claude -p (one-shot, non-interactive)
@@ -296,7 +453,13 @@ async function spawnSession({ name: sessionName, task, interactive, model }) {
     });
 
     process.stderr.write(`[ipc] spawned background session "${sessionName}" (pid=${child.pid})\n`);
-    return { name: sessionName, mode: 'background', status: 'spawned', pid: child.pid };
+    return {
+      name: sessionName,
+      mode: 'background',
+      host: requestedHost ?? 'legacy',
+      status: 'spawned',
+      pid: child.pid,
+    };
   }
 }
 

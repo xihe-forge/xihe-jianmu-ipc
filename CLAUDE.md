@@ -47,6 +47,8 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_recent_messages(name?, since?, limit?)` — 拉取当前session近期持久化 backlog（默认6h/50条）
 - `ipc_recall(project, since?, limit?, ipc_name?, tool_name?, tags?, keyword?)` — 查询 `~/.claude/project-state/<project>/observations.db` 里的近期 observation；支持 `project="*"` 跨项目合并检索，文本字段预览截断为 500 chars
 - `ipc_observation_detail(project, id)` — 拉取单条 observation 的完整字段，不截断 `tool_input` / `tool_output`；若 tags 里有 `jsonl:` 元数据则一并返回
+- `ipc_register_session(name, role?, projects?, access_scope?, cold_start_strategy?, note?)` — 通过 Hub 维护 `~/.claude/sessions-registry.json`，不存在则创建，已存在则 merge 更新
+- `ipc_update_session(name, projects)` — 通过 Hub 仅更新 `sessions-registry.json` 里某 session 的 `projects` 列表
 
 ## HTTP API
 
@@ -56,6 +58,8 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `POST /wake-suspended` — 广播结构化 `network-up` 事件并清空 `suspended_sessions`，返回 `{ok, broadcastTo, subscribers, clearedSessions}`；旧 `{reason, from}` body 仅为兼容保留
 - `POST /internal/network-event` — 内部端点（仅 `127.0.0.1` + `X-Internal-Token`），接收 `network-down` / `network-up` 事件并做 5 秒幂等去重
 - `POST /feishu-reply` — `{app, content, from?}` 直接回复飞书，跳过IPC路由，返回 `{ok, app}`
+- `POST /registry/register` — `{name, role?, projects?, access_scope?, cold_start_strategy?, note?, requested_by?}` 创建或更新 `sessions-registry.json` 条目
+- `POST /registry/update` — `{name, projects, requested_by?}` 仅更新 `sessions-registry.json` 中某 session 的 `projects`
 - `GET /health` — Hub状态 + session列表 + messageCount
 - `GET /sessions` — 仅session列表
 - `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
@@ -78,7 +82,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 ## 会话接力
 
 - `release-rebind`（显式）: 旧 session 先 `POST /prepare-rebind`，随后主动断开；新 session 同名连入后继承旧 `topics`，并收到宽限期内缓冲的 `buffered_messages` 与已有 `SQLite inbox`
-- `force/zombie rebind`（隐式）: 旧 session 崩溃或卡死时，新连接通过 `?force=1` 或僵尸检测接管；该路径只回放 `inbox + recent-messages`，**不恢复 topics**
+- `force/zombie rebind`（隐式）: 旧 session 崩溃或卡死时，新连接通过 `?force=1` 或僵尸检测接管；该路径只回放 `inbox`，**不恢复 topics**；历史需主动调 `ipc_recent_messages` 或 `GET /recent-messages`
 
 ## 飞书AI控制台
 

@@ -464,6 +464,24 @@ Fetch a single observation row by `project + id` without truncating `tool_input`
 ipc_observation_detail(project="xihe-jianmu-ipc", id=123)
 ```
 
+### `ipc_register_session`
+
+通过 Hub maintainer 创建或更新 `~/.claude/sessions-registry.json` 里的 session entry；已存在 name 时按 merge 语义覆盖传入字段，并刷新 `_last_updated` / `_last_updated_by`。
+Create or update a session entry in `~/.claude/sessions-registry.json` through the Hub maintainer. Existing names are merged, with supplied fields overriding prior values while `_last_updated` / `_last_updated_by` are refreshed.
+
+```
+ipc_register_session(name="yuheng_builder", role="brand-director", projects=["xihe-yuheng-brandbook"])
+```
+
+### `ipc_update_session`
+
+通过 Hub maintainer 仅更新某个已登记 session 的 `projects` 列表，其他字段保持不变。
+Update only the `projects` list for an existing registered session through the Hub maintainer, leaving other fields untouched.
+
+```
+ipc_update_session(name="tech-worker", projects=["xihe-jianmu-ipc", "_portfolio"])
+```
+
 ---
 
 ## HTTP API
@@ -622,6 +640,36 @@ This history is pull-only: reconnecting sessions do not receive it automatically
   "since": 21600000,
   "limit": 50,
   "messages": []
+}
+```
+
+### Session Registry
+
+#### `POST /registry/register`
+
+创建或更新 `~/.claude/sessions-registry.json` 中的 session 条目。现有 name 走 merge 语义，新传入字段覆盖旧值，同时刷新 `_last_updated` / `_last_updated_by`。
+Create or update a session entry in `~/.claude/sessions-registry.json`. Existing names are merged, with supplied fields overriding prior values while `_last_updated` / `_last_updated_by` are refreshed.
+
+```json
+{
+  "name": "yuheng_builder",
+  "role": "brand-director",
+  "projects": ["xihe-yuheng-brandbook"],
+  "access_scope": "primary",
+  "requested_by": "jianmu-pm"
+}
+```
+
+#### `POST /registry/update`
+
+仅更新已登记 session 的 `projects` 列表；若 name 不存在则返回 `404`。
+Update only the `projects` list for an existing registered session. Returns `404` if the name does not exist.
+
+```json
+{
+  "name": "tech-worker",
+  "projects": ["xihe-jianmu-ipc", "_portfolio"],
+  "requested_by": "jianmu-pm"
 }
 ```
 

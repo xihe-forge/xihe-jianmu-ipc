@@ -136,6 +136,22 @@ Fetch a single observation row by `project + id` without truncating `tool_input`
 ipc_observation_detail(project="xihe-jianmu-ipc", id=123)
 ```
 
+### `ipc_register_session`
+
+Create or update a session entry in `~/.claude/sessions-registry.json` through the Hub maintainer.
+
+```
+ipc_register_session(name="yuheng_builder", role="brand-director", projects=["xihe-yuheng-brandbook"])
+```
+
+### `ipc_update_session`
+
+Update only the `projects` list for an existing session entry in `~/.claude/sessions-registry.json`.
+
+```
+ipc_update_session(name="tech-worker", projects=["xihe-jianmu-ipc", "_portfolio"])
+```
+
 ## Rules
 
 1. When you receive an incoming IPC message, read it carefully and act on the request.

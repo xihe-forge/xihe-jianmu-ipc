@@ -9,8 +9,9 @@
 for (const stream of [process.stdout, process.stderr]) {
   const origWrite = stream.write.bind(stream);
   stream.write = function (...args) {
-    try { return origWrite(...args); }
-    catch (err) {
+    try {
+      return origWrite(...args);
+    } catch (err) {
       if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return true;
       throw err;
     }
@@ -19,7 +20,9 @@ for (const stream of [process.stdout, process.stderr]) {
 }
 process.on('uncaughtException', (err) => {
   if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return;
-  try { process.stderr.write(`[ipc-hub] uncaught: ${err.stack ?? err.message ?? err}\n`); } catch {}
+  try {
+    process.stderr.write(`[ipc-hub] uncaught: ${err.stack ?? err.message ?? err}\n`);
+  } catch {}
 });
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
@@ -35,7 +38,12 @@ import { createHttpHandler } from './lib/http-handlers.mjs';
 import { getFeishuApps, getFeishuToken, startFeishuConfigPoller } from './lib/feishu-adapter.mjs';
 import { createNetworkEventBroadcaster } from './lib/network-events.mjs';
 import { loadInternalToken } from './lib/internal-auth.mjs';
-import { isOpenClawSession, deliverToOpenClaw, enqueueOpenClawRetry, startOpenClawRetryTimer } from './lib/openclaw-adapter.mjs';
+import {
+  isOpenClawSession,
+  deliverToOpenClaw,
+  enqueueOpenClawRetry,
+  startOpenClawRetryTimer,
+} from './lib/openclaw-adapter.mjs';
 import { createRegistryMaintainer } from './lib/session-registry.mjs';
 
 // 从项目根目录加载.env
@@ -47,10 +55,15 @@ try {
     const eq = t.indexOf('=');
     if (eq < 0) continue;
     const key = t.slice(0, eq).trim();
-    const val = t.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    const val = t
+      .slice(eq + 1)
+      .trim()
+      .replace(/^["']|["']$/g, '');
     if (!process.env[key]) process.env[key] = val;
   }
-} catch { /* .env不存在 */ }
+} catch {
+  /* .env不存在 */
+}
 
 import {
   DEFAULT_HOST,
@@ -59,7 +72,13 @@ import {
   HEARTBEAT_TIMEOUT,
   IDLE_SHUTDOWN_DELAY,
 } from './lib/constants.mjs';
-import { createMessage, createSystemEvent, createTask, validateMessage, TASK_STATUSES } from './lib/protocol.mjs';
+import {
+  createMessage,
+  createSystemEvent,
+  createTask,
+  validateMessage,
+  TASK_STATUSES,
+} from './lib/protocol.mjs';
 import {
   ERR_REBIND_PENDING,
   saveMessage,
@@ -94,7 +113,9 @@ const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || null;
 const RECONNECT_WINDOW_MS = 30 * 60 * 1000;
 const __hubDir = dirname(fileURLToPath(import.meta.url));
-function stderr(...args) { process.stderr.write(args.join(' ') + '\n'); }
+function stderr(...args) {
+  process.stderr.write(args.join(' ') + '\n');
+}
 const INTERNAL_TOKEN = await loadInternalToken({ rootDir: __hubDir });
 const registryMaintainer = createRegistryMaintainer();
 
@@ -103,7 +124,9 @@ let authTokens = null;
 try {
   const tokensPath = join(__hubDir, 'auth-tokens.json');
   if (existsSync(tokensPath)) authTokens = JSON.parse(readFileSync(tokensPath, 'utf8'));
-} catch { /* 不存在或无效 */ }
+} catch {
+  /* 不存在或无效 */
+}
 
 function checkAuth(providedToken, sessionName = null) {
   if (authTokens) {
@@ -117,32 +140,47 @@ function checkAuth(providedToken, sessionName = null) {
 
 /** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, instanceId:string|null, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null, gracefulReleasing?:boolean}>} */
 const sessions = new Map();
-const ackPending = new Map();        // messageId → { sender, ts }
+const ackPending = new Map(); // messageId → { sender, ts }
 const deliveredMessageIds = new Map(); // messageId → timestamp（去重）
 
 setInterval(() => {
   const cutoff = Date.now() - 300000;
-  for (const [id, ts] of deliveredMessageIds) { if (ts < cutoff) deliveredMessageIds.delete(id); }
+  for (const [id, ts] of deliveredMessageIds) {
+    if (ts < cutoff) deliveredMessageIds.delete(id);
+  }
 }, 60000).unref();
 
 setInterval(() => {
   const cutoff = Date.now() - 60000;
-  for (const [id, entry] of ackPending) { if (entry.ts < cutoff) ackPending.delete(id); }
+  for (const [id, entry] of ackPending) {
+    if (entry.ts < cutoff) ackPending.delete(id);
+  }
 }, 30000).unref();
 
 // 空闲自动关闭
 let idleTimer = null;
-function resetIdleTimer() { if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; } }
+function resetIdleTimer() {
+  if (idleTimer !== null) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+}
 function startIdleTimer() {
   if (!IDLE_SHUTDOWN_DELAY) return;
   resetIdleTimer();
-  idleTimer = setTimeout(() => { stderr('[ipc-hub] no sessions connected — shutting down'); process.exit(0); }, IDLE_SHUTDOWN_DELAY);
+  idleTimer = setTimeout(() => {
+    stderr('[ipc-hub] no sessions connected — shutting down');
+    process.exit(0);
+  }, IDLE_SHUTDOWN_DELAY);
 }
 
 // 飞书 & OpenClaw 适配器初始化
 startFeishuConfigPoller(stderr);
 startOpenClawRetryTimer(stderr);
-{ const n = getFeishuApps().length; if (n > 0) stderr(`[ipc-hub] feishu: loaded ${n} app(s) from feishu-apps.json`); }
+{
+  const n = getFeishuApps().length;
+  if (n > 0) stderr(`[ipc-hub] feishu: loaded ${n} app(s) from feishu-apps.json`);
+}
 const deliverToOpenClawBound = (msg) => deliverToOpenClaw(msg, stderr);
 const enqueueOpenClawRetryBound = (msg) => enqueueOpenClawRetry(msg, stderr);
 
@@ -152,7 +190,9 @@ const ctx = {
   deliveredMessageIds,
   ackPending,
   // feishuApps通过getter动态读取，确保热重载后路由拿到最新配置
-  get feishuApps() { return getFeishuApps(); },
+  get feishuApps() {
+    return getFeishuApps();
+  },
   getFeishuToken,
   isOpenClawSession,
   deliverToOpenClaw: deliverToOpenClawBound,
@@ -187,8 +227,10 @@ const ctx = {
   appendBufferedMessage,
   clearPendingRebind,
   cleanupExpiredPendingRebind,
-  registerSessionRecord: (payload, options = {}) => registryMaintainer.registerSession(payload, options),
-  updateSessionRecordProjects: (payload, options = {}) => registryMaintainer.updateSessionProjects(payload, options),
+  registerSessionRecord: (payload, options = {}) =>
+    registryMaintainer.registerSession(payload, options),
+  updateSessionRecordProjects: (payload, options = {}) =>
+    registryMaintainer.updateSessionProjects(payload, options),
 };
 
 const {
@@ -275,8 +317,12 @@ const wss = new WebSocketServer({
   verifyClient: ({ req }) => {
     const origin = req.headers.origin;
     if (!origin) return true;
-    try { const u = new URL(origin); return u.hostname === 'localhost' || u.hostname === '127.0.0.1'; }
-    catch { return false; }
+    try {
+      const u = new URL(origin);
+      return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    } catch {
+      return false;
+    }
   },
 });
 
@@ -293,20 +339,25 @@ wss.on('connection', (ws, req) => {
     ws.close(4003, 'unauthorized');
     return;
   }
-  if (!name) { ws.close(4000, 'name query param required'); return; }
+  if (!name) {
+    ws.close(4000, 'name query param required');
+    return;
+  }
 
   const pendingRebind = findPendingRebind(name);
   const existing = sessions.get(name);
   const recentlyConnected = Boolean(
-    existing
-    && Number.isFinite(existing.connectedAt)
-    && existing.connectedAt > 0
-    && (now - existing.connectedAt) < RECONNECT_WINDOW_MS,
+    existing &&
+    Number.isFinite(existing.connectedAt) &&
+    existing.connectedAt > 0 &&
+    now - existing.connectedAt < RECONNECT_WINDOW_MS,
   );
-  const isSameInstance = Boolean(existing?.instanceId && instanceId && existing.instanceId === instanceId);
+  const isSameInstance = Boolean(
+    existing?.instanceId && instanceId && existing.instanceId === instanceId,
+  );
   const hasSeenInstance = instanceId ? hasSeenSessionInstance(name, instanceId) : false;
   const isReconnect = instanceId
-    ? (hasSeenInstance || isSameInstance || (!existing?.instanceId && recentlyConnected))
+    ? hasSeenInstance || isSameInstance || (!existing?.instanceId && recentlyConnected)
     : recentlyConnected;
   if (pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
     // Explicit release-rebind has priority over ?force=1. While the current owner
@@ -316,7 +367,9 @@ wss.on('connection', (ws, req) => {
   }
   if (!pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
     const staleForMs = Date.now() - (existing.connectedAt || 0);
-    const zombieDetected = existing.ws.isAlive === false || (staleForMs > 2 * HEARTBEAT_INTERVAL && existing.ws.isAlive === false);
+    const zombieDetected =
+      existing.ws.isAlive === false ||
+      (staleForMs > 2 * HEARTBEAT_INTERVAL && existing.ws.isAlive === false);
 
     if (forceRebind || zombieDetected) {
       audit(forceRebind ? 'force_rebind' : 'zombie_rebind', {
@@ -373,34 +426,63 @@ wss.on('connection', (ws, req) => {
     flushInbox(session, { includeRecentMessages: !isReconnect });
   }
   ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
 
   ws.on('message', (raw) => {
     let msg;
-    try { msg = JSON.parse(raw.toString()); }
-    catch { send(ws, { type: 'error', error: 'invalid JSON' }); return; }
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      send(ws, { type: 'error', error: 'invalid JSON' });
+      return;
+    }
 
     const { valid, error } = validateMessage(msg);
-    if (!valid) { send(ws, { type: 'error', error }); return; }
+    if (!valid) {
+      send(ws, { type: 'error', error });
+      return;
+    }
 
     switch (msg.type) {
-      case 'ping':       send(ws, { type: 'pong' }); break;
-      case 'register':   session.channelPort = msg.channelPort ?? null; send(ws, { type: 'registered', name: session.name }); break;
-      case 'subscribe':  session.topics.add(msg.topic); send(ws, { type: 'subscribed', topic: msg.topic }); break;
-      case 'unsubscribe':session.topics.delete(msg.topic); send(ws, { type: 'unsubscribed', topic: msg.topic }); break;
-      case 'message':    routeMessage(msg, session); break;
+      case 'ping':
+        send(ws, { type: 'pong' });
+        break;
+      case 'register':
+        session.channelPort = msg.channelPort ?? null;
+        send(ws, { type: 'registered', name: session.name });
+        break;
+      case 'subscribe':
+        session.topics.add(msg.topic);
+        send(ws, { type: 'subscribed', topic: msg.topic });
+        break;
+      case 'unsubscribe':
+        session.topics.delete(msg.topic);
+        send(ws, { type: 'unsubscribed', topic: msg.topic });
+        break;
+      case 'message':
+        routeMessage(msg, session);
+        break;
       case 'ack': {
         const pending = ackPending.get(msg.messageId);
         if (pending) {
           ackPending.delete(msg.messageId);
           const senderSession = sessions.get(pending.sender);
           if (senderSession?.ws?.readyState === senderSession?.ws?.OPEN)
-            send(senderSession.ws, { type: 'ack', messageId: msg.messageId, confirmedBy: session.name });
-          stderr(`[ipc-hub] ack: ${session.name} confirmed ${msg.messageId} → notified ${pending.sender}`);
+            send(senderSession.ws, {
+              type: 'ack',
+              messageId: msg.messageId,
+              confirmedBy: session.name,
+            });
+          stderr(
+            `[ipc-hub] ack: ${session.name} confirmed ${msg.messageId} → notified ${pending.sender}`,
+          );
         }
         break;
       }
-      default: send(ws, { type: 'error', error: `unknown message type: ${msg.type}` });
+      default:
+        send(ws, { type: 'error', error: `unknown message type: ${msg.type}` });
     }
   });
 
@@ -427,13 +509,17 @@ wss.on('connection', (ws, req) => {
     if (countLive() === 0) startIdleTimer();
   });
 
-  ws.on('error', (err) => { stderr(`[ipc-hub] ws error on session ${name}: ${err.message}`); });
+  ws.on('error', (err) => {
+    stderr(`[ipc-hub] ws error on session ${name}: ${err.message}`);
+  });
 });
 
 // 心跳 + 定期清理
 function countLive() {
   let count = 0;
-  for (const [, s] of sessions) { if (s.ws && s.ws.readyState === s.ws.OPEN) count++; }
+  for (const [, s] of sessions) {
+    if (s.ws && s.ws.readyState === s.ws.OPEN) count++;
+  }
   return count;
 }
 
@@ -441,19 +527,29 @@ const heartbeatInterval = setInterval(() => {
   for (const [name, session] of sessions) {
     const { ws } = session;
     if (!ws) continue;
-    if (ws.isAlive === false) { stderr(`[ipc-hub] heartbeat timeout: terminating ${name}`); ws.terminate(); continue; }
+    if (ws.isAlive === false) {
+      stderr(`[ipc-hub] heartbeat timeout: terminating ${name}`);
+      ws.terminate();
+      continue;
+    }
     ws.isAlive = false;
     ws.ping();
     setTimeout(() => {
-      if (ws.isAlive === false && ws.readyState === ws.OPEN) { stderr(`[ipc-hub] no pong from ${name}, terminating`); ws.terminate(); }
+      if (ws.isAlive === false && ws.readyState === ws.OPEN) {
+        stderr(`[ipc-hub] no pong from ${name}, terminating`);
+        ws.terminate();
+      }
     }, HEARTBEAT_TIMEOUT);
   }
 }, HEARTBEAT_INTERVAL);
 heartbeatInterval.unref();
-setInterval(() => {
-  cleanup();
-  clearExpiredInbox();
-}, 60 * 60 * 1000).unref();
+setInterval(
+  () => {
+    cleanup();
+    clearExpiredInbox();
+  },
+  60 * 60 * 1000,
+).unref();
 setInterval(() => {
   const deleted = cleanupExpiredPendingRebind();
   if (deleted > 0) {
@@ -464,16 +560,29 @@ setInterval(() => {
 // 轮询源文件变更——仅开发模式启用（IPC_DEV_WATCH=1）
 // 生产环境默认关闭，避免代码提交触发Hub重启导致全员断线
 if (process.env.IPC_DEV_WATCH === '1') {
-  const __hubWatchFiles = ['hub.mjs', 'lib/router.mjs', 'lib/http-handlers.mjs', 'lib/db.mjs', 'lib/network-events.mjs', 'lib/protocol.mjs', 'lib/constants.mjs'];
+  const __hubWatchFiles = [
+    'hub.mjs',
+    'lib/router.mjs',
+    'lib/http-handlers.mjs',
+    'lib/db.mjs',
+    'lib/network-events.mjs',
+    'lib/protocol.mjs',
+    'lib/constants.mjs',
+  ];
   const __hubFileMtimes = new Map();
   for (const file of __hubWatchFiles) {
-    try { __hubFileMtimes.set(file, statSync(join(__hubDir, file)).mtimeMs); } catch {}
+    try {
+      __hubFileMtimes.set(file, statSync(join(__hubDir, file)).mtimeMs);
+    } catch {}
   }
   setInterval(() => {
     for (const [file, oldMtime] of __hubFileMtimes) {
       try {
         const mtime = statSync(join(__hubDir, file)).mtimeMs;
-        if (mtime !== oldMtime) { stderr(`[ipc-hub] source file changed: ${file}, restarting...`); process.exit(0); }
+        if (mtime !== oldMtime) {
+          stderr(`[ipc-hub] source file changed: ${file}, restarting...`);
+          process.exit(0);
+        }
       } catch {}
     }
   }, 10000);
@@ -484,9 +593,13 @@ if (process.env.IPC_DEV_WATCH === '1') {
 
 httpServer.listen(PORT, DEFAULT_HOST, () => {
   stderr(`[ipc-hub] listening on ${DEFAULT_HOST}:${PORT}`);
-  stderr(`[ipc-hub] auth: ${authTokens ? 'per-session tokens (auth-tokens.json)' : AUTH_TOKEN ? 'shared token (IPC_AUTH_TOKEN)' : 'disabled (open access)'}`);
+  stderr(
+    `[ipc-hub] auth: ${authTokens ? 'per-session tokens (auth-tokens.json)' : AUTH_TOKEN ? 'shared token (IPC_AUTH_TOKEN)' : 'disabled (open access)'}`,
+  );
   if (DEFAULT_HOST !== '127.0.0.1' && DEFAULT_HOST !== 'localhost' && !AUTH_TOKEN && !authTokens)
-    stderr(`[ipc-hub] WARNING: hub is exposed on ${DEFAULT_HOST} with no authentication — set IPC_AUTH_TOKEN or provide auth-tokens.json`);
+    stderr(
+      `[ipc-hub] WARNING: hub is exposed on ${DEFAULT_HOST} with no authentication — set IPC_AUTH_TOKEN or provide auth-tokens.json`,
+    );
   startCIRelay(routeMessage);
 });
 
@@ -508,4 +621,4 @@ function gracefulShutdown(sig) {
   wss.close(() => httpServer.close(() => process.exit(0)));
 }
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

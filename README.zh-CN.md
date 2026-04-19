@@ -164,6 +164,8 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `POST /wake-suspended`：`{reason?, from?}` 临时运维 endpoint，通过 topic fanout 向所有订阅 `network-up` 的 session 广播手动唤醒消息，返回 `{ok, broadcastTo, subscribers, clearedSessions}`
 - `POST /internal/network-event`：内部端点，仅 `127.0.0.1` + `X-Internal-Token` 可访问，接收 `network-down` / `network-up`
 - `POST /task`：`{from, to, title, ...}` 创建结构化任务，返回 `{ok, taskId, online, buffered}`
+- `POST /registry/register`：`{name, role?, projects?, access_scope?, cold_start_strategy?, note?, requested_by?}` 创建或更新 `sessions-registry.json` 条目
+- `POST /registry/update`：`{name, projects, requested_by?}` 仅更新 `sessions-registry.json` 里某 session 的 `projects`
 - `GET /recent-messages?name=&since=&limit=`：查询发给某个 session（含广播）的近期持久化消息，默认 6h / 50 条，适合崩溃重连补回 backlog
 - `flushInbox`：只推离线 inbox 缓冲；历史消息不会在连接时自动推送，需主动调用 `ipc_recent_messages` 或 `GET /recent-messages`
 - `GET /health`：返回 Hub 状态、session 列表与消息计数
@@ -188,6 +190,8 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `ipc_recent_messages(name?, since?, limit?)`：拉取当前或指定 session 的近期持久化 backlog（默认 6h / 50 条）
 - `ipc_recall(project, since?, limit?, ipc_name?, tool_name?, tags?, keyword?)`：查询 `~/.claude/project-state/<project>/observations.db` 的近期 observation，支持 `project="*"` 跨项目合并检索；`tool_input` / `tool_output` 预览会截断到 500 chars
 - `ipc_observation_detail(project, id)`：按 `project + id` 读取单条 observation 的完整字段，不截断 `tool_input` / `tool_output`；若 tags 中有 `jsonl:` 元数据则一并返回
+- `ipc_register_session(name, role?, projects?, access_scope?, cold_start_strategy?, note?)`：通过 Hub 维护 `~/.claude/sessions-registry.json`；name 不存在则创建，已存在则按 merge 语义更新
+- `ipc_update_session(name, projects)`：通过 Hub 仅更新已登记 session 的 `projects` 列表，其他字段保持不变
 
 `host="external"` 保持旧行为，只返回 `command_hint` 或 fallback 信息；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起新会话；`host="vscode-terminal"` 当前返回 not implemented 提示。
 

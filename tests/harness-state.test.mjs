@@ -32,13 +32,15 @@ test('createHarnessStateMachine: critical + self-handover 触发 hard-signal dow
     contextPct: 70,
     warnCount: 0,
     nextAction: 'self-handover',
-    ts: 2000,
+    ts: 3000,
   }]);
+  assert.equal(machine.lastHeartbeatAt, 2000);
 });
 
 test('createHarnessStateMachine: silent-confirmed + disconnected 原因触发 soft-A down', () => {
+  const now = createNow();
   const machine = createHarnessStateMachine({
-    now: createNow(),
+    now,
   });
 
   machine.ingestProbeResult({
@@ -48,6 +50,8 @@ test('createHarnessStateMachine: silent-confirmed + disconnected 原因触发 so
 
   assert.equal(machine.state, 'down');
   assert.equal(machine.lastReason, 'soft-A-ws-disconnect');
+  assert.equal(machine.lastProbeAt, 2000);
+  assert.equal(machine.lastProbeError, 'silent-confirmed');
 });
 
 test('createHarnessStateMachine: silent-confirmed + 在线静默触发 soft-B down', () => {
@@ -80,18 +84,21 @@ test('createHarnessStateMachine: warn 连续 3 次且无 compact 时触发 down'
 });
 
 test('createHarnessStateMachine: ok -> warn -> active 可恢复到 ok', () => {
+  const now = createNow();
   const machine = createHarnessStateMachine({
-    now: createNow(),
+    now,
   });
 
   machine.ingestHeartbeat({ pct: 56, state: 'warn', nextAction: 'continue' });
   assert.equal(machine.state, 'warn');
   assert.equal(machine.warnCount, 1);
+  assert.equal(machine.lastHeartbeatAt, 2000);
 
   machine.ingestHeartbeat({ pct: 20, state: 'active', nextAction: 'continue' });
   assert.equal(machine.state, 'ok');
   assert.equal(machine.warnCount, 0);
   assert.equal(machine.lastReason, 'recovered');
+  assert.equal(machine.lastHeartbeatAt, 4000);
 });
 
 test('createHarnessStateMachine: compact 会重置 warnCount，critical 无动作时进入 degraded', () => {

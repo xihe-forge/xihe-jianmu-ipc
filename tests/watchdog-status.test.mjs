@@ -10,16 +10,31 @@ function ok(latencyMs = 1) {
   return { ok: true, latencyMs };
 }
 
+function createIpcClientStub() {
+  return {
+    async start() {},
+    async stop() {},
+    async sendPing() {
+      return true;
+    },
+    async waitForPong() {
+      return false;
+    },
+  };
+}
+
 test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组', async (t) => {
   const watchdog = createNetworkWatchdog({
     watchdogPort: 0,
     internalToken: 'watchdog-token',
     intervalMs: 60_000,
+    createWatchdogIpcClientImpl: () => createIpcClientStub(),
     probes: {
       cliProxy: async () => ok(10),
       hub: async () => ok(11),
       anthropic: async () => ok(12),
       dns: async () => ok(13),
+      harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
     },
   });
   t.after(async () => {
@@ -36,7 +51,7 @@ test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组',
   assert.equal(response.statusCode, 200);
   assert.deepEqual(
     Object.keys(response.body).sort(),
-    ['failing', 'lastChecks', 'state', 'uptime'],
+    ['failing', 'harness', 'lastChecks', 'state', 'uptime'],
   );
   assert.equal(response.body.state, 'OK');
   assert.deepEqual(response.body.failing, []);
@@ -44,6 +59,19 @@ test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组',
     Object.keys(response.body.lastChecks).sort(),
     ['anthropic', 'cliProxy', 'dns', 'hub'],
   );
+  assert.deepEqual(
+    Object.keys(response.body.harness).sort(),
+    [
+      'contextWarnPct',
+      'lastProbe',
+      'lastReason',
+      'lastTransition',
+      'nextAction',
+      'state',
+      'warnCount',
+    ],
+  );
+  assert.equal(response.body.harness.state, 'ok');
   assert.equal(typeof response.body.lastChecks.cliProxy.ts, 'number');
   assert.equal(typeof response.body.uptime, 'number');
 });
@@ -53,6 +81,7 @@ test('watchdog /status: 未知路径返回 404', async (t) => {
     watchdogPort: 0,
     internalToken: 'watchdog-token',
     intervalMs: 60_000,
+    createWatchdogIpcClientImpl: () => createIpcClientStub(),
     probes: {
       cliProxy: async () => ok(),
       hub: async () => ok(),

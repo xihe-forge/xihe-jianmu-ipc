@@ -1,7 +1,10 @@
 import http from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import WebSocket from 'ws';
 import { createStateMachine } from '../lib/network-state.mjs';
+import { createHarnessStateMachine } from '../lib/harness-state.mjs';
+import { probeHarnessHeartbeat } from '../lib/harness-heartbeat.mjs';
 import { isLoopbackAddress, loadInternalToken } from '../lib/internal-auth.mjs';
 import {
   probeAnthropic,
@@ -15,6 +18,11 @@ export const DEFAULT_WATCHDOG_PORT = 3180;
 export const DEFAULT_WATCHDOG_INTERVAL_MS = 30_000;
 export const WATCHDOG_RETRY_DELAYS_MS = [1_000, 5_000, 15_000];
 export const WATCHDOG_HOST = '127.0.0.1';
+export const WATCHDOG_SESSION_NAME = 'network-watchdog';
+export const HARNESS_SESSION_NAME = 'harness';
+export const HARNESS_HEARTBEAT_TOPIC = 'harness-heartbeat';
+export const HARNESS_HEARTBEAT_PATTERN = /【harness\s+(.+?)\s+·\s+context-pct】(\d+)% \| state=(\w+) \| next_action=(\S+)/;
+export const WATCHDOG_WS_RECONNECT_DELAY_MS = 3_000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
@@ -40,6 +48,51 @@ function isSuccessfulResponse(response) {
     && response.status < 300;
 }
 
+function toErrorMessage(error) {
+  return error?.message ?? String(error);
+}
+
+function normalizeMaybeFunction(value) {
+  return typeof value === 'function' ? value() : value;
+}
+
+function buildHubUrl(ipcPort) {
+  return `http://127.0.0.1:${ipcPort}`;
+}
+
+function buildHubWsUrl({ ipcPort, sessionName, hubAuthToken }) {
+  const url = new URL(`ws://127.0.0.1:${ipcPort}/ws`);
+  url.searchParams.set('name', sessionName);
+  if (typeof hubAuthToken === 'string' && hubAuthToken.trim() !== '') {
+    url.searchParams.set('token', hubAuthToken);
+  }
+  return url.toString();
+}
+
+export function parseHarnessHeartbeatContent(content) {
+  if (typeof content !== 'string') {
+    return null;
+  }
+
+  const match = content.match(HARNESS_HEARTBEAT_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  const [, isoTs, pctText, state, nextAction] = match;
+  const pct = Number.parseInt(pctText, 10);
+  if (!Number.isFinite(pct)) {
+    return null;
+  }
+
+  return {
+    ts: isoTs,
+    pct,
+    state,
+    nextAction,
+  };
+}
+
 async function postInternalNetworkEvent({
   body,
   ipcPort,
@@ -48,7 +101,7 @@ async function postInternalNetworkEvent({
   stderr,
   wait,
 }) {
-  const url = `http://127.0.0.1:${ipcPort}/internal/network-event`;
+  const url = `${buildHubUrl(ipcPort)}/internal/network-event`;
   let lastError = null;
 
   for (let attempt = 0; attempt <= WATCHDOG_RETRY_DELAYS_MS.length; attempt += 1) {
@@ -82,17 +135,216 @@ async function postInternalNetworkEvent({
   return false;
 }
 
-export function createDefaultWatchdogProbes({ ipcPort = DEFAULT_IPC_PORT } = {}) {
+export function createDefaultWatchdogProbes({
+  ipcPort = DEFAULT_IPC_PORT,
+  harnessProbeConfig = {},
+} = {}) {
   return {
     cliProxy: () => probeCliProxy(),
     hub: () => probeHub({ port: ipcPort }),
     anthropic: () => probeAnthropic(),
     dns: () => probeDns(),
+    harness: () => probeHarnessHeartbeat({
+      hubUrl: harnessProbeConfig.hubUrl ?? buildHubUrl(ipcPort),
+      timeoutMs: harnessProbeConfig.timeoutMs,
+      maxSilentMs: harnessProbeConfig.maxSilentMs,
+      wsDisconnectGraceMs: harnessProbeConfig.wsDisconnectGraceMs,
+      lastSeenOnlineAt: normalizeMaybeFunction(harnessProbeConfig.lastSeenOnlineAt),
+      sessionName: harnessProbeConfig.sessionName,
+      fetchImpl: harnessProbeConfig.fetchImpl,
+      now: harnessProbeConfig.now,
+    }),
   };
+}
+
+export function createWatchdogIpcClient({
+  ipcPort = DEFAULT_IPC_PORT,
+  sessionName = WATCHDOG_SESSION_NAME,
+  harnessSessionName = HARNESS_SESSION_NAME,
+  harnessHeartbeatTopic = HARNESS_HEARTBEAT_TOPIC,
+  hubAuthToken = process.env.IPC_AUTH_TOKEN ?? '',
+  fetchImpl = globalThis.fetch,
+  setTimeoutImpl = setTimeout,
+  clearTimeoutImpl = clearTimeout,
+  wsImpl = WebSocket,
+  onHarnessHeartbeat = null,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+} = {}) {
+  let ws = null;
+  let reconnectTimer = null;
+  let stopped = false;
+  const pendingPongs = new Set();
+
+  function handleInboundMessage(message) {
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+
+    if (message.from === harnessSessionName && typeof message.content === 'string' && /pong/i.test(message.content)) {
+      resolvePendingPongs(true);
+      return;
+    }
+
+    if (message.topic === harnessHeartbeatTopic && typeof message.content === 'string') {
+      const parsed = parseHarnessHeartbeatContent(message.content);
+      if (parsed && typeof onHarnessHeartbeat === 'function') {
+        onHarnessHeartbeat(parsed);
+      }
+    }
+  }
+
+  function resolvePendingPongs(value) {
+    for (const pending of [...pendingPongs]) {
+      pending.resolve(value);
+    }
+  }
+
+  function scheduleReconnect() {
+    if (stopped || reconnectTimer != null) {
+      return;
+    }
+
+    reconnectTimer = setTimeoutImpl(() => {
+      reconnectTimer = null;
+      connect();
+    }, WATCHDOG_WS_RECONNECT_DELAY_MS);
+  }
+
+  function handleMessage(raw) {
+    let message;
+    try {
+      message = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+
+    if (message?.type === 'message') {
+      handleInboundMessage(message);
+      return;
+    }
+
+    if (message?.type === 'inbox' && Array.isArray(message.messages)) {
+      for (const item of message.messages) {
+        handleInboundMessage(item);
+      }
+    }
+  }
+
+  function connect() {
+    if (stopped) {
+      return;
+    }
+
+    let socket;
+    try {
+      socket = new wsImpl(buildHubWsUrl({ ipcPort, sessionName, hubAuthToken }));
+    } catch (error) {
+      stderr(`[network-watchdog] watchdog WS connect failed: ${toErrorMessage(error)}`);
+      scheduleReconnect();
+      return;
+    }
+
+    ws = socket;
+
+    socket.on('open', () => {
+      try {
+        socket.send(JSON.stringify({ type: 'register', name: sessionName }));
+        socket.send(JSON.stringify({ type: 'subscribe', topic: harnessHeartbeatTopic }));
+      } catch (error) {
+        stderr(`[network-watchdog] watchdog WS subscribe failed: ${toErrorMessage(error)}`);
+      }
+    });
+
+    socket.on('message', handleMessage);
+    socket.on('close', () => {
+      if (ws === socket) {
+        ws = null;
+      }
+      scheduleReconnect();
+    });
+    socket.on('error', (error) => {
+      stderr(`[network-watchdog] watchdog WS error: ${toErrorMessage(error)}`);
+    });
+  }
+
+  async function sendPing({ content = 'harness-heartbeat-ping' } = {}) {
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    if (typeof hubAuthToken === 'string' && hubAuthToken.trim() !== '') {
+      headers.Authorization = `Bearer ${hubAuthToken}`;
+    }
+
+    try {
+      const response = await fetchImpl(`${buildHubUrl(ipcPort)}/send`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          from: sessionName,
+          to: harnessSessionName,
+          content,
+        }),
+      });
+      return isSuccessfulResponse(response);
+    } catch (error) {
+      stderr(`[network-watchdog] harness ping send failed: ${toErrorMessage(error)}`);
+      return false;
+    }
+  }
+
+  function waitForPong({ timeoutMs }) {
+    return new Promise((resolve) => {
+      const pending = {
+        timer: null,
+        resolve(value) {
+          if (pending.timer != null) {
+            clearTimeoutImpl(pending.timer);
+          }
+          pendingPongs.delete(pending);
+          resolve(value);
+        },
+      };
+
+      pending.timer = setTimeoutImpl(() => {
+        pending.resolve(false);
+      }, timeoutMs);
+      pendingPongs.add(pending);
+    });
+  }
+
+  return {
+    async start() {
+      stopped = false;
+      connect();
+    },
+    async stop() {
+      stopped = true;
+      if (reconnectTimer != null) {
+        clearTimeoutImpl(reconnectTimer);
+        reconnectTimer = null;
+      }
+      resolvePendingPongs(false);
+      if (ws) {
+        try {
+          ws.close();
+        } catch {}
+        ws = null;
+      }
+    },
+    sendPing,
+    waitForPong,
+  };
+}
+
+function omitHarnessProbe(probes) {
+  return Object.fromEntries(
+    Object.entries(probes).filter(([name]) => name !== 'harness'),
+  );
 }
 
 export function createWatchdogStatusHandler({
   getSnapshot,
+  getHarnessSnapshot = null,
   getUptime,
 } = {}) {
   return function handleStatus(req, res) {
@@ -104,12 +356,16 @@ export function createWatchdogStatusHandler({
 
     if (req.method === 'GET' && req.url === '/status') {
       const snapshot = getSnapshot();
+      const harness = typeof getHarnessSnapshot === 'function'
+        ? getHarnessSnapshot()
+        : (snapshot?.harness ?? null);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         state: snapshot.state,
         failing: [...snapshot.failing],
         lastChecks: snapshot.lastChecks,
         uptime: getUptime(),
+        harness,
       }));
       return;
     }
@@ -120,11 +376,12 @@ export function createWatchdogStatusHandler({
 }
 
 export function createNetworkWatchdog({
-  probes = createDefaultWatchdogProbes(),
+  probes = null,
   ipcPort = DEFAULT_IPC_PORT,
   watchdogPort = DEFAULT_WATCHDOG_PORT,
   intervalMs = DEFAULT_WATCHDOG_INTERVAL_MS,
   internalToken,
+  hubAuthToken = process.env.IPC_AUTH_TOKEN ?? '',
   fetchImpl = globalThis.fetch,
   now = Date.now,
   stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
@@ -132,8 +389,16 @@ export function createNetworkWatchdog({
   clearTimeoutImpl = clearTimeout,
   waitImpl,
   createStateMachineImpl = createStateMachine,
+  createHarnessStateMachineImpl = createHarnessStateMachine,
+  createWatchdogIpcClientImpl = createWatchdogIpcClient,
   createServerImpl = http.createServer,
   watchdogHost = WATCHDOG_HOST,
+  watchdogSessionName = WATCHDOG_SESSION_NAME,
+  harnessSessionName = HARNESS_SESSION_NAME,
+  harnessPingAttempts = 3,
+  harnessPingIntervalMs = 30_000,
+  harnessProbeConfig = {},
+  onHarnessStateChange = null,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -147,8 +412,25 @@ export function createNetworkWatchdog({
   let startedAt = null;
   let currentWatchdogPort = watchdogPort;
   let statusServer = null;
+  let lastSeenHarnessOnlineAt = null;
+  let lastHarnessProbe = null;
   const wait = createWait(waitImpl, setTimeoutImpl);
   const pendingTransitions = new Set();
+  const resolvedProbes = probes ?? createDefaultWatchdogProbes({
+    ipcPort,
+    harnessProbeConfig: {
+      ...harnessProbeConfig,
+      hubUrl: harnessProbeConfig.hubUrl ?? buildHubUrl(ipcPort),
+      lastSeenOnlineAt: () => lastSeenHarnessOnlineAt,
+      fetchImpl: harnessProbeConfig.fetchImpl ?? fetchImpl,
+      now: harnessProbeConfig.now ?? now,
+      sessionName: harnessProbeConfig.sessionName ?? harnessSessionName,
+    },
+  });
+  const networkProbes = omitHarnessProbe(resolvedProbes);
+  const harnessProbe = typeof resolvedProbes.harness === 'function'
+    ? resolvedProbes.harness
+    : null;
 
   function trackPending(promise) {
     pendingTransitions.add(promise);
@@ -169,8 +451,8 @@ export function createNetworkWatchdog({
     }));
   }
 
-  const stateMachine = createStateMachineImpl({
-    probes,
+  const networkStateMachine = createStateMachineImpl({
+    probes: networkProbes,
     now,
     onTransition: (transition) => {
       const eventTs = Number.isFinite(transition.ts) ? transition.ts : now();
@@ -213,6 +495,137 @@ export function createNetworkWatchdog({
     },
   });
 
+  function buildHarnessSnapshot() {
+    const snapshot = harnessStateMachine.getSnapshot();
+    return {
+      state: snapshot.state,
+      contextWarnPct: snapshot.contextPct,
+      nextAction: snapshot.nextAction,
+      warnCount: snapshot.warnCount,
+      lastTransition: snapshot.lastTransition,
+      lastReason: snapshot.lastReason,
+      lastProbe: lastHarnessProbe,
+    };
+  }
+
+  const harnessStateMachine = createHarnessStateMachineImpl({
+    now,
+    onTransition: (transition) => {
+      if (
+        typeof onHarnessStateChange === 'function'
+        && (transition.to === 'degraded' || transition.to === 'down')
+      ) {
+        onHarnessStateChange({
+          state: transition.to,
+          reason: transition.reason,
+          context: {
+            pct: transition.contextPct,
+            nextAction: transition.nextAction,
+          },
+          snapshot: buildHarnessSnapshot(),
+        });
+      }
+    },
+  });
+
+  const watchdogIpcClient = createWatchdogIpcClientImpl({
+    ipcPort,
+    sessionName: watchdogSessionName,
+    harnessSessionName,
+    hubAuthToken,
+    fetchImpl,
+    setTimeoutImpl,
+    clearTimeoutImpl,
+    stderr,
+    onHarnessHeartbeat: (heartbeat) => {
+      lastSeenHarnessOnlineAt = now();
+      harnessStateMachine.ingestHeartbeat(heartbeat);
+    },
+  });
+
+  function buildCompositeState() {
+    const snapshot = networkStateMachine.getState();
+    return {
+      ...snapshot,
+      harness: buildHarnessSnapshot(),
+    };
+  }
+
+  async function verifyHarnessPing() {
+    for (let attempt = 1; attempt <= harnessPingAttempts; attempt += 1) {
+      const pongPromise = watchdogIpcClient.waitForPong({ timeoutMs: harnessPingIntervalMs });
+      await watchdogIpcClient.sendPing();
+      const responded = await pongPromise;
+      if (responded) {
+        return { responded: true, failedPings: attempt - 1 };
+      }
+    }
+
+    return { responded: false, failedPings: harnessPingAttempts };
+  }
+
+  async function runHarnessTick() {
+    if (!harnessProbe) {
+      return buildHarnessSnapshot();
+    }
+
+    let result;
+    try {
+      result = await harnessProbe();
+    } catch (error) {
+      result = { ok: false, error: toErrorMessage(error) };
+    }
+
+    if (result?.connected) {
+      lastSeenHarnessOnlineAt = now();
+    }
+
+    if (result?.requiresPing) {
+      const verification = await verifyHarnessPing();
+      if (verification.responded) {
+        result = {
+          ...result,
+          ok: true,
+          reason: 'soft signal but responded',
+          requiresPing: false,
+          failedPings: verification.failedPings,
+        };
+        delete result.error;
+      } else {
+        result = {
+          ...result,
+          ok: false,
+          error: 'silent-confirmed',
+          failedPings: verification.failedPings,
+        };
+      }
+    }
+
+    lastHarnessProbe = {
+      ...result,
+      ts: now(),
+    };
+    harnessStateMachine.ingestProbeResult(result);
+    return lastHarnessProbe;
+  }
+
+  function ingestHarnessHeartbeat(heartbeat) {
+    if (!heartbeat || typeof heartbeat !== 'object') {
+      return false;
+    }
+    lastSeenHarnessOnlineAt = now();
+    harnessStateMachine.ingestHeartbeat(heartbeat);
+    return true;
+  }
+
+  function ingestHarnessHeartbeatContent(content) {
+    const parsed = parseHarnessHeartbeatContent(content);
+    if (!parsed) {
+      return false;
+    }
+    return ingestHarnessHeartbeat(parsed);
+  }
+
   function scheduleNextTick() {
     if (stopped) {
       return;
@@ -225,10 +638,17 @@ export function createNetworkWatchdog({
 
   async function runTick({ scheduleNext = false } = {}) {
     try {
-      return await stateMachine.tick();
+      const [networkState] = await Promise.all([
+        networkStateMachine.tick(),
+        runHarnessTick(),
+      ]);
+      return {
+        ...networkState,
+        harness: buildHarnessSnapshot(),
+      };
     } catch (error) {
       stderr(`[network-watchdog] tick failed: ${error?.message ?? error}`);
-      return stateMachine.getState();
+      return buildCompositeState();
     } finally {
       if (scheduleNext && !stopped) {
         scheduleNextTick();
@@ -252,9 +672,12 @@ export function createNetworkWatchdog({
     started = true;
     stopped = false;
     startedAt = now();
+    await watchdogIpcClient.start();
+
     if (!statusServer) {
       const statusHandler = createWatchdogStatusHandler({
-        getSnapshot: () => stateMachine.getState(),
+        getSnapshot: buildCompositeState,
+        getHarnessSnapshot: buildHarnessSnapshot,
         getUptime: () => (startedAt == null ? 0 : Math.max(0, now() - startedAt)),
       });
       statusServer = createServerImpl(statusHandler);
@@ -295,6 +718,7 @@ export function createNetworkWatchdog({
       timer = null;
     }
     await waitForIdle();
+    await watchdogIpcClient.stop();
     if (statusServer) {
       const server = statusServer;
       statusServer = null;
@@ -316,7 +740,11 @@ export function createNetworkWatchdog({
     stop,
     runTick,
     waitForIdle,
-    getState: () => stateMachine.getState(),
+    ingestHarnessHeartbeat,
+    ingestHarnessHeartbeatContent,
+    ingestHarnessHeartbeatMessage: ingestHarnessHeartbeatContent,
+    getState: buildCompositeState,
+    getHarnessState: buildHarnessSnapshot,
     getConfig: () => ({
       ipcPort,
       watchdogPort: currentWatchdogPort,
@@ -347,7 +775,6 @@ export async function startWatchdog(options = {}) {
 
   const watchdog = createNetworkWatchdog({
     ...options,
-    probes: options.probes ?? createDefaultWatchdogProbes({ ipcPort }),
     ipcPort,
     watchdogPort,
     intervalMs,

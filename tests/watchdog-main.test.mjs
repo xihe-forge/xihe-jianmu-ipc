@@ -30,11 +30,25 @@ function createTickNow(start = 0, step = 1_000) {
   };
 }
 
+function createIpcClientStub() {
+  return {
+    async start() {},
+    async stop() {},
+    async sendPing() {
+      return true;
+    },
+    async waitForPong() {
+      return false;
+    },
+  };
+}
+
 test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', async () => {
   const capture = createFetchCapture();
   const watchdog = createNetworkWatchdog({
     ipcPort: 3179,
     internalToken: 'watchdog-token',
+    createWatchdogIpcClientImpl: () => createIpcClientStub(),
     fetchImpl: capture.fetchImpl,
     probes: {
       cliProxy: async () => fail('HTTP 503'),
@@ -66,6 +80,7 @@ test('createNetworkWatchdog: down 恢复到 OK 时会发送 network-up', async (
   const watchdog = createNetworkWatchdog({
     ipcPort: 3179,
     internalToken: 'watchdog-token',
+    createWatchdogIpcClientImpl: () => createIpcClientStub(),
     fetchImpl: capture.fetchImpl,
     now: createTickNow(),
     probes: {
@@ -109,6 +124,7 @@ test('createNetworkWatchdog: HTTP 首发加 3 次重试失败后记 stderr，后
   const watchdog = createNetworkWatchdog({
     ipcPort: 3179,
     internalToken: 'watchdog-token',
+    createWatchdogIpcClientImpl: () => createIpcClientStub(),
     stderr: (line) => logs.push(line),
     now: createTickNow(),
     waitImpl: async (delayMs) => {

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - feat(router): Hub 创 stub session 时立即回发送方 unknown-target 警告（避免消息静默堆积，踩坑案例见 data/hub.log）
+- docs(operations): OPERATIONS.md 新增「发版流程」章节——npm whoami 预检 + npm 404 伪装 401 诊断 + 常见错误矩阵 + Trusted Publishing 长期路径
 
 ## [0.4.0] - 2026-04-18
 

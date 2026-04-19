@@ -201,6 +201,43 @@ grep "file watch" data/hub.log | tail -3
 # 如果看到 "DEV mode: polling" 说明误开了
 ```
 
+## 发版流程
+
+> **publish 前必查登录态**：`npm whoami` 返 401 时，紧接着跑 `npm publish` 会得到误导性 `404 Not Found - PUT https://registry.npmjs.org/...`。npm CLI 为防止泄露包是否存在，把未认证的 PUT 伪装成 404。看到 publish 404 第一反应查 `npm whoami`，不要怀疑包名或权限。
+
+### 标准流程
+
+```bash
+# 1. 确认登录态（避免 401 被伪装成 404）
+npm whoami
+# 预期返回你的 npm 账号名；若 401 → npm login 重登
+
+# 2. 预检（dry-run 确认 tarball 内容 + 警告数）
+npm publish --dry-run
+# 警告数必须为 0
+
+# 3. 正式 publish
+npm publish
+# WebAuthn 2FA（Windows Hello）会弹本机 PIN/指纹框
+```
+
+### 常见错误
+
+| 错误信号 | 真实含义 | 修复 |
+|---------|----------|------|
+| `E401 Unauthorized` on `npm whoami` | 登录态过期 | `npm login` |
+| `E404 Not Found - PUT` on `npm publish` | **多数情况等同 401**（未登录），不是真的 404 | 先 `npm whoami` 验证，再 `npm login` |
+| `EOTP - one-time password` | TOTP 2FA 场景 | `npm publish --otp=<6位>` |
+| `EINTEGRITY` (integrity checksum failed) | package-lock.json 哈希错 | 本地 `rm -rf node_modules package-lock.json && npm install` 重建 |
+| WebAuthn 2FA 交互 | Windows Hello 必须本机 | 无法 `--otp=` 传，必须桌面会话按指纹/PIN |
+
+### 长期自动化（backlog）
+
+手动 publish 每季度几次可接受。若频率提升，评估迁移到 **Trusted Publishing**（GitHub Actions + OIDC）：
+- 参考 https://docs.npmjs.com/trusted-publishers
+- 无需长期 token、免 2FA 交互、审计清晰
+- 需要在 npmjs.com 后台配置 GitHub 仓库为可信发布者
+
 ## 测试
 
 ### 全量测试

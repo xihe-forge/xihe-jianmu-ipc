@@ -155,6 +155,7 @@ afterEach(() => {
     DELETE FROM inbox;
     DELETE FROM tasks;
     DELETE FROM suspended_sessions;
+    DELETE FROM pending_rebind;
   `);
   for (const timer of activeTimers) {
     originalClearTimeout(timer);

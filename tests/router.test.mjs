@@ -358,6 +358,99 @@ test('routeMessage: 发送到不存在的 session — 创建 stub 并缓冲', { 
   assert.equal(stub.inbox[0].content, 'stub test');
 });
 
+test('routeMessage: 在线 sender 首次打到不存在 target 时收到 unknown-target 警告', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsSender = createMockWs();
+  const senderSession = createOnlineSession('alice', wsSender);
+  ctx.sessions.set('alice', senderSession);
+
+  routeMessage(
+    { id: 'msg_unknown_target', type: 'message', from: 'alice', to: 'ghost-worker', content: 'hello?' },
+    senderSession,
+  );
+
+  assert.ok(ctx.sessions.has('ghost-worker'), 'target 应被创建为 stub');
+  assert.equal(wsSender._sent.length, 1, 'sender 应收到一条系统警告');
+  assert.equal(wsSender._sent[0].type, 'unknown-target');
+  assert.equal(wsSender._sent[0].target, 'ghost-worker');
+  assert.equal(wsSender._sent[0].msgId, 'msg_unknown_target');
+  assert.equal(wsSender._sent[0].hint, 'call ipc_sessions() first to verify target name; Hub does not fuzzy-match');
+  assert.ok(ctx._logs.some(l => l.includes('unknown-target warned: alice about missing ghost-worker')), '应记录 warned 日志');
+});
+
+test('routeMessage: 同一 stub 第二次命中时不重复 warning，只继续累积 inbox', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  const wsSender = createMockWs();
+  const senderSession = createOnlineSession('alice', wsSender);
+  ctx.sessions.set('alice', senderSession);
+
+  routeMessage(
+    { id: 'msg_stub_first', type: 'message', from: 'alice', to: 'ghost-worker', content: 'first' },
+    senderSession,
+  );
+
+  const stub = ctx.sessions.get('ghost-worker');
+
+  routeMessage(
+    { id: 'msg_stub_second', type: 'message', from: 'alice', to: 'ghost-worker', content: 'second' },
+    senderSession,
+  );
+
+  assert.equal(ctx.sessions.get('ghost-worker'), stub, '现状：第二次命中时复用同一个 stub 对象');
+  assert.equal(wsSender._sent.length, 1, 'unknown-target warning 只发一次');
+  assert.deepEqual(stub.inbox.map(item => item.id), ['msg_stub_first', 'msg_stub_second']);
+  assert.equal(
+    ctx._logs.filter(l => l.includes('unknown-target warned: alice about missing ghost-worker')).length,
+    1,
+    'warned 日志只应出现一次',
+  );
+  assert.ok(ctx._logs.some(l => l.includes('session offline, buffered')), '第二次命中应按离线 session 继续缓冲');
+});
+
+test('routeMessage: stub 后同名 session 上线时复用 stub 并正常 flush / 直投', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage, flushInbox } = createRouter(ctx);
+
+  const wsSender = createMockWs();
+  const senderSession = createOnlineSession('alice', wsSender);
+  ctx.sessions.set('alice', senderSession);
+
+  routeMessage(
+    { id: 'msg_buffered_once', type: 'message', from: 'alice', to: 'ghost-worker', content: 'buffer me' },
+    senderSession,
+  );
+
+  const stub = ctx.sessions.get('ghost-worker');
+  const wsTarget = createMockWs();
+  if (stub.inboxExpiry !== null) {
+    clearTimeout(stub.inboxExpiry);
+    stub.inboxExpiry = null;
+  }
+  stub.ws = wsTarget;
+  stub.connectedAt = Date.now();
+  ctx.sessions.set('ghost-worker', stub);
+
+  flushInbox(stub);
+
+  assert.equal(ctx.sessions.get('ghost-worker'), stub, '现状：Hub 会复用原 stub 对象并升级为在线 session');
+  assert.equal(wsTarget._sent.length, 1, '上线后应先收到 inbox flush');
+  assert.equal(wsTarget._sent[0].type, 'inbox');
+  assert.deepEqual(wsTarget._sent[0].messages.map(item => item.id), ['msg_buffered_once']);
+
+  routeMessage(
+    { id: 'msg_live_after_connect', type: 'message', from: 'alice', to: 'ghost-worker', content: 'live now' },
+    senderSession,
+  );
+
+  assert.equal(wsTarget._sent.length, 2, 'flush 后新的消息应直接投递');
+  assert.equal(wsTarget._sent[1].id, 'msg_live_after_connect');
+  assert.equal(stub.inbox.length, 0, 'flush 后 inbox 应已清空');
+});
+
 // ── routeMessage — 广播 ────────────────────────────────────────────────────────
 
 test('routeMessage: to="*" 广播到所有在线 session，排除发送方', { timeout: 5000 }, () => {

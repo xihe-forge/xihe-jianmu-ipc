@@ -72,6 +72,7 @@ function createMockCtx() {
       persistedInbox.set(sessionName, list);
     },
     getInboxMessages: (sessionName) => [...(persistedInbox.get(sessionName) ?? [])],
+    getRecipientRecent: () => [],
     clearInbox: (sessionName) => {
       clearedInboxSessions.push(sessionName);
       persistedInbox.delete(sessionName);
@@ -273,6 +274,66 @@ test('flushInbox: 合并 SQLite 和内存 inbox，并按 id 去重', { timeout: 
   assert.deepEqual(ws._sent[0].messages.map(m => m.id), ['msg_1', 'msg_2', 'msg_3']);
   assert.equal(session.inbox.length, 0);
   assert.equal(ctx._persistedInbox.has('merge-agent'), false);
+});
+
+test('flushInbox: 合并 recent messages 回放，并将 messages 表行映射为标准消息对象', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  ctx.getRecipientRecent = () => [{
+    id: 'recent_1',
+    type: 'message',
+    from: 'sender',
+    to: 'recent-agent',
+    content: 'recent content',
+    content_type: 'text',
+    topic: 'ops',
+    ts: 10,
+    status: 'delivered',
+  }];
+  const { flushInbox } = createRouter(ctx);
+
+  const ws = createMockWs();
+  const session = createOnlineSession('recent-agent', ws);
+
+  flushInbox(session);
+
+  assert.equal(ws._sent.length, 1);
+  assert.deepEqual(ws._sent[0].messages, [{
+    id: 'recent_1',
+    type: 'message',
+    from: 'sender',
+    to: 'recent-agent',
+    content: 'recent content',
+    contentType: 'text',
+    topic: 'ops',
+    ts: 10,
+  }]);
+});
+
+test('flushInbox: id 缺失时按组合 key 去重', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  ctx.getRecipientRecent = () => [{
+    type: 'message',
+    from: 'sender',
+    to: 'recent-agent',
+    content: 'same payload beyond thirty-two chars 1234567890',
+    ts: 10,
+  }];
+  const { flushInbox } = createRouter(ctx);
+
+  const ws = createMockWs();
+  const session = createOnlineSession('recent-agent', ws);
+  session.inbox.push({
+    type: 'message',
+    from: 'sender',
+    to: 'recent-agent',
+    content: 'same payload beyond thirty-two chars 1234567890',
+    ts: 10,
+  });
+
+  flushInbox(session);
+
+  assert.equal(ws._sent.length, 1);
+  assert.equal(ws._sent[0].messages.length, 1);
 });
 
 test('flushInbox: 空 inbox 时不发送', { timeout: 5000 }, () => {

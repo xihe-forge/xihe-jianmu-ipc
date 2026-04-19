@@ -1,5 +1,6 @@
 import { after, afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
 import { existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +33,7 @@ process.env.IPC_DB_PATH = DB_PATH;
 const db = await import('../../lib/db.mjs');
 const { createRouter } = await import('../../lib/router.mjs');
 const { INBOX_MAX_SIZE } = await import('../../lib/constants.mjs');
+const sqlite = new Database(DB_PATH);
 
 const TEST_TIMEOUT = 10_000;
 let seq = 0;
@@ -85,6 +87,7 @@ function createRealCtx(overrides = {}) {
     saveMessage: db.saveMessage,
     saveInboxMessage: db.saveInboxMessage,
     getInboxMessages: db.getInboxMessages,
+    getRecipientRecent: db.getRecipientRecent,
     clearInbox: db.clearInbox,
     _logs: logs,
     _audits: audits,
@@ -136,6 +139,7 @@ after(() => {
   activeTimers.clear();
   globalThis.setTimeout = originalSetTimeout;
   globalThis.clearTimeout = originalClearTimeout;
+  sqlite.close();
   db.close();
   for (const suffix of ['', '-wal', '-shm']) {
     const file = `${DB_PATH}${suffix}`;
@@ -146,6 +150,12 @@ after(() => {
 });
 
 afterEach(() => {
+  sqlite.exec(`
+    DELETE FROM messages;
+    DELETE FROM inbox;
+    DELETE FROM tasks;
+    DELETE FROM suspended_sessions;
+  `);
   for (const timer of activeTimers) {
     originalClearTimeout(timer);
   }
@@ -610,4 +620,26 @@ test('flushInbox: 离线 session 重连后按 ts 升序发送消息', { timeout:
     session.ws._sent[0].messages.map((row) => row.id),
     [earliestMemory.id, middlePersisted.id, laterPersisted.id],
   );
+});
+
+test('flushInbox: 合并 messages 表 recent 回放并与 inbox 去重', { timeout: TEST_TIMEOUT }, () => {
+  const ctx = createRealCtx();
+  const { flushInbox } = createRouter(ctx);
+  const session = createSession(unique('recent-flush'));
+  const persisted = makeMessage({ id: unique('persisted'), to: session.name, ts: 100 });
+  const recent = makeMessage({ id: unique('recent'), to: session.name, ts: 200, content: 'recent-hit' });
+  const memory = makeMessage({ id: recent.id, to: session.name, ts: 200, content: 'recent-hit' });
+
+  db.saveInboxMessage(session.name, persisted);
+  db.saveMessage(recent);
+  session.inbox.push(memory);
+
+  flushInbox(session);
+
+  assert.equal(session.ws._sent.length, 1);
+  assert.deepEqual(
+    session.ws._sent[0].messages.map((row) => row.id),
+    [persisted.id, recent.id],
+  );
+  assert.equal(session.ws._sent[0].messages[1].contentType, 'text');
 });

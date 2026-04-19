@@ -118,6 +118,7 @@ test('harness self-handover dryRun pipeline: heartbeat -> handover -> check.sh -
     const transitions = [];
     const watchdog = createNetworkWatchdog({
       internalToken: 'watchdog-token',
+      coldStartGraceMs: 0,
       createWatchdogIpcClientImpl: () => createIpcClientStub(),
       probes: {
         cliProxy: async () => ok(),

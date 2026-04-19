@@ -112,15 +112,15 @@ test('createNetworkWatchdog: down 恢复到 OK 时会发送 network-up', async (
   assert.deepEqual(capture.requests[0].body, {
     event: 'network-down',
     failing: ['cliProxy', 'hub'],
-    since: 1000,
+    since: 2000,
     triggeredBy: 'watchdog',
-    ts: 1000,
+    ts: 2000,
   });
   assert.deepEqual(capture.requests[1].body, {
     event: 'network-up',
     recoveredAfter: 3000,
     triggeredBy: 'watchdog',
-    ts: 4000,
+    ts: 5000,
   });
 });
 

@@ -8,6 +8,26 @@ function ok(latencyMs = 1) {
   return { ok: true, latencyMs };
 }
 
+function createManualNow(start = 0) {
+  let current = start;
+  return {
+    now: () => current,
+    advance: (deltaMs) => {
+      current += deltaMs;
+      return current;
+    },
+  };
+}
+
+function createSequenceProbe(sequence) {
+  let index = 0;
+  return async () => {
+    const current = sequence[Math.min(index, sequence.length - 1)];
+    index += 1;
+    return typeof current === 'function' ? current() : current;
+  };
+}
+
 function createHarnessIpcClientStub({ pongSequence = [] } = {}) {
   const calls = {
     start: 0,
@@ -59,6 +79,7 @@ test('watchdog harness: 收到 hard-signal heartbeat 时触发 onHarnessStateCha
   const watchdog = createIsolatedWatchdog({
     watchdogPort: 0,
     createWatchdogIpcClientImpl: () => ipcClient.client,
+    coldStartGraceMs: 0,
     onHarnessStateChange: (transition) => transitions.push(transition),
     probes: {
       cliProxy: async () => ok(),
@@ -96,6 +117,7 @@ test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', asyn
   });
   const watchdog = createIsolatedWatchdog({
     createWatchdogIpcClientImpl: () => ipcClient.client,
+    coldStartGraceMs: 0,
     onHarnessStateChange: (transition) => transitions.push(transition),
     probes: {
       cliProxy: async () => ok(),
@@ -157,4 +179,92 @@ test('watchdog harness: soft signal 收到 pong 后保持 ok', async (t) => {
   assert.equal(state.harness.lastProbe.reason, 'soft signal but responded');
   assert.equal(state.harness.lastProbe.failedPings, 0);
   assert.equal(ipcClient.calls.sendPing.length, 1);
+});
+
+test('watchdog harness: probe-ok 记活性信号后，grace 内 silent-confirmed 可进入 down', async (t) => {
+  const clock = createManualNow();
+  const ipcClient = createHarnessIpcClientStub({
+    pongSequence: [false, false, false],
+  });
+  const watchdog = createIsolatedWatchdog({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+    createWatchdogIpcClientImpl: () => ipcClient.client,
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      harness: createSequenceProbe([
+        { ok: true, connected: true, reason: 'online and active' },
+        {
+          ok: false,
+          connected: true,
+          error: 'silent',
+          reason: 'online but silent',
+          requiresPing: true,
+        },
+      ]),
+    },
+  });
+  t.after(async () => {
+    await watchdog.stop();
+  });
+
+  await watchdog.runTick();
+  clock.advance(30_000);
+  const state = await watchdog.runTick();
+
+  assert.equal(state.harness.state, 'down');
+  assert.equal(state.harness.lastReason, 'soft-B-silent');
+  assert.equal(state.harness.lastProbe.error, 'silent-confirmed');
+});
+
+test('watchdog harness: pong 记活性信号后，grace 内后续 silent-confirmed 可进入 down', async (t) => {
+  const clock = createManualNow();
+  const ipcClient = createHarnessIpcClientStub({
+    pongSequence: [true, false, false, false],
+  });
+  const watchdog = createIsolatedWatchdog({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+    createWatchdogIpcClientImpl: () => ipcClient.client,
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      harness: createSequenceProbe([
+        {
+          ok: false,
+          connected: true,
+          error: 'silent',
+          reason: 'online but silent',
+          requiresPing: true,
+        },
+        {
+          ok: false,
+          connected: true,
+          error: 'silent',
+          reason: 'online but silent',
+          requiresPing: true,
+        },
+      ]),
+    },
+  });
+  t.after(async () => {
+    await watchdog.stop();
+  });
+
+  const firstState = await watchdog.runTick();
+  assert.equal(firstState.harness.state, 'ok');
+  assert.equal(firstState.harness.lastProbe.reason, 'soft signal but responded');
+
+  clock.advance(30_000);
+  const secondState = await watchdog.runTick();
+
+  assert.equal(secondState.harness.state, 'down');
+  assert.equal(secondState.harness.lastReason, 'soft-B-silent');
+  assert.equal(secondState.harness.lastProbe.error, 'silent-confirmed');
+  assert.equal(ipcClient.calls.sendPing.length, 4);
 });

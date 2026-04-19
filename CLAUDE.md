@@ -46,6 +46,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_reconnect(host?, port?)` — 重连到新的Hub地址
 - `ipc_recent_messages(name?, since?, limit?)` — 拉取当前session近期持久化 backlog（默认6h/50条）
 - `ipc_recall(project, since?, limit?, ipc_name?, tool_name?, tags?, keyword?)` — 查询 `~/.claude/project-state/<project>/observations.db` 里的近期 observation；支持 `project="*"` 跨项目合并检索，文本字段预览截断为 500 chars
+- `ipc_observation_detail(project, id)` — 拉取单条 observation 的完整字段，不截断 `tool_input` / `tool_output`；若 tags 里有 `jsonl:` 元数据则一并返回
 
 ## HTTP API
 
@@ -71,6 +72,8 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host='wt', cwd=handoverRepoPath)` 续起新 harness
+- watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定都会被压成 `degraded` 并标记 `held-by-grace`
+- `WATCHDOG_COLD_START_GRACE_MS` 可覆盖该冷启保护时长；测试或回归对比可传 `0`
 
 ## 会话接力
 

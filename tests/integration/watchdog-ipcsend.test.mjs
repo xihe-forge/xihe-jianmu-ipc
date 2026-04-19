@@ -108,6 +108,7 @@ test('startWatchdog: auto handover 注入 ipcSend 并发送 run-check-sh', async
     ipcPort,
     watchdogPort,
     intervalMs: 60_000,
+    coldStartGraceMs: 0,
     internalToken: 'watchdog-token',
     ipcSpawn: async () => {
       throw new Error('dryRun should not spawn');

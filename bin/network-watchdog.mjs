@@ -24,6 +24,7 @@ import {
 export const DEFAULT_IPC_PORT = 3179;
 export const DEFAULT_WATCHDOG_PORT = 3180;
 export const DEFAULT_WATCHDOG_INTERVAL_MS = 30_000;
+export const DEFAULT_WATCHDOG_COLD_START_GRACE_MS = 120_000;
 export const WATCHDOG_RETRY_DELAYS_MS = [1_000, 5_000, 15_000];
 export const WATCHDOG_HOST = '127.0.0.1';
 export const WATCHDOG_SESSION_NAME = 'network-watchdog';
@@ -38,6 +39,11 @@ const PROJECT_ROOT = resolve(__dirname, '..');
 function parsePort(value, fallback) {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNonNegativeInt(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function createWait(waitImpl, setTimeoutImpl) {
@@ -62,6 +68,10 @@ function toErrorMessage(error) {
 
 function normalizeMaybeFunction(value) {
   return typeof value === 'function' ? value() : value;
+}
+
+function isHeldByColdStartGrace(reason) {
+  return typeof reason === 'string' && reason.startsWith('held-by-grace:');
 }
 
 function buildHubUrl(ipcPort) {
@@ -440,6 +450,7 @@ export function createNetworkWatchdog({
   harnessSessionName = HARNESS_SESSION_NAME,
   harnessPingAttempts = 3,
   harnessPingIntervalMs = 30_000,
+  coldStartGraceMs = DEFAULT_WATCHDOG_COLD_START_GRACE_MS,
   harnessProbeConfig = {},
   onHarnessStateChange = null,
   triggerHarnessSelfHandoverImpl = null,
@@ -565,10 +576,12 @@ export function createNetworkWatchdog({
 
   const harnessStateMachine = createHarnessStateMachineImpl({
     now,
+    coldStartGraceMs,
     onTransition: (transition) => {
       if (
         canAutoHandover
         && (transition.to === 'degraded' || transition.to === 'down')
+        && !isHeldByColdStartGrace(transition.reason)
         && pendingHarnessHandover == null
       ) {
         const promise = Promise.resolve()
@@ -646,6 +659,7 @@ export function createNetworkWatchdog({
       await watchdogIpcClient.sendPing();
       const responded = await pongPromise;
       if (responded) {
+        harnessStateMachine.markAliveSignal('pong');
         return { responded: true, failedPings: attempt - 1 };
       }
     }
@@ -667,6 +681,10 @@ export function createNetworkWatchdog({
 
     if (result?.connected) {
       lastSeenHarnessOnlineAt = now();
+    }
+
+    if (result?.ok && result?.reason === 'online and active') {
+      harnessStateMachine.markAliveSignal('probe-ok');
     }
 
     if (result?.requiresPing) {
@@ -853,6 +871,7 @@ export function formatWatchdogHelp() {
     `  IPC_PORT=${DEFAULT_IPC_PORT}                 Hub HTTP port`,
     `  IPC_WATCHDOG_PORT=${DEFAULT_WATCHDOG_PORT}      Watchdog status port`,
     `  IPC_WATCHDOG_INTERVAL_MS=${DEFAULT_WATCHDOG_INTERVAL_MS}  Probe interval in milliseconds`,
+    `  WATCHDOG_COLD_START_GRACE_MS=${DEFAULT_WATCHDOG_COLD_START_GRACE_MS}  Suppress harness self-handover until first alive signal`,
     '  IPC_INTERNAL_TOKEN=<token>          Shared internal auth token',
   ].join('\n');
 }
@@ -861,6 +880,10 @@ export async function startWatchdog(options = {}) {
   const ipcPort = parsePort(options.ipcPort ?? process.env.IPC_PORT, DEFAULT_IPC_PORT);
   const watchdogPort = parsePort(options.watchdogPort ?? process.env.IPC_WATCHDOG_PORT, DEFAULT_WATCHDOG_PORT);
   const intervalMs = parsePort(options.intervalMs ?? process.env.IPC_WATCHDOG_INTERVAL_MS, DEFAULT_WATCHDOG_INTERVAL_MS);
+  const coldStartGraceMs = parseNonNegativeInt(
+    options.coldStartGraceMs ?? process.env.WATCHDOG_COLD_START_GRACE_MS,
+    DEFAULT_WATCHDOG_COLD_START_GRACE_MS,
+  );
   const internalToken = options.internalToken ?? await loadInternalToken({ rootDir: PROJECT_ROOT });
   const ipcSpawn = options.ipcSpawn ?? await loadDefaultIpcSpawn();
   const lineage = options.lineage ?? createLineageTracker({
@@ -873,6 +896,7 @@ export async function startWatchdog(options = {}) {
     ipcPort,
     watchdogPort,
     intervalMs,
+    coldStartGraceMs,
     internalToken,
     ipcSpawn,
     lineage,

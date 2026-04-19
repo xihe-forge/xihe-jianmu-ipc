@@ -10,10 +10,22 @@ function createNow(start = 0, step = 1_000) {
   };
 }
 
+function createManualNow(start = 0) {
+  let current = start;
+  return {
+    now: () => current,
+    advance: (deltaMs) => {
+      current += deltaMs;
+      return current;
+    },
+  };
+}
+
 test('createHarnessStateMachine: critical + self-handover 触发 hard-signal down', () => {
   const transitions = [];
   const machine = createHarnessStateMachine({
     now: createNow(),
+    coldStartGraceMs: 0,
     onTransition: (transition) => transitions.push(transition),
   });
 
@@ -32,15 +44,16 @@ test('createHarnessStateMachine: critical + self-handover 触发 hard-signal dow
     contextPct: 70,
     warnCount: 0,
     nextAction: 'self-handover',
-    ts: 2000,
+    ts: 3000,
   }]);
-  assert.equal(machine.lastHeartbeatAt, 1000);
+  assert.equal(machine.lastHeartbeatAt, 2000);
 });
 
 test('createHarnessStateMachine: silent-confirmed + disconnected 原因触发 soft-A down', () => {
   const now = createNow();
   const machine = createHarnessStateMachine({
     now,
+    coldStartGraceMs: 0,
   });
 
   machine.ingestProbeResult({
@@ -50,13 +63,14 @@ test('createHarnessStateMachine: silent-confirmed + disconnected 原因触发 so
 
   assert.equal(machine.state, 'down');
   assert.equal(machine.lastReason, 'soft-A-ws-disconnect');
-  assert.equal(machine.lastProbeAt, 1000);
+  assert.equal(machine.lastProbeAt, 2000);
   assert.equal(machine.lastProbeError, 'silent-confirmed');
 });
 
 test('createHarnessStateMachine: silent-confirmed + 在线静默触发 soft-B down', () => {
   const machine = createHarnessStateMachine({
     now: createNow(),
+    coldStartGraceMs: 0,
   });
 
   machine.ingestProbeResult({
@@ -92,13 +106,13 @@ test('createHarnessStateMachine: ok -> warn -> active 可恢复到 ok', () => {
   machine.ingestHeartbeat({ pct: 56, state: 'warn', nextAction: 'continue' });
   assert.equal(machine.state, 'warn');
   assert.equal(machine.warnCount, 1);
-  assert.equal(machine.lastHeartbeatAt, 1000);
+  assert.equal(machine.lastHeartbeatAt, 2000);
 
   machine.ingestHeartbeat({ pct: 20, state: 'active', nextAction: 'continue' });
   assert.equal(machine.state, 'ok');
   assert.equal(machine.warnCount, 0);
   assert.equal(machine.lastReason, 'recovered');
-  assert.equal(machine.lastHeartbeatAt, 3000);
+  assert.equal(machine.lastHeartbeatAt, 4000);
 });
 
 test('createHarnessStateMachine: compact 会重置 warnCount，critical 无动作时进入 degraded', () => {
@@ -116,4 +130,123 @@ test('createHarnessStateMachine: compact 会重置 warnCount，critical 无动�
   machine.ingestHeartbeat({ pct: 70, state: 'critical', nextAction: 'continue' });
   assert.equal(machine.state, 'degraded');
   assert.equal(machine.lastReason, 'context-critical-no-action');
+});
+
+test('createHarnessStateMachine: cold-start 首条 critical heartbeat 会被 grace hold 成 degraded', () => {
+  const clock = createManualNow();
+  const transitions = [];
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+    onTransition: (transition) => transitions.push(transition),
+  });
+
+  machine.ingestHeartbeat({
+    pct: 70,
+    state: 'critical',
+    nextAction: 'self-handover',
+  });
+
+  assert.equal(machine.state, 'degraded');
+  assert.match(machine.lastReason, /^held-by-grace: hard-signal/);
+  assert.equal(machine.aliveSignalReceived, true);
+  assert.equal(machine.lastAliveSignalSource, 'heartbeat');
+  assert.deepEqual(transitions, [{
+    from: 'ok',
+    to: 'degraded',
+    reason: 'held-by-grace: hard-signal (no alive signal in cold-start 0s)',
+    contextPct: 70,
+    warnCount: 0,
+    nextAction: 'self-handover',
+    ts: 0,
+  }]);
+});
+
+test('createHarnessStateMachine: cold-start 先收到 active heartbeat 后，后续 hard-signal 可正常 down', () => {
+  const clock = createManualNow();
+  const transitions = [];
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+    onTransition: (transition) => transitions.push(transition),
+  });
+
+  machine.ingestHeartbeat({
+    pct: 20,
+    state: 'active',
+    nextAction: 'continue',
+  });
+  clock.advance(1_000);
+  machine.ingestHeartbeat({
+    pct: 70,
+    state: 'critical',
+    nextAction: 'self-handover',
+  });
+
+  assert.equal(machine.state, 'down');
+  assert.equal(machine.lastReason, 'hard-signal');
+  assert.equal(machine.aliveSignalReceived, true);
+  assert.equal(machine.lastAliveSignalSource, 'heartbeat');
+  assert.deepEqual(transitions, [{
+    from: 'ok',
+    to: 'down',
+    reason: 'hard-signal',
+    contextPct: 70,
+    warnCount: 0,
+    nextAction: 'self-handover',
+    ts: 1_000,
+  }]);
+});
+
+test('createHarnessStateMachine: cold-start grace 过后无活性信号时，hard-signal 正常 down', () => {
+  const clock = createManualNow();
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+  });
+
+  clock.advance(120_000);
+  machine.ingestProbeResult({
+    error: 'silent-confirmed',
+    reason: 'online but silent',
+  });
+
+  assert.equal(machine.state, 'down');
+  assert.equal(machine.lastReason, 'soft-B-silent');
+  assert.equal(machine.aliveSignalReceived, false);
+});
+
+test('createHarnessStateMachine: cold-start 内先收到 pong 活性信号后，hard-signal 可正常 down', () => {
+  const clock = createManualNow();
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+  });
+
+  clock.advance(5_000);
+  machine.markAliveSignal('pong');
+  clock.advance(1_000);
+  machine.ingestProbeResult({
+    error: 'silent-confirmed',
+    reason: 'disconnected beyond grace',
+  });
+
+  assert.equal(machine.state, 'down');
+  assert.equal(machine.lastReason, 'soft-A-ws-disconnect');
+  assert.equal(machine.lastAliveSignalSource, 'pong');
+});
+
+test('createHarnessStateMachine: coldStartGraceMs=0 时回退为旧行为', () => {
+  const machine = createHarnessStateMachine({
+    now: createManualNow().now,
+    coldStartGraceMs: 0,
+  });
+
+  machine.ingestProbeResult({
+    error: 'silent-confirmed',
+    reason: 'online but silent',
+  });
+
+  assert.equal(machine.state, 'down');
+  assert.equal(machine.lastReason, 'soft-B-silent');
 });

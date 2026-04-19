@@ -39,7 +39,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_sessions()` — 在线session列表
 - `ipc_whoami()` — 当前session身份
 - `ipc_subscribe(topic, action)` — 订阅/退订topic
-- `ipc_spawn(name, task, interactive?, model?, host?)` — 启动新session；`host=wt|vscode-terminal|external`，默认 `external`
+- `ipc_spawn(name, task, interactive?, model?, host?)` — 启动新session；`host=wt|vscode-terminal|external`，默认 `external`。`wt` / `external` 都以 `IPC_NAME` 环境变量传 session 名，不使用 `--session-name` / `--resume`；canonical cmdline 是 `"...\\bin\\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`
 - `ipc_rename(name)` — 重命名当前session
 - `ipc_task(action, ...)` — 结构化任务管理（create/update/list）
 - `ipc_reconnect(host?, port?)` — 重连到新的Hub地址

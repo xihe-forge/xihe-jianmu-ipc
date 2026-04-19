@@ -80,6 +80,9 @@ test('triggerHarnessSelfHandover: dryRun 生成 HANDOVER 文件且不触发 git/
   assertEightSections(content);
   assert.match(content, /handover_reason: crash_recovery/);
   assert.match(content, /COMPANY-PLAN: xihe-company-brain\/portfolio\/COMPANY-PLAN.md @ /);
+  assert.match(content, /1\. 读本文件（.*HANDOVER-HARNESS-\d{8}-\d{4}\.md）@ commit abc1234/);
+  assert.match(content, /2\. 按 session-cold-start\.md v1\.0 的 7 步清单冷启/);
+  assert.match(content, /3\. 续前任 in-flight task：跟进 B5 #23 watchdog \+ handover/);
 });
 
 test('triggerHarnessSelfHandover: lineage 熔断时直接拒绝触发', async () => {

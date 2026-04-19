@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import { join } from 'node:path';
 import { createMcpTools } from '../lib/mcp-tools.mjs';
 
 function createMockWs(readyState = 1) {
@@ -102,6 +105,15 @@ function getText(result) {
 
 function getJson(result) {
   return JSON.parse(getText(result));
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function importMcpServerModule() {
+  const moduleUrl = new URL('../mcp-server.mjs', import.meta.url);
+  return import(`${moduleUrl.href}?test=${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
 test('listTools: 暴露 9 个 MCP 工具', () => {
@@ -359,6 +371,53 @@ test('ipc_spawn: 显式 host=wt 时透传给 spawnSession', async () => {
     model: undefined,
     host: 'wt',
   }]);
+});
+
+test('ipc_spawn: host=external dryRun 返回修正后的 spawn-fallback IPC content', async () => {
+  const sandbox = mkdtempSync(join(os.tmpdir(), 'ipc-spawn-fallback-'));
+  const originalCwd = process.cwd();
+  const configPath = join(sandbox, '.mcp.json');
+
+  try {
+    writeFileSync(configPath, JSON.stringify({
+      mcpServers: {
+        ipc: {
+          env: {
+            IPC_AUTH_TOKEN: '0123456789abcdef-token',
+          },
+        },
+      },
+    }, null, 2), 'utf8');
+    process.chdir(sandbox);
+
+    const { spawnSession } = await importMcpServerModule();
+    const { tools } = createHarness({
+      impl: {
+        httpGet: async () => [],
+        spawnSession: async (params) => spawnSession({ ...params, dryRun: true }),
+      },
+    });
+
+    const result = await tools.handleToolCall('ipc_spawn', {
+      name: 'worker-b',
+      task: 'resume handover',
+      host: 'external',
+    });
+    const payload = getJson(result);
+
+    assert.equal(payload.host, 'external');
+    assert.equal(payload.dryRun, true);
+    assert.match(payload.ipc_content, /cmdline: "C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc/);
+    assert.doesNotMatch(payload.ipc_content, /--session-name/);
+    assert.doesNotMatch(payload.ipc_content, /--resume/);
+    assert.match(payload.ipc_content, new RegExp(`cwd: ${escapeRegex(sandbox.replace(/\\/g, '/'))}`));
+    assert.match(payload.ipc_content, /env: IPC_NAME=worker-b IPC_AUTH_TOKEN=0123456789\.\.\. \(完整 token 从 cwd \.mcp\.json 读\)/);
+    assert.match(payload.ipc_content, /task_hint: resume handover/);
+    assert.match(payload.ipc_content, /post_spawn_action: 新 session 冷启清单 step 3 ipc_whoami/);
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 });
 
 test('ipc_spawn: host=vscode-terminal 也会透传给 spawnSession', async () => {

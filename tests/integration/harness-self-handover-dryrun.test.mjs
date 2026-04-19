@@ -168,6 +168,9 @@ test('harness self-handover dryRun pipeline: heartbeat -> handover -> check.sh -
     assert.match(content, /## Context/);
     assert.match(content, /PROJECT-PLAN: .* @ /);
     assert.match(content, /TODO: .* @ /);
+    assert.match(content, /1\. 读本文件（handover\/HANDOVER-HARNESS-\d{8}-\d{4}\.md）@ commit abc1234/);
+    assert.match(content, /2\. 按 session-cold-start\.md v1\.0 的 7 步清单冷启/);
+    assert.match(content, /3\. 续前任 in-flight task：等 watchdog 吃到 critical heartbeat 后写 handover/);
 
     const spawnCalls = [];
     const tools = createSpawnTool(spawnCalls);

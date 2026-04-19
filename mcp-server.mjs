@@ -142,6 +142,21 @@ function buildInteractiveCommand({ sessionName, model }) {
   return `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
 }
 
+const DEFAULT_CLAUDE_BIN = 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
+const DEFAULT_SPAWN_FALLBACK_CWD = 'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness';
+
+function getClaudeBinPath() {
+  return process.env.CLAUDE_CLI_PATH || DEFAULT_CLAUDE_BIN;
+}
+
+function buildClaudeLaunchArgs({ model } = {}) {
+  return `--dangerously-skip-permissions --dangerously-load-development-channels server:ipc${model ? ` --model ${model}` : ''}`;
+}
+
+function buildWtLaunchCommand({ sessionName, model }) {
+  return `set IPC_NAME=${sessionName} && "${getClaudeBinPath()}" ${buildClaudeLaunchArgs({ model })}`;
+}
+
 function maskEnvValue(key, value) {
   if (/(KEY|TOKEN|SECRET|PASSWORD)/i.test(String(key))) {
     return '***';
@@ -149,35 +164,69 @@ function maskEnvValue(key, value) {
   return String(value);
 }
 
-function buildMaskedEnv(env = {}) {
-  const entries = Object.entries(env);
-  if (entries.length === 0) {
-    return '(none)';
+function normalizeDisplayPath(value) {
+  return String(value).replace(/\\/g, '/');
+}
+
+function readIpcAuthTokenFromMcpConfig(cwd) {
+  if (!cwd) {
+    return null;
   }
-  return entries
+
+  const configPath = join(cwd, '.mcp.json');
+  if (!existsSync(configPath)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8'));
+    const token = parsed?.mcpServers?.ipc?.env?.IPC_AUTH_TOKEN;
+    return typeof token === 'string' && token.trim() !== ''
+      ? token.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function maskToken(token) {
+  return `${String(token).slice(0, 10)}...`;
+}
+
+function buildOtherMaskedEnv(env = {}) {
+  return Object.entries(env)
+    .filter(([key, value]) => key !== 'IPC_NAME' && key !== 'IPC_AUTH_TOKEN' && value !== undefined && value !== null && value !== '')
     .map(([key, value]) => `${key}=${maskEnvValue(key, value)}`)
-    .join('; ');
+    .join(' ');
 }
 
 function buildSpawnFallbackContent({
   sessionName,
   task,
   reason = 'manual',
-  cwd = 'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness',
-  resumeSessionId = null,
+  cwd = DEFAULT_SPAWN_FALLBACK_CWD,
   taskHint = null,
+  model,
   env = {},
 }) {
   const iso = new Date().toISOString();
-  const claudeCli = process.env.CLAUDE_CLI_PATH
-    || 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js';
-  const resumePart = resumeSessionId ? ` --resume ${resumeSessionId}` : '';
+  const effectiveCwd = cwd || DEFAULT_SPAWN_FALLBACK_CWD;
+  const claudeBin = getClaudeBinPath();
+  const configIpcAuthToken = readIpcAuthTokenFromMcpConfig(effectiveCwd);
+  const ipcAuthToken = configIpcAuthToken
+    || (typeof env.IPC_AUTH_TOKEN === 'string' && env.IPC_AUTH_TOKEN.trim() !== '' ? env.IPC_AUTH_TOKEN.trim() : '');
+  const otherMaskedEnv = buildOtherMaskedEnv(env);
+  const envLine = `IPC_NAME=${sessionName}`
+    + `${ipcAuthToken ? ` IPC_AUTH_TOKEN=${maskToken(ipcAuthToken)}${configIpcAuthToken ? ' (完整 token 从 cwd .mcp.json 读)' : ''}` : ''}`
+    + `${otherMaskedEnv ? ` ${otherMaskedEnv}` : ''}`;
+  const defaultTaskHint = `续跑 handover/HANDOVER-${sessionName.toUpperCase()}-<ymdhm>.md @ commit <sha-7>`;
   return (
     `【jianmu-pm ${iso} · spawn-fallback】\n`
-    + `cmdline: "${claudeCli}" --session-name ${sessionName}${resumePart}\n`
-    + `cwd: ${cwd}\n`
-    + `task_hint: ${taskHint || task}\n`
-    + `env: ${buildMaskedEnv(env)}\n`
+    + `cmdline: "${claudeBin}" ${buildClaudeLaunchArgs({ model })}\n`
+    + `cwd: ${normalizeDisplayPath(effectiveCwd)}\n`
+    + `env: ${envLine}\n`
+    + `task_hint: ${taskHint || task || defaultTaskHint}\n`
+    + `post_spawn_action: 新 session 冷启清单 step 3 ipc_whoami → 若名非 ${sessionName} 调 ipc_rename ${sessionName}（借 pending_rebind 5s 宽限继承）\n`
     + `spawn_reason: ${reason}`
   );
 }
@@ -187,8 +236,8 @@ async function sendSpawnFallbackIpc({
   task,
   reason,
   cwd,
-  resumeSessionId,
   taskHint,
+  model,
   env = {},
 }) {
   const content = buildSpawnFallbackContent({
@@ -196,8 +245,8 @@ async function sendSpawnFallbackIpc({
     task,
     reason,
     cwd,
-    resumeSessionId,
     taskHint,
+    model,
     env,
   });
 
@@ -229,12 +278,16 @@ export async function spawnSession({ name: sessionName, task, interactive, model
 
   const fullPrompt = `${ipcInstruction}\n\nTask: ${task}`;
   const requestedHost = host;
+  const spawnCwd = process.cwd();
 
   if (requestedHost === 'wt') {
     if (process.platform !== 'win32') {
       const content = buildSpawnFallbackContent({
         sessionName,
         task,
+        cwd: spawnCwd,
+        taskHint: task,
+        model,
       });
       if (dryRun) {
         return {
@@ -249,6 +302,9 @@ export async function spawnSession({ name: sessionName, task, interactive, model
       await sendSpawnFallbackIpc({
         sessionName,
         task,
+        cwd: spawnCwd,
+        taskHint: task,
+        model,
       });
       return {
         spawned: false,
@@ -258,17 +314,19 @@ export async function spawnSession({ name: sessionName, task, interactive, model
       };
     }
 
-    const command = buildInteractiveCommand({ sessionName, model });
+    const command = buildWtLaunchCommand({ sessionName, model });
+    const wtArgs = ['new-tab', '--title', sessionName, '--starting-directory', spawnCwd, 'cmd', '/c', command];
     if (dryRun) {
       return {
         spawned: false,
         host: 'wt',
         dryRun: true,
         command_hint: command,
+        cwd: normalizeDisplayPath(spawnCwd),
       };
     }
 
-    const child = spawn('wt', ['new-tab', '--title', sessionName, 'cmd', '/k', command], {
+    const child = spawn('wt', wtArgs, {
       detached: true,
       stdio: 'ignore',
       env: ipcEnv,
@@ -290,6 +348,9 @@ export async function spawnSession({ name: sessionName, task, interactive, model
     const content = buildSpawnFallbackContent({
       sessionName,
       task,
+      cwd: spawnCwd,
+      taskHint: task,
+      model,
     });
     if (dryRun) {
       return {
@@ -304,6 +365,9 @@ export async function spawnSession({ name: sessionName, task, interactive, model
     await sendSpawnFallbackIpc({
       sessionName,
       task,
+      cwd: spawnCwd,
+      taskHint: task,
+      model,
     });
     return {
       spawned: false,

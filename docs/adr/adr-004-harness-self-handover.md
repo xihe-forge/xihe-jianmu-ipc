@@ -21,6 +21,7 @@
    - `wt`: Win32 上通过 Windows Terminal 新 tab 拉起
    - `vscode-terminal`: 预留，当前返回 not implemented
    - `external`: 走 `spawn-fallback` IPC 给 tech-worker
+   - canonical spawn cmdline 为 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`，session 名通过 `IPC_NAME` env 传递，不使用 `--session-name` / `--resume`
 
 ## Consequences
 

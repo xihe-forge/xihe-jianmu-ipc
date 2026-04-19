@@ -268,3 +268,97 @@ test('createHarnessStateMachine: coldStartGraceMs=0 时回退为旧行为', () =
   assert.equal(machine.state, 'down');
   assert.equal(machine.lastReason, 'soft-B-silent');
 });
+
+test('createHarnessStateMachine: 过旧 heartbeat ts 会被 stale-heartbeat 过滤', () => {
+  const startedAt = Date.parse('2026-04-20T03:14:00+08:00');
+  const clock = createManualNow(startedAt);
+  const transitions = [];
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    onTransition: (transition) => transitions.push(transition),
+  });
+
+  const result = machine.ingestHeartbeat({
+    pct: 70,
+    state: 'critical',
+    nextAction: 'self-handover',
+    ts: startedAt - 61_000,
+  });
+
+  assert.deepEqual(result, {
+    ignored: true,
+    reason: 'stale-heartbeat',
+    heartbeatTs: startedAt - 61_000,
+    startedAtBuffer: startedAt - 60_000,
+  });
+  assert.equal(machine.state, 'ok');
+  assert.equal(machine.lastReason, 'init');
+  assert.equal(machine.lastHeartbeatAt, null);
+  assert.equal(machine.aliveSignalReceived, false);
+  assert.deepEqual(transitions, []);
+});
+
+test('createHarnessStateMachine: invalid heartbeat ts(null/NaN) 不触发 transition', () => {
+  const startedAt = Date.parse('2026-04-20T03:14:00+08:00');
+
+  for (const invalidTs of [null, Number.NaN]) {
+    const clock = createManualNow(startedAt);
+    const machine = createHarnessStateMachine({
+      now: clock.now,
+    });
+
+    const result = machine.ingestHeartbeat({
+      pct: 70,
+      state: 'critical',
+      nextAction: 'self-handover',
+      ts: invalidTs,
+    });
+
+    assert.equal(result.ignored, true);
+    assert.equal(result.reason, 'invalid-ts-format');
+    if (invalidTs === null) {
+      assert.equal(result.heartbeatTs, null);
+    } else {
+      assert.equal(Number.isNaN(result.heartbeatTs), true);
+    }
+    assert.equal(machine.state, 'ok');
+    assert.equal(machine.lastHeartbeatAt, null);
+    assert.equal(machine.aliveSignalReceived, false);
+  }
+});
+
+test('createHarnessStateMachine: 新鲜 heartbeat ts 可正常驱动 transition', () => {
+  const startedAt = Date.parse('2026-04-20T03:14:00+08:00');
+  const clock = createManualNow(startedAt);
+  const transitions = [];
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+    onTransition: (transition) => transitions.push(transition),
+  });
+
+  const result = machine.ingestHeartbeat({
+    pct: 70,
+    state: 'critical',
+    nextAction: 'self-handover',
+    ts: startedAt,
+  });
+
+  assert.deepEqual(result, {
+    ignored: false,
+    heartbeatTs: startedAt,
+  });
+  assert.equal(machine.state, 'down');
+  assert.equal(machine.lastReason, 'hard-signal');
+  assert.equal(machine.lastHeartbeatAt, startedAt);
+  assert.equal(machine.aliveSignalReceived, true);
+  assert.deepEqual(transitions, [{
+    from: 'ok',
+    to: 'down',
+    reason: 'hard-signal',
+    contextPct: 70,
+    warnCount: 0,
+    nextAction: 'self-handover',
+    ts: startedAt,
+  }]);
+});

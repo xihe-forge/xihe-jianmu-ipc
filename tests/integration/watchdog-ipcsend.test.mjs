@@ -63,7 +63,7 @@ function createIpcClientStub() {
   };
 }
 
-test('startWatchdog: auto handover 注入 ipcSend 并发送 run-check-sh', async (t) => {
+test('startWatchdog: dryRun auto handover 返回 inline 内容且不发送 run-check-sh', async (t) => {
   const sandbox = createSandbox('dryrun');
   const handoverRepo = join(sandbox, 'xihe-tianshu-harness');
   const companyRepo = join(sandbox, 'xihe-company-brain');
@@ -78,7 +78,7 @@ test('startWatchdog: auto handover 注入 ipcSend 并发送 run-check-sh', async
 
   initGitRepo(companyRepo, {
     'portfolio/COMPANY-PLAN.md': '# COMPANY PLAN\n',
-    'portfolio/STATUS.md': '## 一眼看（给老板）\n- **in-flight**：watchdog run-check-sh dryRun 注入\n',
+    'portfolio/STATUS.md': '## 一眼看（给老板）\n- **in-flight**：watchdog dryRun inline handover\n',
   });
   initGitRepo(handoverRepo, {
     'handover/PROJECT-PLAN.md': '# PROJECT PLAN\n',
@@ -90,18 +90,18 @@ test('startWatchdog: auto handover 注入 ipcSend 并发送 run-check-sh', async
     '- 等 watchdog critical heartbeat 触发 dryRun handover',
     '',
     '## 本 session 决策快照',
-    '- run-check-sh IPC 必须由 watchdog 自动注入',
+    '- dryRun 只返 inline handover content，不发 run-check-sh',
     '',
     '## 遇到的坑',
-    '- handoverConfig 默认空对象时 ipcSend 会丢',
+    '- 真实 handover/ 目录不能被 smoke 污染',
     '',
     '## 下一步计划',
-    '- 验证 tech-worker-stub 收到 run-check-sh',
+    '- 验证 watchdog 可读回 dryRun handover 结果',
   ].join('\n'), 'utf8');
   writeFileSync(lastBreathPath, JSON.stringify({
     git: { head_sha: 'abc1234', dirty_files: ['handover/TODO.md'] },
-    current_doing: '验证 watchdog 注入 ipcSend',
-    dangerous_state: 'run-check-sh IPC 丢失会让 tech-worker 收不到检查信号',
+    current_doing: '验证 watchdog dryRun 返回 inline handover',
+    dangerous_state: 'dryRun 污染真实 handover 目录会让 smoke 假隔离',
   }, null, 2), 'utf8');
 
   const watchdog = await startWatchdog({
@@ -151,10 +151,12 @@ test('startWatchdog: auto handover 注入 ipcSend 并发送 run-check-sh', async
 
   await watchdog.waitForIdle();
 
+  const handoverResult = watchdog.getLastHandoverResult();
   assert.equal(ipcClient.calls.start, 1);
-  assert.equal(ipcClient.calls.sendMessage.length, 1);
-  assert.equal(ipcClient.calls.sendMessage[0].to, 'tech-worker-stub');
-  assert.equal(ipcClient.calls.sendMessage[0].topic, 'run-check-sh');
-  assert.match(ipcClient.calls.sendMessage[0].content, /run-check-sh/);
-  assert.match(ipcClient.calls.sendMessage[0].content, /mode: --only HANDOVER/);
+  assert.equal(ipcClient.calls.sendMessage.length, 0);
+  assert.equal(handoverResult.triggered, true);
+  assert.equal(handoverResult.handoverFile, null);
+  assert.match(handoverResult.handoverFilename, /^HANDOVER-HARNESS-\d{8}-\d{4}\.md$/);
+  assert.match(handoverResult.handoverContent, /## Goal/);
+  assert.match(handoverResult.handoverContent, /handover_reason: threshold_65/);
 });

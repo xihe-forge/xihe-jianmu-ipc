@@ -203,7 +203,8 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 
 - watchdog 订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
-- harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读取 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host="wt", cwd=handoverRepoPath)` 续起新 harness
+- 只有 harness 进入 `down` 时，watchdog 才会触发 `triggerHarnessSelfHandover()`；`degraded` 只表示风险态，不会直接 handover
+- watchdog 会过滤历史 / 非法 heartbeat `ts`：若 `ts < watchdog startedAt - 60s` 或时间戳解析失败，该 heartbeat 会被忽略，不驱动 transition / handover
 - `lib/lineage.mjs` 用 SQLite `lineage` 表限制递归 handover 深度与频次，防止自拉起雪崩
 
 ---

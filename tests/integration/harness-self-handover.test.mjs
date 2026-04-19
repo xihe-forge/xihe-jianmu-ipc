@@ -45,7 +45,7 @@ function assertEightSections(content) {
   }
 }
 
-test('triggerHarnessSelfHandover: dryRun 生成 HANDOVER 文件且不触发 git/spawn', async () => {
+test('triggerHarnessSelfHandover: dryRun 返回 inline HANDOVER 内容且不触发 git/spawn', async () => {
   const sandbox = createSandbox('dryrun');
   const checkpointPath = join(sandbox, '.session-checkpoint.md');
   const lastBreathPath = join(sandbox, 'harness.json');
@@ -90,14 +90,15 @@ test('triggerHarnessSelfHandover: dryRun 生成 HANDOVER 文件且不触发 git/
   assert.equal(result.triggered, true);
   assert.equal(result.commitSha, null);
   assert.equal(spawnCalled, false);
-  assert.equal(existsSync(result.handoverFile), true);
-  const content = readFileSync(result.handoverFile, 'utf8');
-  assertEightSections(content);
-  assert.match(content, /handover_reason: crash_recovery/);
-  assert.match(content, /COMPANY-PLAN: xihe-company-brain\/portfolio\/COMPANY-PLAN.md @ /);
-  assert.match(content, /1\. 读本文件（.*HANDOVER-HARNESS-\d{8}-\d{4}\.md）@ commit abc1234/);
-  assert.match(content, /2\. 按 session-cold-start\.md v1\.0 的 7 步清单冷启/);
-  assert.match(content, /3\. 续前任 in-flight task：跟进 B5 #23 watchdog \+ handover/);
+  assert.equal(result.handoverFile, null);
+  assert.match(result.handoverFilename, /^HANDOVER-HARNESS-\d{8}-\d{4}\.md$/);
+  assert.equal(existsSync(join(outputDir, result.handoverFilename)), false);
+  assertEightSections(result.handoverContent);
+  assert.match(result.handoverContent, /handover_reason: crash_recovery/);
+  assert.match(result.handoverContent, /COMPANY-PLAN: xihe-company-brain\/portfolio\/COMPANY-PLAN.md @ /);
+  assert.match(result.handoverContent, /1\. 读本文件（.*HANDOVER-HARNESS-\d{8}-\d{4}\.md）@ commit abc1234/);
+  assert.match(result.handoverContent, /2\. 按 session-cold-start\.md v1\.0 的 7 步清单冷启/);
+  assert.match(result.handoverContent, /3\. 续前任 in-flight task：跟进 B5 #23 watchdog \+ handover/);
 });
 
 test('triggerHarnessSelfHandover: lineage 熔断时直接拒绝触发', async () => {
@@ -143,9 +144,9 @@ test('triggerHarnessSelfHandover: checkpoint 缺失时生成 first_version hando
     now: () => new Date('2026-04-19T15:00:00Z').getTime(),
   });
 
-  const content = readFileSync(result.handoverFile, 'utf8');
-  assert.match(content, /handover_reason: first_version/);
-  assert.match(content, /阻塞 首版豁免/);
+  assert.equal(result.handoverFile, null);
+  assert.match(result.handoverContent, /handover_reason: first_version/);
+  assert.match(result.handoverContent, /阻塞 首版豁免/);
 });
 
 test('triggerHarnessSelfHandover: 非 dryRun 时向 ipcSpawn 透传 handoverRepoPath 作为 cwd', async () => {

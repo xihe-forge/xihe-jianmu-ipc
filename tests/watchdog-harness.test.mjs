@@ -60,6 +60,14 @@ function createHarnessIpcClientStub({ pongSequence = [] } = {}) {
   };
 }
 
+function createLineageStub() {
+  return {
+    check: () => ({ allowed: true, depth: 0, wakesInWindow: 0 }),
+    record() {},
+    chain: () => [],
+  };
+}
+
 function failOnUnexpectedFetch(url) {
   throw new Error(`unexpected watchdog harness fetch: ${String(url)}`);
 }
@@ -108,6 +116,79 @@ test('watchdog harness: 收到 hard-signal heartbeat 时触发 onHarnessStateCha
     pct: 70,
     nextAction: 'self-handover',
   });
+});
+
+test('watchdog harness: degraded heartbeat 不触发 onHarnessStateChange 或 auto handover', async (t) => {
+  const transitions = [];
+  const handoverCalls = [];
+  const ipcClient = createHarnessIpcClientStub();
+  const watchdog = createIsolatedWatchdog({
+    watchdogPort: 0,
+    createWatchdogIpcClientImpl: () => ipcClient.client,
+    coldStartGraceMs: 0,
+    lineage: createLineageStub(),
+    ipcSpawn: async () => ({ spawned: false }),
+    handoverConfig: { dryRun: true },
+    triggerHarnessSelfHandoverImpl: async (payload) => {
+      handoverCalls.push(payload);
+      return { triggered: true };
+    },
+    onHarnessStateChange: (transition) => transitions.push(transition),
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
+    },
+  });
+  t.after(async () => {
+    await watchdog.stop();
+  });
+
+  await watchdog.start({ runImmediately: false });
+  const accepted = watchdog.ingestHarnessHeartbeatContent(
+    '【harness 2026-04-19T20:05:00.000Z · context-pct】70% | state=critical | next_action=continue',
+  );
+
+  assert.equal(accepted, true);
+  await watchdog.waitForIdle();
+  assert.equal(watchdog.getHarnessState().state, 'degraded');
+  assert.deepEqual(transitions, []);
+  assert.deepEqual(handoverCalls, []);
+});
+
+test('watchdog harness: topic handler 会把 stale heartbeat ts 传给状态机并忽略', async (t) => {
+  const clock = createManualNow(Date.parse('2026-04-20T00:10:00.000Z'));
+  const transitions = [];
+  const ipcClient = createHarnessIpcClientStub();
+  const watchdog = createIsolatedWatchdog({
+    watchdogPort: 0,
+    now: clock.now,
+    createWatchdogIpcClientImpl: () => ipcClient.client,
+    coldStartGraceMs: 0,
+    onHarnessStateChange: (transition) => transitions.push(transition),
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
+    },
+  });
+  t.after(async () => {
+    await watchdog.stop();
+  });
+
+  await watchdog.start({ runImmediately: false });
+  const accepted = watchdog.ingestHarnessHeartbeatContent(
+    '【harness 2026-04-20T00:08:30.000Z · context-pct】70% | state=critical | next_action=self-handover',
+  );
+
+  assert.equal(accepted, true);
+  await watchdog.waitForIdle();
+  assert.equal(watchdog.getHarnessState().state, 'ok');
+  assert.deepEqual(transitions, []);
 });
 
 test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', async (t) => {

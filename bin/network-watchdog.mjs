@@ -121,8 +121,11 @@ export function parseHarnessHeartbeatContent(content) {
     return null;
   }
 
+  const parsedTs = Date.parse(isoTs);
+
   return {
-    ts: isoTs,
+    ts: Number.isNaN(parsedTs) ? Number.NaN : parsedTs,
+    tsIso: isoTs,
     pct,
     state,
     nextAction,
@@ -580,7 +583,7 @@ export function createNetworkWatchdog({
     onTransition: (transition) => {
       if (
         canAutoHandover
-        && (transition.to === 'degraded' || transition.to === 'down')
+        && transition.to === 'down'
         && !isHeldByColdStartGrace(transition.reason)
         && pendingHarnessHandover == null
       ) {
@@ -612,7 +615,7 @@ export function createNetworkWatchdog({
 
       if (
         typeof onHarnessStateChange === 'function'
-        && (transition.to === 'degraded' || transition.to === 'down')
+        && transition.to === 'down'
       ) {
         onHarnessStateChange({
           state: transition.to,

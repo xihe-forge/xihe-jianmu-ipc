@@ -678,7 +678,8 @@ Update only the `projects` list for an existing registered session. Returns `404
 - `network-watchdog` 已扩成 5 路探测：`cliProxy / hub / anthropic / dns / harness`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，包含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
-- 当 harness 进入 `degraded` 或 `down`，watchdog 可调用 `triggerHarnessSelfHandover()`：读取 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-YYYYMMDD-HHMM.md`，并通过 `ipc_spawn(host="wt", cwd=handoverRepoPath)` 续起新 harness
+- 只有当 harness 进入 `down`，watchdog 才会调用 `triggerHarnessSelfHandover()`；`degraded` 只是风险态，不会直接触发 handover
+- watchdog 会过滤历史 / 非法 heartbeat `ts`：若 `ts < watchdog startedAt - 60s` 或时间戳解析失败，该 heartbeat 会被忽略，不驱动 transition / handover
 - `lib/lineage.mjs` 用 SQLite `lineage` 表限制递归 handover 深度和滑动窗口频次，避免 watchdog 无限自拉起
 
 ### 会话接力 / Session Handover

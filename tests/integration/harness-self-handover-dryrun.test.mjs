@@ -1,15 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { createLineageTracker } from '../../lib/lineage.mjs';
 import { triggerHarnessSelfHandover } from '../../lib/harness-handover.mjs';
 import { createNetworkWatchdog } from '../../bin/network-watchdog.mjs';
-import { createMcpTools } from '../../lib/mcp-tools.mjs';
 import { TEMP_ROOT } from '../helpers/temp-path.mjs';
-
-const CHECK_SCRIPT = 'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness/scripts/check.sh';
 
 function createSandbox(prefix) {
   const root = join(TEMP_ROOT, `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
@@ -50,35 +47,11 @@ function createIpcClientStub() {
   };
 }
 
-function createSpawnTool(spawnCalls) {
-  return createMcpTools({
-    getSessionName: () => 'alpha',
-    setSessionName: () => {},
-    getHubHost: () => '127.0.0.1',
-    setHubHost: () => {},
-    getHubPort: () => 8765,
-    setHubPort: () => {},
-    getWs: () => ({ readyState: 1 }),
-    disconnectWs: () => {},
-    reconnect: () => {},
-    getPendingOutgoingCount: () => 0,
-    wsSend: () => true,
-    httpGet: async () => [],
-    httpPost: async () => ({ accepted: true }),
-    httpPatch: async () => ({ ok: true }),
-    spawnSession: async (params) => {
-      spawnCalls.push(params);
-      return { spawned: false, host: params.host };
-    },
-    stderrLog: () => {},
-  });
-}
-
 function ok(latencyMs = 1) {
   return { ok: true, latencyMs };
 }
 
-test('harness self-handover dryRun pipeline: heartbeat -> handover -> check.sh -> ipc_spawn stub', async () => {
+test('harness self-handover dryRun pipeline: heartbeat -> inline handover content，无落盘/IPC/spawn 副作用', async () => {
   const sandbox = createSandbox('handover-dryrun-pipeline');
   const handoverRepo = join(sandbox, 'xihe-tianshu-harness');
   const companyRepo = join(sandbox, 'xihe-company-brain');
@@ -101,13 +74,13 @@ test('harness self-handover dryRun pipeline: heartbeat -> handover -> check.sh -
       '- [20:05] 等 watchdog 吃到 critical heartbeat 后写 handover',
       '',
       '## 本 session 决策快照',
-      '- [20:06] dryRun 只写临时 handover，不碰真实 git push / spawn',
+      '- [20:06] dryRun 只返 handover content，不碰真实落盘 / push / spawn',
       '',
       '## 遇到的坑',
-      '- check.sh 需要 Context 引用齐全才会 PASS',
+      '- dryRun 不能污染真实 handover/ 目录',
       '',
       '## 下一步计划',
-      '- [ ] 生成 HANDOVER v2 并交给 tech-worker-stub 验证',
+      '- [ ] 生成 HANDOVER v2 inline preview 并人工核对',
     ].join('\n'), 'utf8');
     writeFileSync(lastBreathPath, JSON.stringify({
       git: { head_sha: 'abc1234', dirty_files: ['handover/PROJECT-PLAN.md'] },
@@ -154,38 +127,17 @@ test('harness self-handover dryRun pipeline: heartbeat -> handover -> check.sh -
     });
 
     assert.equal(handoverResult.triggered, true);
-    assert.ok(handoverResult.compatAlias, 'dryRun 应生成 check.sh 兼容副本');
-    assert.equal(ipcMessages.length, 1);
-    assert.equal(ipcMessages[0].to, 'tech-worker-stub');
-    assert.equal(ipcMessages[0].topic, 'run-check-sh');
-
-    execFileSync('bash', [CHECK_SCRIPT, '--only', 'HANDOVER', '--target', handoverRepo], {
-      cwd: handoverRepo,
-      stdio: 'pipe',
-    });
-
-    const content = readFileSync(handoverResult.handoverFile, 'utf8');
-    assert.match(content, /## Goal/);
-    assert.match(content, /## Context/);
-    assert.match(content, /PROJECT-PLAN: .* @ /);
-    assert.match(content, /TODO: .* @ /);
-    assert.match(content, /1\. 读本文件（handover\/HANDOVER-HARNESS-\d{8}-\d{4}\.md）@ commit abc1234/);
-    assert.match(content, /2\. 按 session-cold-start\.md v1\.0 的 7 步清单冷启/);
-    assert.match(content, /3\. 续前任 in-flight task：等 watchdog 吃到 critical heartbeat 后写 handover/);
-
-    const spawnCalls = [];
-    const tools = createSpawnTool(spawnCalls);
-    await tools.handleToolCall('ipc_spawn', {
-      name: 'harness',
-      host: 'wt',
-      task: `续跑 ${handoverResult.handoverFile}`,
-      model: 'opus',
-    });
-
-    assert.equal(spawnCalls.length, 1);
-    assert.equal(spawnCalls[0].host, 'wt');
-    assert.equal(spawnCalls[0].model, 'opus');
-    assert.match(spawnCalls[0].task, /续跑/);
+    assert.equal(handoverResult.handoverFile, null);
+    assert.match(handoverResult.handoverFilename, /^HANDOVER-HARNESS-\d{8}-\d{4}\.md$/);
+    assert.equal(ipcMessages.length, 0);
+    assert.equal(existsSync(join(handoverRepo, 'handover', handoverResult.handoverFilename)), false);
+    assert.match(handoverResult.handoverContent, /## Goal/);
+    assert.match(handoverResult.handoverContent, /## Context/);
+    assert.match(handoverResult.handoverContent, /PROJECT-PLAN: .* @ /);
+    assert.match(handoverResult.handoverContent, /TODO: .* @ /);
+    assert.match(handoverResult.handoverContent, /1\. 读本文件（handover\/HANDOVER-HARNESS-\d{8}-\d{4}\.md）@ commit abc1234/);
+    assert.match(handoverResult.handoverContent, /2\. 按 session-cold-start\.md v1\.0 的 7 步清单冷启/);
+    assert.match(handoverResult.handoverContent, /3\. 续前任 in-flight task：等 watchdog 吃到 critical heartbeat 后写 handover/);
   } finally {
     cleanup(sandbox);
   }

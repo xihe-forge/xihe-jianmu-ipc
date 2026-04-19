@@ -75,8 +75,9 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `bin/network-watchdog.mjs` 现在探测 5 项：`cliProxy / hub / anthropic / dns / harness`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
-- harness 进入 `degraded` 或 `down` 时，watchdog 可触发 `triggerHarnessSelfHandover()`：读 checkpoint / STATUS / lastBreath，生成 `HANDOVER-HARNESS-*.md`，并调用 `ipc_spawn(host='wt', cwd=handoverRepoPath)` 续起新 harness
+- watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover
 - watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定都会被压成 `degraded` 并标记 `held-by-grace`
+- `ingestHeartbeat()` 会校验 heartbeat `ts` 鲜度：早于 watchdog `startedAt - 60s` 的历史消息，或解析失败的非法 `ts`，一律忽略，不得驱动 transition / handover
 - `WATCHDOG_COLD_START_GRACE_MS` 可覆盖该冷启保护时长；测试或回归对比可传 `0`
 
 ## 会话接力

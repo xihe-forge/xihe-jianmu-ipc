@@ -26,6 +26,7 @@ export function buildSessionUrl(port, name, options = {}) {
   const params = new URLSearchParams({ name });
   if (options.token) params.set('token', options.token);
   if (options.force) params.set('force', '1');
+  if (options.instance) params.set('instance', options.instance);
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined && value !== null) {
       params.set(key, String(value));
@@ -39,11 +40,12 @@ export function startHub({
   env = {},
   heartbeatIntervalMs = null,
   heartbeatTimeoutMs = null,
+  nowOffsetMs = 0,
   startTimeoutMs = HUB_START_TIMEOUT,
 } = {}) {
   return new Promise((resolve, reject) => {
     const port = randomPort();
-    const dbPath = createTempDbPath(prefix);
+    const dbPath = env.IPC_DB_PATH || createTempDbPath(prefix);
     const stderrChunks = [];
     const envAssignments = Object.entries({
       IPC_PORT: String(port),
@@ -56,10 +58,23 @@ export function startHub({
 
     const worker = new Worker(
       `
+        const { parentPort } = require('node:worker_threads');
         const originalSetInterval = globalThis.setInterval.bind(globalThis);
         const originalSetTimeout = globalThis.setTimeout.bind(globalThis);
+        const originalDateNow = Date.now.bind(Date);
         const heartbeatIntervalMs = ${heartbeatIntervalMs == null ? 'null' : JSON.stringify(heartbeatIntervalMs)};
         const heartbeatTimeoutMs = ${heartbeatTimeoutMs == null ? 'null' : JSON.stringify(heartbeatTimeoutMs)};
+        let nowOffsetMs = ${JSON.stringify(nowOffsetMs)};
+
+        Date.now = function () {
+          return originalDateNow() + nowOffsetMs;
+        };
+
+        parentPort.on('message', (message) => {
+          if (message?.type === 'set-now-offset') {
+            nowOffsetMs = Number(message.offsetMs) || 0;
+          }
+        });
 
         if (heartbeatIntervalMs != null) {
           globalThis.setInterval = function (fn, delay, ...args) {
@@ -146,6 +161,49 @@ export async function stopHub(hub) {
   } finally {
     cleanupDbFiles(dbPath);
   }
+}
+
+export function workerRequest(worker, action, payload, timeout = WS_TIMEOUT) {
+  return new Promise((resolve, reject) => {
+    const requestId = `${action}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(new Error(`worker request timeout: ${action}`));
+    }, timeout);
+
+    const onMessage = (message) => {
+      if (message?.type !== 'test-hook:result' || message.requestId !== requestId) {
+        return;
+      }
+
+      if (message.ok) {
+        finish(null, message.result);
+      } else {
+        finish(new Error(message.error || `worker request failed: ${action}`));
+      }
+    };
+
+    worker.on('message', onMessage);
+    worker.postMessage({ requestId, action, payload });
+
+    function finish(error = null, result = null) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.off('message', onMessage);
+
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(result);
+    }
+  });
+}
+
+export function setHubNowOffset(hub, offsetMs) {
+  hub?.worker?.postMessage({ type: 'set-now-offset', offsetMs });
 }
 
 function cleanupDbFiles(dbPath) {

@@ -644,3 +644,25 @@ test('flushInbox: 合并 messages 表 recent 回放并与 inbox 去重', { timeo
   );
   assert.equal(session.ws._sent[0].messages[1].contentType, 'text');
 });
+
+test('flushInbox: includeRecentMessages=false 时不会自动回放 messages 表 recent，仅发送 inbox', { timeout: TEST_TIMEOUT }, () => {
+  const ctx = createRealCtx();
+  const { flushInbox } = createRouter(ctx);
+  const session = createSession(unique('recent-flush-no-recent'));
+  const persisted = makeMessage({ id: unique('persisted'), to: session.name, ts: 100 });
+  const recent = makeMessage({ id: unique('recent'), to: session.name, ts: 200, content: 'recent-hit' });
+  const memory = makeMessage({ id: unique('memory'), to: session.name, ts: 300, content: 'memory-hit' });
+
+  db.saveInboxMessage(session.name, persisted);
+  db.saveMessage(recent);
+  session.inbox.push(memory);
+
+  flushInbox(session, { includeRecentMessages: false });
+
+  assert.equal(session.ws._sent.length, 1);
+  assert.deepEqual(
+    session.ws._sent[0].messages.map((row) => row.id),
+    [persisted.id, memory.id],
+  );
+  assert.ok(!session.ws._sent[0].messages.some((row) => row.id === recent.id));
+});

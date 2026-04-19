@@ -211,7 +211,7 @@ async function sendSpawnFallbackIpc({
   return content;
 }
 
-async function spawnSession({ name: sessionName, task, interactive, model, host, dryRun = false }) {
+export async function spawnSession({ name: sessionName, task, interactive, model, host, dryRun = false }) {
   // Sanitize session name — allow only alphanumeric, underscore, hyphen
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionName)) {
     throw new Error(`Invalid session name: only letters, numbers, underscore and hyphen allowed`);

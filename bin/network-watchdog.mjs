@@ -1,10 +1,12 @@
 import http from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { createStateMachine } from '../lib/network-state.mjs';
 import { createHarnessStateMachine } from '../lib/harness-state.mjs';
 import { probeHarnessHeartbeat } from '../lib/harness-heartbeat.mjs';
+import { triggerHarnessSelfHandover } from '../lib/harness-handover.mjs';
+import { createLineageTracker } from '../lib/lineage.mjs';
 import { isLoopbackAddress, loadInternalToken } from '../lib/internal-auth.mjs';
 import {
   probeAnthropic,
@@ -67,6 +69,24 @@ function buildHubWsUrl({ ipcPort, sessionName, hubAuthToken }) {
     url.searchParams.set('token', hubAuthToken);
   }
   return url.toString();
+}
+
+function mapHarnessTransitionToHandoverReason(reason) {
+  if (reason === 'hard-signal' || reason === 'context-critical-no-action') {
+    return 'threshold_65';
+  }
+  if (reason === 'warn-without-compact' || reason === 'context-warn') {
+    return 'threshold_55';
+  }
+  if (reason === 'soft-A-ws-disconnect' || reason === 'soft-B-silent') {
+    return 'crash_recovery';
+  }
+  return 'manual';
+}
+
+async function loadDefaultIpcSpawn() {
+  const module = await import('../mcp-server.mjs');
+  return module.spawnSession;
 }
 
 export function parseHarnessHeartbeatContent(content) {
@@ -399,6 +419,10 @@ export function createNetworkWatchdog({
   harnessPingIntervalMs = 30_000,
   harnessProbeConfig = {},
   onHarnessStateChange = null,
+  triggerHarnessSelfHandoverImpl = null,
+  handoverConfig = null,
+  lineage = null,
+  ipcSpawn = null,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -414,6 +438,8 @@ export function createNetworkWatchdog({
   let statusServer = null;
   let lastSeenHarnessOnlineAt = null;
   let lastHarnessProbe = null;
+  let lastHandoverResult = null;
+  let pendingHarnessHandover = null;
   const wait = createWait(waitImpl, setTimeoutImpl);
   const pendingTransitions = new Set();
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
@@ -431,6 +457,11 @@ export function createNetworkWatchdog({
   const harnessProbe = typeof resolvedProbes.harness === 'function'
     ? resolvedProbes.harness
     : null;
+  const canAutoHandover = typeof triggerHarnessSelfHandoverImpl === 'function'
+    && lineage
+    && typeof ipcSpawn === 'function'
+    && handoverConfig
+    && typeof handoverConfig === 'object';
 
   function trackPending(promise) {
     pendingTransitions.add(promise);
@@ -511,6 +542,36 @@ export function createNetworkWatchdog({
   const harnessStateMachine = createHarnessStateMachineImpl({
     now,
     onTransition: (transition) => {
+      if (
+        canAutoHandover
+        && (transition.to === 'degraded' || transition.to === 'down')
+        && pendingHarnessHandover == null
+      ) {
+        const promise = Promise.resolve()
+          .then(() => triggerHarnessSelfHandoverImpl({
+            ...handoverConfig,
+            lineage,
+            ipcSpawn,
+            reason: mapHarnessTransitionToHandoverReason(transition.reason),
+          }))
+          .then((result) => {
+            lastHandoverResult = result;
+            return result;
+          })
+          .catch((error) => {
+            lastHandoverResult = {
+              triggered: false,
+              error: toErrorMessage(error),
+            };
+            stderr(`[network-watchdog] harness handover failed: ${toErrorMessage(error)}`);
+            return lastHandoverResult;
+          })
+          .finally(() => {
+            pendingHarnessHandover = null;
+          });
+        pendingHarnessHandover = trackPending(promise);
+      }
+
       if (
         typeof onHarnessStateChange === 'function'
         && (transition.to === 'degraded' || transition.to === 'down')
@@ -745,6 +806,7 @@ export function createNetworkWatchdog({
     ingestHarnessHeartbeatMessage: ingestHarnessHeartbeatContent,
     getState: buildCompositeState,
     getHarnessState: buildHarnessSnapshot,
+    getLastHandoverResult: () => lastHandoverResult,
     getConfig: () => ({
       ipcPort,
       watchdogPort: currentWatchdogPort,
@@ -772,6 +834,10 @@ export async function startWatchdog(options = {}) {
   const watchdogPort = parsePort(options.watchdogPort ?? process.env.IPC_WATCHDOG_PORT, DEFAULT_WATCHDOG_PORT);
   const intervalMs = parsePort(options.intervalMs ?? process.env.IPC_WATCHDOG_INTERVAL_MS, DEFAULT_WATCHDOG_INTERVAL_MS);
   const internalToken = options.internalToken ?? await loadInternalToken({ rootDir: PROJECT_ROOT });
+  const ipcSpawn = options.ipcSpawn ?? await loadDefaultIpcSpawn();
+  const lineage = options.lineage ?? createLineageTracker({
+    dbPath: process.env.IPC_DB_PATH || join(PROJECT_ROOT, 'data', 'messages.db'),
+  });
 
   const watchdog = createNetworkWatchdog({
     ...options,
@@ -779,6 +845,10 @@ export async function startWatchdog(options = {}) {
     watchdogPort,
     intervalMs,
     internalToken,
+    ipcSpawn,
+    lineage,
+    triggerHarnessSelfHandoverImpl: options.triggerHarnessSelfHandoverImpl ?? triggerHarnessSelfHandover,
+    handoverConfig: options.handoverConfig ?? {},
   });
 
   await watchdog.start();

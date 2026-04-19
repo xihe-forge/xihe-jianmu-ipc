@@ -5,6 +5,7 @@ import { createMcpTools } from '../lib/mcp-tools.mjs';
 function createHarness(options = {}) {
   const calls = {
     recallObservations: [],
+    getObservationDetail: [],
   };
 
   const tools = createMcpTools({
@@ -29,6 +30,13 @@ function createHarness(options = {}) {
         return options.recallObservations(input);
       }
       return { ok: true, project: input.project, count: 0, observations: [] };
+    },
+    getObservationDetail: (input) => {
+      calls.getObservationDetail.push(input);
+      if (typeof options.getObservationDetail === 'function') {
+        return options.getObservationDetail(input);
+      }
+      return { ok: true, observation: { id: input.id } };
     },
   });
 
@@ -106,5 +114,51 @@ test('ipc_recall: observation-query 抛错时返回 JSON error result', async ()
     ok: false,
     error: 'sqlite unavailable',
     project: '_portfolio',
+  });
+});
+
+test('ipc_observation_detail: 透传 project/id，并在 ok=false 时标记 isError', async () => {
+  const { tools, calls } = createHarness({
+    getObservationDetail: () => ({
+      ok: false,
+      error: 'observation not found',
+      project: 'xihe-jianmu-ipc',
+      id: 123,
+    }),
+  });
+
+  const result = await tools.handleToolCall('ipc_observation_detail', {
+    project: 'xihe-jianmu-ipc',
+    id: 123,
+  });
+
+  assert.deepEqual(calls.getObservationDetail, [
+    {
+      project: 'xihe-jianmu-ipc',
+      id: 123,
+    },
+  ]);
+  assert.equal(result.isError, true);
+  assert.deepEqual(getJson(result), {
+    ok: false,
+    error: 'observation not found',
+    project: 'xihe-jianmu-ipc',
+    id: 123,
+  });
+});
+
+test('ipc_observation_detail: 非法 id 返回参数错误', async () => {
+  const { tools } = createHarness();
+
+  const result = await tools.handleToolCall('ipc_observation_detail', {
+    project: 'xihe-jianmu-ipc',
+    id: 0,
+  });
+
+  assert.equal(result.isError, true);
+  assert.deepEqual(getJson(result), {
+    ok: false,
+    error: 'id must be a positive number',
+    project: 'xihe-jianmu-ipc',
   });
 });

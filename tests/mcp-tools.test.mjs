@@ -126,11 +126,11 @@ async function importMcpServerModule() {
   return import(`${moduleUrl.href}?test=${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
-test('listTools: 暴露 10 个 MCP 工具', () => {
+test('listTools: 暴露 11 个 MCP 工具', () => {
   const { tools } = createHarness();
   const result = tools.listTools();
 
-  assert.equal(result.tools.length, 10);
+  assert.equal(result.tools.length, 11);
   assert.deepEqual(
     result.tools.map((tool) => tool.name),
     [
@@ -144,6 +144,7 @@ test('listTools: 暴露 10 个 MCP 工具', () => {
       'ipc_task',
       'ipc_recent_messages',
       'ipc_recall',
+      'ipc_observation_detail',
     ],
   );
 });

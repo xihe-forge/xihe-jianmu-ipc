@@ -165,6 +165,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `POST /internal/network-event`：内部端点，仅 `127.0.0.1` + `X-Internal-Token` 可访问，接收 `network-down` / `network-up`
 - `POST /task`：`{from, to, title, ...}` 创建结构化任务，返回 `{ok, taskId, online, buffered}`
 - `GET /recent-messages?name=&since=&limit=`：查询发给某个 session（含广播）的近期持久化消息，默认 6h / 50 条，适合崩溃重连补回 backlog
+- `flushInbox`：只推离线 inbox 缓冲；历史消息不会在连接时自动推送，需主动调用 `ipc_recent_messages` 或 `GET /recent-messages`
 - `GET /health`：返回 Hub 状态、session 列表与消息计数
 
 ## 会话接力（release-rebind）
@@ -172,7 +173,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 建木现在有两种同名接力机制：
 
 - 显式交接（`release-rebind`）：旧 session 在主动下线前先 `POST /prepare-rebind`，Hub 写入 `pending_rebind`。5 秒宽限期内发给该 name 的点对点消息会进入 `buffered_messages`。新 session 以同名连入后会静默继承 topics，并一次性收到 `SQLite inbox + buffered_messages`。
-- 隐式接管（`?force=1` / zombie rebind）：旧 session 崩溃、卡死或没来得及宣告时，新连接可强制接管或等待僵尸检测。这个路径只回放现有 `inbox + recent persisted messages`，**不会恢复旧 topics**。
+- 隐式接管（`?force=1` / zombie rebind）：旧 session 崩溃、卡死或没来得及宣告时，新连接可强制接管或等待僵尸检测。这个路径只回放现有 `inbox`，**不会恢复旧 topics**；历史需主动调 `ipc_recent_messages` 或 `GET /recent-messages` 拉取。
 
 ## MCP 工具
 
@@ -186,6 +187,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `ipc_task(action, ...)`：结构化任务 create / update / list
 - `ipc_recent_messages(name?, since?, limit?)`：拉取当前或指定 session 的近期持久化 backlog（默认 6h / 50 条）
 - `ipc_recall(project, since?, limit?, ipc_name?, tool_name?, tags?, keyword?)`：查询 `~/.claude/project-state/<project>/observations.db` 的近期 observation，支持 `project="*"` 跨项目合并检索；`tool_input` / `tool_output` 预览会截断到 500 chars
+- `ipc_observation_detail(project, id)`：按 `project + id` 读取单条 observation 的完整字段，不截断 `tool_input` / `tool_output`；若 tags 中有 `jsonl:` 元数据则一并返回
 
 `host="external"` 保持旧行为，只返回 `command_hint` 或 fallback 信息；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起新会话；`host="vscode-terminal"` 当前返回 not implemented 提示。
 

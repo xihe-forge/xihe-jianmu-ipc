@@ -432,6 +432,7 @@ ipc_task(action="list")
 
 拉取发给当前 session（或指定 session）的近期持久化消息，用于冷启动或崩溃重连后补回 backlog。
 Retrieve recent persisted messages addressed to the current session (or a specified session). Useful on cold-start or after reconnecting from a crash.
+`flushInbox` 只会推离线 inbox 缓冲，不会自动推这段历史；历史访问必须显式 pull 这个工具。
 
 | Param   | Type   | Required | Description                                                                    |
 | ------- | ------ | -------- | ------------------------------------------------------------------------------ |
@@ -452,6 +453,15 @@ Query recent project observations from `~/.claude/project-state/<project>/observ
 ```
 ipc_recall(project="xihe-jianmu-ipc")
 ipc_recall(project="*", since=3600000, limit=5, tags=["ship"], keyword="unpublish")
+```
+
+### `ipc_observation_detail`
+
+按 `project + id` 读取单条 observation 的完整记录，不截断 `tool_input` / `tool_output`。若 observation 的 tags 含 `jsonl:<path>:<line_range>`，返回结果会附带 `jsonl_path` 和 `line_range`。
+Fetch a single observation row by `project + id` without truncating `tool_input` / `tool_output`. If the observation tags include `jsonl:<path>:<line_range>`, the result also carries `jsonl_path` and `line_range`.
+
+```
+ipc_observation_detail(project="xihe-jianmu-ipc", id=123)
 ```
 
 ---
@@ -597,6 +607,7 @@ Query persisted message history.
 
 查询发给指定 session（含广播 `*`）的近期持久化消息，适合崩溃重连或冷启动补回 backlog。
 Query recent persisted messages addressed to a specific session (including broadcast `*`). Useful for cold-start or reconnect recovery.
+This history is pull-only: reconnecting sessions do not receive it automatically via `flushInbox`.
 
 | Param   | Type   | Description                                                                    |
 | ------- | ------ | ------------------------------------------------------------------------------ |
@@ -627,12 +638,12 @@ Query recent persisted messages addressed to a specific session (including broad
 Hub 同时支持两条同名接力路径：
 
 - `release-rebind`（显式交接）: 旧 session 先 `POST /prepare-rebind`，随后主动断开。5 秒宽限期内到达的点对点消息会写入 `pending_rebind.buffered_messages`，继任者以同名连入后会静默继承 `topics`，并一次性收到 `SQLite inbox + buffered_messages`。
-- `force/zombie rebind`（隐式接管）: 旧 session 崩溃、卡死或未提前宣告时，新连接可用 `?force=1` 或等待 `isAlive=false` 僵尸检测接管。该路径只回放现有 `inbox + recent persisted messages`，不会恢复旧 `topics`。
+- `force/zombie rebind`（隐式接管）: 旧 session 崩溃、卡死或未提前宣告时，新连接可用 `?force=1` 或等待 `isAlive=false` 僵尸检测接管。该路径只回放现有 `inbox`，不会恢复旧 `topics`；若要补历史，session 应主动调用 `ipc_recent_messages` 或 `GET /recent-messages`。
 
 The hub supports two same-name takeover paths:
 
 - `release-rebind` (explicit handoff): the old session calls `POST /prepare-rebind` and then disconnects intentionally. Direct messages that arrive during the 5-second grace window are stored in `pending_rebind.buffered_messages`. The successor reconnects with the same name, silently inherits `topics`, and receives `SQLite inbox + buffered_messages` in one replay batch.
-- `force/zombie rebind` (implicit takeover): when the old session crashes, stalls, or never announced a handoff, a new connection can use `?force=1` or wait for zombie detection (`isAlive=false`). This path replays only `inbox + recent persisted messages` and does not restore old `topics`.
+- `force/zombie rebind` (implicit takeover): when the old session crashes, stalls, or never announced a handoff, a new connection can use `?force=1` or wait for zombie detection (`isAlive=false`). This path replays only `inbox` and does not restore old `topics`; sessions should pull history explicitly via `ipc_recent_messages` or `GET /recent-messages`.
 
 ### 状态 / Status
 

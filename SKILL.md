@@ -128,6 +128,14 @@ ipc_recall(project="xihe-jianmu-ipc")
 ipc_recall(project="*", since=3600000, limit=5, tags=["ship"], keyword="unpublish")
 ```
 
+### `ipc_observation_detail`
+
+Fetch a single observation row by `project + id` without truncating `tool_input` or `tool_output`. If the observation tags contain `jsonl:<path>:<line_range>`, the response also includes `jsonl_path` and `line_range`.
+
+```
+ipc_observation_detail(project="xihe-jianmu-ipc", id=123)
+```
+
 ## Rules
 
 1. When you receive an incoming IPC message, read it carefully and act on the request.

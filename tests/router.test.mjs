@@ -278,44 +278,6 @@ test('flushInbox: 合并 SQLite 和内存 inbox，并按 id 去重', { timeout: 
   assert.equal(ctx._persistedInbox.has('merge-agent'), false);
 });
 
-test('flushInbox: includeRecentMessages=true 时合并 recent messages 回放，并映射为标准消息对象', { timeout: 5000 }, () => {
-  const ctx = createMockCtx();
-  let recentReadCount = 0;
-  ctx.getRecipientRecent = () => {
-    recentReadCount++;
-    return [{
-      id: 'recent_1',
-      type: 'message',
-      from: 'sender',
-      to: 'recent-agent',
-      content: 'recent content',
-      content_type: 'text',
-      topic: 'ops',
-      ts: 10,
-      status: 'delivered',
-    }];
-  };
-  const { flushInbox } = createRouter(ctx);
-
-  const ws = createMockWs();
-  const session = createOnlineSession('recent-agent', ws);
-
-  flushInbox(session, { includeRecentMessages: true });
-
-  assert.equal(recentReadCount, 1);
-  assert.equal(ws._sent.length, 1);
-  assert.deepEqual(ws._sent[0].messages, [{
-    id: 'recent_1',
-    type: 'message',
-    from: 'sender',
-    to: 'recent-agent',
-    content: 'recent content',
-    contentType: 'text',
-    topic: 'ops',
-    ts: 10,
-  }]);
-});
-
 test('flushInbox: 只 drain SQLite 和内存 inbox，不读取 recent messages', { timeout: 5000 }, () => {
   const ctx = createMockCtx();
   ctx.getRecipientRecent = () => {
@@ -328,7 +290,7 @@ test('flushInbox: 只 drain SQLite 和内存 inbox，不读取 recent messages',
   ctx._persistedInbox.set('merge-agent', [{ id: 'persisted_1', content: 'persisted 1', ts: 1 }]);
   session.inbox.push({ id: 'memory_1', content: 'memory 1', ts: 2 });
 
-  flushInbox(session, { includeRecentMessages: false });
+  flushInbox(session);
 
   assert.equal(ws._sent.length, 1);
   assert.deepEqual(ws._sent[0].messages.map((message) => message.id), ['persisted_1', 'memory_1']);

@@ -64,7 +64,7 @@
 导出 `createRouter(ctx)` 工厂函数。纯函数通过闭包+依赖注入，可直接 import 单元测试。
 
 - `routeMessage(msg, sender)` — 点对点/广播/topic fanout，消息去重（msg.id），saveMessage 持久化，ackPending 追踪
-- `pushInbox` / `flushInbox` — 离线消息写 SQLite + 重连时合并 SQLite+内存按 ts 升序投递
+- `pushInbox` / `flushInbox` — 离线消息写 SQLite + 重连时合并 SQLite inbox+内存按 ts 升序投递；历史访问走 `ipc_recent_messages` / `/recent-messages` pull
 - `scheduleInboxCleanup` — 离线 session TTL 过期清理
 - 四条路由路径：直接寻址 / 广播 / topic fanout / 特殊目标（feishu / openclaw）
 

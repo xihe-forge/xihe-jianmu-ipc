@@ -158,7 +158,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 
 ## HTTP API
 
-- `POST /send`：`{from, to, content}` 发送消息，返回 `{accepted, id, online, buffered}`
+- `POST /send`：`{from, to, content}` 发送消息，返回 `{accepted, id, online, buffered}`；若 target 不存在，sender 会收到 `unknown-target` 警告
 - `POST /suspend`：`{from, reason?, task_description?, suspended_by?}` 记录挂起 session，返回 `{ok, name, suspended_at, suspended_by}`
 - `POST /wake-suspended`：`{reason?, from?}` 临时运维 endpoint，通过 topic fanout 向所有订阅 `network-up` 的 session 广播手动唤醒消息，返回 `{ok, broadcastTo, subscribers, clearedSessions}`
 - `POST /internal/network-event`：内部端点，仅 `127.0.0.1` + `X-Internal-Token` 可访问，接收 `network-down` / `network-up`

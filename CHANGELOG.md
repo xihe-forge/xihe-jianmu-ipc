@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-19
+
+### Added
+
+- feat(router): Hub 创 stub session 时立即回发送方 unknown-target 警告（避免消息静默堆积，踩坑案例见 data/hub.log）
+
 ## [0.4.0] - 2026-04-18
 
 ### Added
@@ -88,7 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Duplicate messages, unbounded queue, body size limit, hardcoded paths
 - OpenClaw adapter uses HTTP API instead of CLI
 
-[Unreleased]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/xihe-forge/xihe-jianmu-ipc/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/xihe-forge/xihe-jianmu-ipc/releases/tag/v0.1.0

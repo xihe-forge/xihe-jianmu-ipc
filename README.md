@@ -432,6 +432,9 @@ The hub exposes an HTTP API on the same port as WebSocket. Any tool — Codex, s
 从任意 HTTP 客户端发送消息。
 Send a message from any HTTP client.
 
+若 target 不存在，sender 会立即收到一条 `unknown-target` 警告。
+If the target name does not exist, the sender immediately receives an `unknown-target` warning.
+
 ```json
 // Request
 { "from": "codex-agent", "to": "main", "content": "PR review complete", "topic": "reviews" }

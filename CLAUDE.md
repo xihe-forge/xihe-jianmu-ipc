@@ -26,6 +26,13 @@ docs/feishu-events.md   — 飞书事件订阅配置说明
 SKILL.md             — OpenClaw ClawHub skill清单
 ```
 
+## 发送规约（0.4.1 新增）
+
+- 发消息前**先调 `ipc_sessions()` 验证 target name 精确匹配**
+- Hub **不做模糊匹配**（如 `taiwei` 不会 routing 到 `taiwei_builder`）
+- 若 target 不在线，Hub 会创建 stub session 缓冲消息，**并立即回发送方一条 `type: unknown-target` 警告**
+- 收到 `unknown-target` 警告时：核对 target name 拼写，或 target 确实应该离线（将通过 inbox 重连补发）
+
 ## MCP Tools
 
 - `ipc_send(to, content, topic?)` — 发消息/广播
@@ -39,7 +46,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 
 ## HTTP API
 
-- `POST /send` — `{from, to, content}` 发消息，返回 `{accepted, id, online, buffered}`
+- `POST /send` — `{from, to, content}` 发消息，返回 `{accepted, id, online, buffered}`；若 target 不存在，sender 会收到 `unknown-target` 警告
 - `POST /suspend` — `{from, reason?, task_description?, suspended_by?}` 记录挂起 session（`suspended_by=self|watchdog|harness`），返回 `{ok, name, suspended_at, suspended_by}`
 - `POST /wake-suspended` — 广播结构化 `network-up` 事件并清空 `suspended_sessions`，返回 `{ok, broadcastTo, subscribers, clearedSessions}`；旧 `{reason, from}` body 仅为兼容保留
 - `POST /internal/network-event` — 内部端点（仅 `127.0.0.1` + `X-Internal-Token`），接收 `network-down` / `network-up` 事件并做 5 秒幂等去重

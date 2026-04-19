@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNetworkWatchdog } from '../bin/network-watchdog.mjs';
 
+const TEST_IPC_PORT = 43180;
+
 function ok(latencyMs = 1) {
   return { ok: true, latencyMs };
 }
@@ -38,12 +40,24 @@ function createHarnessIpcClientStub({ pongSequence = [] } = {}) {
   };
 }
 
+function failOnUnexpectedFetch(url) {
+  throw new Error(`unexpected watchdog harness fetch: ${String(url)}`);
+}
+
+function createIsolatedWatchdog(options = {}) {
+  return createNetworkWatchdog({
+    ipcPort: TEST_IPC_PORT,
+    internalToken: 'watchdog-token',
+    fetchImpl: failOnUnexpectedFetch,
+    ...options,
+  });
+}
+
 test('watchdog harness: 收到 hard-signal heartbeat 时触发 onHarnessStateChange(down)', async (t) => {
   const transitions = [];
   const ipcClient = createHarnessIpcClientStub();
-  const watchdog = createNetworkWatchdog({
+  const watchdog = createIsolatedWatchdog({
     watchdogPort: 0,
-    internalToken: 'watchdog-token',
     createWatchdogIpcClientImpl: () => ipcClient.client,
     onHarnessStateChange: (transition) => transitions.push(transition),
     probes: {
@@ -64,6 +78,7 @@ test('watchdog harness: 收到 hard-signal heartbeat 时触发 onHarnessStateCha
   );
 
   assert.equal(accepted, true);
+  assert.equal(ipcClient.calls.start, 1);
   assert.equal(watchdog.getHarnessState().state, 'down');
   assert.equal(transitions.length, 1);
   assert.equal(transitions[0].state, 'down');
@@ -74,13 +89,12 @@ test('watchdog harness: 收到 hard-signal heartbeat 时触发 onHarnessStateCha
   });
 });
 
-test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', async () => {
+test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', async (t) => {
   const transitions = [];
   const ipcClient = createHarnessIpcClientStub({
     pongSequence: [false, false, false],
   });
-  const watchdog = createNetworkWatchdog({
-    internalToken: 'watchdog-token',
+  const watchdog = createIsolatedWatchdog({
     createWatchdogIpcClientImpl: () => ipcClient.client,
     onHarnessStateChange: (transition) => transitions.push(transition),
     probes: {
@@ -97,6 +111,9 @@ test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', asyn
       }),
     },
   });
+  t.after(async () => {
+    await watchdog.stop();
+  });
 
   const state = await watchdog.runTick();
 
@@ -110,12 +127,11 @@ test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', asyn
   assert.equal(transitions[0].reason, 'soft-B-silent');
 });
 
-test('watchdog harness: soft signal 收到 pong 后保持 ok', async () => {
+test('watchdog harness: soft signal 收到 pong 后保持 ok', async (t) => {
   const ipcClient = createHarnessIpcClientStub({
     pongSequence: [true],
   });
-  const watchdog = createNetworkWatchdog({
-    internalToken: 'watchdog-token',
+  const watchdog = createIsolatedWatchdog({
     createWatchdogIpcClientImpl: () => ipcClient.client,
     probes: {
       cliProxy: async () => ok(),
@@ -130,6 +146,9 @@ test('watchdog harness: soft signal 收到 pong 后保持 ok', async () => {
         requiresPing: true,
       }),
     },
+  });
+  t.after(async () => {
+    await watchdog.stop();
   });
 
   const state = await watchdog.runTick();

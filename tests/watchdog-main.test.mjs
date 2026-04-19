@@ -5,6 +5,9 @@ import {
   WATCHDOG_RETRY_DELAYS_MS,
 } from '../bin/network-watchdog.mjs';
 
+const TEST_IPC_PORT = 43179;
+const TEST_INTERNAL_EVENT_URL = `http://127.0.0.1:${TEST_IPC_PORT}/internal/network-event`;
+
 function ok(latencyMs = 1) {
   return { ok: true, latencyMs };
 }
@@ -43,12 +46,18 @@ function createIpcClientStub() {
   };
 }
 
-test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', async () => {
-  const capture = createFetchCapture();
-  const watchdog = createNetworkWatchdog({
-    ipcPort: 3179,
+function createIsolatedWatchdog(options = {}) {
+  return createNetworkWatchdog({
+    ipcPort: TEST_IPC_PORT,
     internalToken: 'watchdog-token',
     createWatchdogIpcClientImpl: () => createIpcClientStub(),
+    ...options,
+  });
+}
+
+test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', async () => {
+  const capture = createFetchCapture();
+  const watchdog = createIsolatedWatchdog({
     fetchImpl: capture.fetchImpl,
     probes: {
       cliProxy: async () => fail('HTTP 503'),
@@ -64,7 +73,7 @@ test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', a
   assert.equal(state.state, 'down');
   assert.equal(capture.requests.length, 1);
   assert.equal(capture.requests[0].method, 'POST');
-  assert.equal(capture.requests[0].url, 'http://127.0.0.1:3179/internal/network-event');
+  assert.equal(capture.requests[0].url, TEST_INTERNAL_EVENT_URL);
   assert.equal(capture.requests[0].headers['x-internal-token'], 'watchdog-token');
   assert.deepEqual(capture.requests[0].body, {
     event: 'network-down',
@@ -77,10 +86,7 @@ test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', a
 
 test('createNetworkWatchdog: down 恢复到 OK 时会发送 network-up', async () => {
   const capture = createFetchCapture();
-  const watchdog = createNetworkWatchdog({
-    ipcPort: 3179,
-    internalToken: 'watchdog-token',
-    createWatchdogIpcClientImpl: () => createIpcClientStub(),
+  const watchdog = createIsolatedWatchdog({
     fetchImpl: capture.fetchImpl,
     now: createTickNow(),
     probes: {
@@ -121,10 +127,7 @@ test('createNetworkWatchdog: HTTP 首发加 3 次重试失败后记 stderr，后
   const logs = [];
   const delays = [];
   let fetchCount = 0;
-  const watchdog = createNetworkWatchdog({
-    ipcPort: 3179,
-    internalToken: 'watchdog-token',
-    createWatchdogIpcClientImpl: () => createIpcClientStub(),
+  const watchdog = createIsolatedWatchdog({
     stderr: (line) => logs.push(line),
     now: createTickNow(),
     waitImpl: async (delayMs) => {

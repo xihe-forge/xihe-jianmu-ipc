@@ -132,7 +132,7 @@ test('createHarnessStateMachine: compact 会重置 warnCount，critical 无动�
   assert.equal(machine.lastReason, 'context-critical-no-action');
 });
 
-test('createHarnessStateMachine: cold-start 首条 critical heartbeat 会被 grace hold 成 degraded', () => {
+test('createHarnessStateMachine: cold-start 首条 hard-signal heartbeat 不会被 grace 拦成 degraded', () => {
   const clock = createManualNow();
   const transitions = [];
   const machine = createHarnessStateMachine({
@@ -147,19 +147,37 @@ test('createHarnessStateMachine: cold-start 首条 critical heartbeat 会被 gra
     nextAction: 'self-handover',
   });
 
-  assert.equal(machine.state, 'degraded');
-  assert.match(machine.lastReason, /^held-by-grace: hard-signal/);
+  assert.equal(machine.state, 'down');
+  assert.equal(machine.lastReason, 'hard-signal');
   assert.equal(machine.aliveSignalReceived, true);
   assert.equal(machine.lastAliveSignalSource, 'heartbeat');
   assert.deepEqual(transitions, [{
     from: 'ok',
-    to: 'degraded',
-    reason: 'held-by-grace: hard-signal (no alive signal in cold-start 0s)',
+    to: 'down',
+    reason: 'hard-signal',
     contextPct: 70,
     warnCount: 0,
     nextAction: 'self-handover',
     ts: 0,
   }]);
+});
+
+test('createHarnessStateMachine: cold-start 内普通 warn heartbeat 仍不触发 down，但会先 mark alive', () => {
+  const clock = createManualNow();
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+  });
+
+  machine.ingestHeartbeat({
+    pct: 60,
+    state: 'warn',
+    nextAction: 'compact',
+  });
+
+  assert.equal(machine.state, 'warn');
+  assert.equal(machine.aliveSignalReceived, true);
+  assert.equal(machine.lastAliveSignalSource, 'heartbeat');
 });
 
 test('createHarnessStateMachine: cold-start 先收到 active heartbeat 后，后续 hard-signal 可正常 down', () => {

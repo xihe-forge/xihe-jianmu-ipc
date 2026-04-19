@@ -48,6 +48,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 ## HTTP API
 
 - `POST /send` — `{from, to, content}` 发消息，返回 `{accepted, id, online, buffered}`；若 target 不存在，sender 会收到 `unknown-target` 警告
+- `POST /prepare-rebind` — `{name, ttl_seconds?, topics?, next_session_hint?}` 显式会话接力；调用方必须是当前在线 session。默认宽限期 5 秒、最大 60 秒；若启用了 `IPC_AUTH_TOKEN` 或 `auth-tokens.json`，需额外带 `Authorization: Bearer ...`
 - `POST /suspend` — `{from, reason?, task_description?, suspended_by?}` 记录挂起 session（`suspended_by=self|watchdog|harness`），返回 `{ok, name, suspended_at, suspended_by}`
 - `POST /wake-suspended` — 广播结构化 `network-up` 事件并清空 `suspended_sessions`，返回 `{ok, broadcastTo, subscribers, clearedSessions}`；旧 `{reason, from}` body 仅为兼容保留
 - `POST /internal/network-event` — 内部端点（仅 `127.0.0.1` + `X-Internal-Token`），接收 `network-down` / `network-up` 事件并做 5 秒幂等去重
@@ -61,6 +62,11 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `GET /tasks?agent=&status=&limit=` — 任务列表+统计
 - `GET /tasks/:id` — 单个任务详情
 - `PATCH /tasks/:id` — `{status}` 更新任务状态（pending/started/completed/failed/cancelled）
+
+## 会话接力
+
+- `release-rebind`（显式）: 旧 session 先 `POST /prepare-rebind`，随后主动断开；新 session 同名连入后继承旧 `topics`，并收到宽限期内缓冲的 `buffered_messages` 与已有 `SQLite inbox`
+- `force/zombie rebind`（隐式）: 旧 session 崩溃或卡死时，新连接通过 `?force=1` 或僵尸检测接管；该路径只回放 `inbox + recent-messages`，**不恢复 topics**
 
 ## 飞书AI控制台
 

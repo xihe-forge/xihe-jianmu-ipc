@@ -495,6 +495,33 @@ Session self-report endpoint for network suspension. Repeated suspend requests w
 }
 ```
 
+#### `POST /prepare-rebind`
+
+显式会话接力入口。在线 session 在主动下线前先调用它，Hub 会写入 `pending_rebind`，保留当前订阅 topics，并在宽限期内把新的点对点消息写入 `buffered_messages`，等待同名继任者接管。
+
+Explicit handoff endpoint. A live session calls it before going offline. The hub writes a `pending_rebind` row, preserves the current topic subscriptions, and buffers new direct messages during the grace window for the successor with the same session name.
+
+默认 `ttl_seconds=5`，最大 `60`。调用方必须是当前在线 session；若启用了 `IPC_AUTH_TOKEN` 或 `auth-tokens.json`，此 endpoint 还要求 `Authorization: Bearer ...`。
+
+Default `ttl_seconds` is `5` and the maximum is `60`. The caller must be the currently connected session. When `IPC_AUTH_TOKEN` or `auth-tokens.json` is enabled, this endpoint also requires `Authorization: Bearer ...`.
+
+```json
+// Request
+{
+  "name": "worker",
+  "ttl_seconds": 5,
+  "topics": ["network-up", "custom-xyz"],
+  "next_session_hint": "worker-next"
+}
+
+// Response
+{
+  "ok": true,
+  "will_release_at": 1776579000000,
+  "ttl_seconds": 5
+}
+```
+
 #### `POST /wake-suspended`
 
 临时运维 endpoint。调用结构化 `network-up` helper，向所有订阅 `network-up` topic 的 session 广播恢复事件，并**消费/清空** `suspended_sessions` 表。
@@ -565,6 +592,18 @@ Query recent persisted messages addressed to a specific session (including broad
   "messages": []
 }
 ```
+
+### 会话接力 / Session Handover
+
+Hub 同时支持两条同名接力路径：
+
+- `release-rebind`（显式交接）: 旧 session 先 `POST /prepare-rebind`，随后主动断开。5 秒宽限期内到达的点对点消息会写入 `pending_rebind.buffered_messages`，继任者以同名连入后会静默继承 `topics`，并一次性收到 `SQLite inbox + buffered_messages`。
+- `force/zombie rebind`（隐式接管）: 旧 session 崩溃、卡死或未提前宣告时，新连接可用 `?force=1` 或等待 `isAlive=false` 僵尸检测接管。该路径只回放现有 `inbox + recent persisted messages`，不会恢复旧 `topics`。
+
+The hub supports two same-name takeover paths:
+
+- `release-rebind` (explicit handoff): the old session calls `POST /prepare-rebind` and then disconnects intentionally. Direct messages that arrive during the 5-second grace window are stored in `pending_rebind.buffered_messages`. The successor reconnects with the same name, silently inherits `topics`, and receives `SQLite inbox + buffered_messages` in one replay batch.
+- `force/zombie rebind` (implicit takeover): when the old session crashes, stalls, or never announced a handoff, a new connection can use `?force=1` or wait for zombie detection (`isAlive=false`). This path replays only `inbox + recent persisted messages` and does not restore old `topics`.
 
 ### 状态 / Status
 

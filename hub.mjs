@@ -382,6 +382,7 @@ wss.on('connection', (ws, req) => {
       sessions.delete(name);
     } else {
       session.gracefulReleasing = false;
+      session.topics = new Set();
       scheduleInboxCleanup(session);
     }
     if (countLive() === 0) startIdleTimer();

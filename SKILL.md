@@ -101,6 +101,14 @@ Reconnect to a different hub address.
 ipc_reconnect(host="192.168.1.100", port=3179)
 ```
 
+### `ipc_recent_messages`
+Fetch recent persisted messages addressed to the current session (or a specified session), including broadcast backlog after a crash or reconnect.
+
+```
+ipc_recent_messages()
+ipc_recent_messages(name="worker-1", since=3600000, limit=20)
+```
+
 ## Rules
 
 1. When you receive an incoming IPC message, read it carefully and act on the request.

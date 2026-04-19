@@ -163,7 +163,20 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `POST /wake-suspended`：`{reason?, from?}` 临时运维 endpoint，通过 topic fanout 向所有订阅 `network-up` 的 session 广播手动唤醒消息，返回 `{ok, broadcastTo, subscribers, clearedSessions}`
 - `POST /internal/network-event`：内部端点，仅 `127.0.0.1` + `X-Internal-Token` 可访问，接收 `network-down` / `network-up`
 - `POST /task`：`{from, to, title, ...}` 创建结构化任务，返回 `{ok, taskId, online, buffered}`
+- `GET /recent-messages?name=&since=&limit=`：查询发给某个 session（含广播）的近期持久化消息，默认 6h / 50 条，适合崩溃重连补回 backlog
 - `GET /health`：返回 Hub 状态、session 列表与消息计数
+
+## MCP 工具
+
+- `ipc_send(to, content, topic?)`：向指定 session 或 `*` 广播发送消息
+- `ipc_sessions()`：查看当前在线 session
+- `ipc_whoami()`：查看当前 session 名称、Hub 地址和连接状态
+- `ipc_subscribe(topic, action)`：订阅 / 退订 topic
+- `ipc_spawn(name, task, interactive?, model?)`：拉起新的 Claude Code session
+- `ipc_rename(name)`：重命名当前 session
+- `ipc_reconnect(host?, port?)`：切换 Hub 地址并重连
+- `ipc_task(action, ...)`：结构化任务 create / update / list
+- `ipc_recent_messages(name?, since?, limit?)`：拉取当前或指定 session 的近期持久化 backlog（默认 6h / 50 条）
 
 ---
 

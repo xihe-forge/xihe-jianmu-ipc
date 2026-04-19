@@ -104,14 +104,14 @@ function getJson(result) {
   return JSON.parse(getText(result));
 }
 
-test('listTools: 暴露 8 个 MCP 工具', () => {
+test('listTools: 暴露 9 个 MCP 工具', () => {
   const { tools } = createHarness();
   const result = tools.listTools();
 
-  assert.equal(result.tools.length, 8);
+  assert.equal(result.tools.length, 9);
   assert.deepEqual(
     result.tools.map((tool) => tool.name),
-    ['ipc_send', 'ipc_sessions', 'ipc_whoami', 'ipc_subscribe', 'ipc_spawn', 'ipc_rename', 'ipc_reconnect', 'ipc_task'],
+    ['ipc_send', 'ipc_sessions', 'ipc_whoami', 'ipc_subscribe', 'ipc_spawn', 'ipc_rename', 'ipc_reconnect', 'ipc_task', 'ipc_recent_messages'],
   );
 });
 
@@ -462,6 +462,68 @@ test('ipc_task: 未知 action 返回错误', async () => {
 
   assert.equal(result.isError, true);
   assert.equal(getText(result), 'Unknown action: close');
+});
+
+test('ipc_recent_messages: 使用当前 session 和默认参数请求 recent backlog', async () => {
+  const { tools, calls } = createHarness({
+    impl: {
+      httpGet: async () => ({
+        ok: true,
+        since: 21600000,
+        limit: 50,
+        messages: [{ id: 'msg-1' }, { id: 'msg-2' }],
+      }),
+    },
+  });
+  const result = await tools.handleToolCall('ipc_recent_messages', {});
+
+  assert.deepEqual(calls.httpGet, ['http://127.0.0.1:8765/recent-messages?name=alpha&since=21600000&limit=50']);
+  assert.deepEqual(getJson(result), {
+    messages: [{ id: 'msg-1' }, { id: 'msg-2' }],
+    count: 2,
+    since: 21600000,
+    limit: 50,
+  });
+});
+
+test('ipc_recent_messages: 透传 name/since/limit 到 HTTP 端点', async () => {
+  const { tools, calls } = createHarness({
+    impl: {
+      httpGet: async () => ({
+        ok: true,
+        since: 5000,
+        limit: 20,
+        messages: [{ id: 'msg-3' }],
+      }),
+    },
+  });
+  const result = await tools.handleToolCall('ipc_recent_messages', {
+    name: 'worker-b',
+    since: 5000,
+    limit: 20,
+  });
+
+  assert.deepEqual(calls.httpGet, ['http://127.0.0.1:8765/recent-messages?name=worker-b&since=5000&limit=20']);
+  assert.deepEqual(getJson(result), {
+    messages: [{ id: 'msg-3' }],
+    count: 1,
+    since: 5000,
+    limit: 20,
+  });
+});
+
+test('ipc_recent_messages: HTTP 失败时返回 error result', async () => {
+  const { tools } = createHarness({
+    impl: {
+      httpGet: async () => {
+        throw new Error('hub unavailable');
+      },
+    },
+  });
+  const result = await tools.handleToolCall('ipc_recent_messages', {});
+
+  assert.equal(result.isError, true);
+  assert.equal(getText(result), 'Failed to fetch recent messages: hub unavailable');
 });
 
 test('handleToolCall: 未知工具返回错误', async () => {

@@ -43,6 +43,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_rename(name)` — 重命名当前session
 - `ipc_task(action, ...)` — 结构化任务管理（create/update/list）
 - `ipc_reconnect(host?, port?)` — 重连到新的Hub地址
+- `ipc_recent_messages(name?, since?, limit?)` — 拉取当前session近期持久化 backlog（默认6h/50条）
 
 ## HTTP API
 
@@ -54,6 +55,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `GET /health` — Hub状态 + session列表 + messageCount
 - `GET /sessions` — 仅session列表
 - `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
+- `GET /recent-messages?name=&since=&limit=` — 查询发给某个session（含广播）的近期持久化消息，默认6h/50条
 - `GET /stats?hours=N` — per-agent消息统计（默认24小时）
 - `POST /task` — `{from, to, title, description?, priority?, deadline?, payload?}` 创建结构化任务，返回 `{ok, taskId, online, buffered}`
 - `GET /tasks?agent=&status=&limit=` — 任务列表+统计

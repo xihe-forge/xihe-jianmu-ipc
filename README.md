@@ -417,6 +417,22 @@ ipc_task(action="update", taskId="task-abc123", status="completed")
 ipc_task(action="list")
 ```
 
+### `ipc_recent_messages`
+
+拉取发给当前 session（或指定 session）的近期持久化消息，用于冷启动或崩溃重连后补回 backlog。
+Retrieve recent persisted messages addressed to the current session (or a specified session). Useful on cold-start or after reconnecting from a crash.
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | no | Session name to query; defaults to current session |
+| `since` | number | no | Lookback window in milliseconds; default `21600000` (6h), max `604800000` (7d) |
+| `limit` | number | no | Max results; default `50`, max `500` |
+
+```
+ipc_recent_messages()
+ipc_recent_messages(name="worker", since=3600000, limit=20)
+```
+
 ---
 
 ## HTTP API
@@ -528,6 +544,27 @@ Query persisted message history.
 | `from` | string | Start time (ISO 8601) |
 | `to` | string | End time (ISO 8601) |
 | `limit` | number | Max results (default 50) |
+
+#### `GET /recent-messages?name=&since=&limit=`
+
+查询发给指定 session（含广播 `*`）的近期持久化消息，适合崩溃重连或冷启动补回 backlog。
+Query recent persisted messages addressed to a specific session (including broadcast `*`). Useful for cold-start or reconnect recovery.
+
+| Param | Type | Description |
+|---|---|---|
+| `name` | string | Target session name (required) |
+| `since` | number | Lookback window in milliseconds; default `21600000` (6h), max `604800000` (7d) |
+| `limit` | number | Max results; default `50`, max `500` |
+
+```json
+{
+  "ok": true,
+  "name": "worker",
+  "since": 21600000,
+  "limit": 50,
+  "messages": []
+}
+```
 
 ### 状态 / Status
 

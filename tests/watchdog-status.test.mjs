@@ -14,11 +14,8 @@ function createIpcClientStub() {
   return {
     async start() {},
     async stop() {},
-    async sendPing() {
+    async sendMessage() {
       return true;
-    },
-    async waitForPong() {
-      return false;
     },
   };
 }
@@ -34,7 +31,7 @@ test('watchdog /status: 返回精确字段，state=OK 时 failing 为空数组',
       hub: async () => ok(11),
       anthropic: async () => ok(12),
       dns: async () => ok(13),
-      harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
+      harness: async () => ({ ok: true, connected: true, reason: 'ws open' }),
     },
   });
   t.after(async () => {

@@ -35,7 +35,6 @@ function createIpcClientStub() {
   const calls = {
     start: 0,
     stop: 0,
-    sendPing: [],
     sendMessage: [],
   };
 
@@ -47,13 +46,6 @@ function createIpcClientStub() {
       },
       async stop() {
         calls.stop += 1;
-      },
-      async sendPing() {
-        calls.sendPing.push('ping');
-        return true;
-      },
-      async waitForPong() {
-        return false;
       },
       async sendMessage(payload) {
         calls.sendMessage.push(payload);
@@ -109,6 +101,7 @@ test('startWatchdog: dryRun auto handover 返回 inline 内容且不发送 run-c
     watchdogPort,
     intervalMs: 60_000,
     coldStartGraceMs: 0,
+    now: () => nowValue,
     internalToken: 'watchdog-token',
     ipcSpawn: async () => {
       throw new Error('dryRun should not spawn');
@@ -123,7 +116,7 @@ test('startWatchdog: dryRun auto handover 返回 inline 内容且不发送 run-c
       hub: async () => ok(),
       anthropic: async () => ok(),
       dns: async () => ok(),
-      harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
+      harness: async () => ({ ok: true, connected: true, reason: 'ws open' }),
     },
     handoverConfig: {
       checkpointPath,

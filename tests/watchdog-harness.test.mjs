@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createNetworkWatchdog } from '../bin/network-watchdog.mjs';
+import {
+  createDefaultWatchdogProbes,
+  createNetworkWatchdog,
+} from '../bin/network-watchdog.mjs';
 
 const TEST_IPC_PORT = 43180;
 
@@ -28,14 +31,12 @@ function createSequenceProbe(sequence) {
   };
 }
 
-function createHarnessIpcClientStub({ pongSequence = [] } = {}) {
+function createHarnessIpcClientStub() {
   const calls = {
     start: 0,
     stop: 0,
-    sendPing: [],
-    waitForPong: [],
+    sendMessage: [],
   };
-  let index = 0;
 
   return {
     calls,
@@ -46,15 +47,9 @@ function createHarnessIpcClientStub({ pongSequence = [] } = {}) {
       async stop() {
         calls.stop += 1;
       },
-      async sendPing() {
-        calls.sendPing.push('ping');
+      async sendMessage(payload) {
+        calls.sendMessage.push(payload);
         return true;
-      },
-      async waitForPong({ timeoutMs }) {
-        calls.waitForPong.push(timeoutMs);
-        const current = pongSequence[Math.min(index, Math.max(pongSequence.length - 1, 0))] ?? false;
-        index += 1;
-        return current;
       },
     },
   };
@@ -81,11 +76,23 @@ function createIsolatedWatchdog(options = {}) {
   });
 }
 
+function createSessionAliveFetch(body, calls) {
+  return async (url) => {
+    calls.push(String(url));
+    return {
+      status: 200,
+      json: async () => body,
+    };
+  };
+}
+
 test('watchdog harness: 收到 hard-signal heartbeat 时触发 onHarnessStateChange(down)', async (t) => {
+  const clock = createManualNow(Date.parse('2026-04-19T20:05:00.000Z'));
   const transitions = [];
   const ipcClient = createHarnessIpcClientStub();
   const watchdog = createIsolatedWatchdog({
     watchdogPort: 0,
+    now: clock.now,
     createWatchdogIpcClientImpl: () => ipcClient.client,
     coldStartGraceMs: 0,
     onHarnessStateChange: (transition) => transitions.push(transition),
@@ -94,7 +101,7 @@ test('watchdog harness: 收到 hard-signal heartbeat 时触发 onHarnessStateCha
       hub: async () => ok(),
       anthropic: async () => ok(),
       dns: async () => ok(),
-      harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
+      harness: async () => ({ ok: true, connected: true, reason: 'ws open' }),
     },
   });
   t.after(async () => {
@@ -119,11 +126,13 @@ test('watchdog harness: 收到 hard-signal heartbeat 时触发 onHarnessStateCha
 });
 
 test('watchdog harness: degraded heartbeat 不触发 onHarnessStateChange 或 auto handover', async (t) => {
+  const clock = createManualNow(Date.parse('2026-04-19T20:05:00.000Z'));
   const transitions = [];
   const handoverCalls = [];
   const ipcClient = createHarnessIpcClientStub();
   const watchdog = createIsolatedWatchdog({
     watchdogPort: 0,
+    now: clock.now,
     createWatchdogIpcClientImpl: () => ipcClient.client,
     coldStartGraceMs: 0,
     lineage: createLineageStub(),
@@ -139,7 +148,7 @@ test('watchdog harness: degraded heartbeat 不触发 onHarnessStateChange 或 au
       hub: async () => ok(),
       anthropic: async () => ok(),
       dns: async () => ok(),
-      harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
+      harness: async () => ({ ok: true, connected: true, reason: 'ws open' }),
     },
   });
   t.after(async () => {
@@ -173,7 +182,7 @@ test('watchdog harness: topic handler 会把 stale heartbeat ts 传给状态机�
       hub: async () => ok(),
       anthropic: async () => ok(),
       dns: async () => ok(),
-      harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
+      harness: async () => ({ ok: true, connected: true, reason: 'ws open' }),
     },
   });
   t.after(async () => {
@@ -191,11 +200,88 @@ test('watchdog harness: topic handler 会把 stale heartbeat ts 传给状态机�
   assert.deepEqual(transitions, []);
 });
 
-test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', async (t) => {
-  const transitions = [];
-  const ipcClient = createHarnessIpcClientStub({
-    pongSequence: [false, false, false],
+test('watchdog harness: Hub stub session(ws=null, connectedAt=0) 时默认 probe 返回 disconnected, no baseline', async (t) => {
+  const calls = [];
+  const ipcClient = createHarnessIpcClientStub();
+  const defaultProbes = createDefaultWatchdogProbes({
+    ipcPort: TEST_IPC_PORT,
+    harnessProbeConfig: {
+      fetchImpl: createSessionAliveFetch({
+        ok: true,
+        name: 'harness',
+        alive: false,
+        connectedAt: 0,
+        lastAliveProbe: 10_000,
+      }, calls),
+      now: () => 10_000,
+      sessionName: 'harness',
+    },
   });
+  const watchdog = createIsolatedWatchdog({
+    watchdogPort: 0,
+    createWatchdogIpcClientImpl: () => ipcClient.client,
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      harness: defaultProbes.harness,
+    },
+  });
+  t.after(async () => {
+    await watchdog.stop();
+  });
+
+  const state = await watchdog.runTick();
+
+  assert.equal(state.harness.state, 'ok');
+  assert.equal(state.harness.lastProbe.reason, 'disconnected, no baseline');
+  assert.deepEqual(calls, ['http://127.0.0.1:43180/session-alive?name=harness']);
+});
+
+test('watchdog harness: Hub session 不存在时默认 probe 返回 disconnected, no baseline', async (t) => {
+  const ipcClient = createHarnessIpcClientStub();
+  const defaultProbes = createDefaultWatchdogProbes({
+    ipcPort: TEST_IPC_PORT,
+    harnessProbeConfig: {
+      fetchImpl: async () => ({
+        status: 200,
+        json: async () => ({
+          ok: true,
+          name: 'harness',
+          alive: false,
+          connectedAt: null,
+          lastAliveProbe: 10_000,
+        }),
+      }),
+      now: () => 10_000,
+      sessionName: 'harness',
+    },
+  });
+  const watchdog = createIsolatedWatchdog({
+    watchdogPort: 0,
+    createWatchdogIpcClientImpl: () => ipcClient.client,
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      harness: defaultProbes.harness,
+    },
+  });
+  t.after(async () => {
+    await watchdog.stop();
+  });
+
+  const state = await watchdog.runTick();
+
+  assert.equal(state.harness.state, 'ok');
+  assert.equal(state.harness.lastProbe.reason, 'disconnected, no baseline');
+});
+
+test('watchdog harness: ws-disconnected-grace-exceeded 时进入 down', async (t) => {
+  const transitions = [];
+  const ipcClient = createHarnessIpcClientStub();
   const watchdog = createIsolatedWatchdog({
     createWatchdogIpcClientImpl: () => ipcClient.client,
     coldStartGraceMs: 0,
@@ -207,10 +293,9 @@ test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', asyn
       dns: async () => ok(),
       harness: async () => ({
         ok: false,
-        connected: true,
-        error: 'silent',
-        reason: 'online but silent',
-        requiresPing: true,
+        connected: false,
+        error: 'ws-disconnected-grace-exceeded',
+        reason: 'ws down beyond grace',
       }),
     },
   });
@@ -221,52 +306,15 @@ test('watchdog harness: silent probe + 3 次 ping 无 pong 时进入 down', asyn
   const state = await watchdog.runTick();
 
   assert.equal(state.harness.state, 'down');
-  assert.equal(state.harness.lastReason, 'soft-B-silent');
-  assert.equal(state.harness.lastProbe.error, 'silent-confirmed');
-  assert.equal(ipcClient.calls.sendPing.length, 3);
-  assert.deepEqual(ipcClient.calls.waitForPong, [30_000, 30_000, 30_000]);
+  assert.equal(state.harness.lastReason, 'ws-down-grace-exceeded');
+  assert.equal(state.harness.lastProbe.error, 'ws-disconnected-grace-exceeded');
   assert.equal(transitions.length, 1);
-  assert.equal(transitions[0].state, 'down');
-  assert.equal(transitions[0].reason, 'soft-B-silent');
+  assert.equal(transitions[0].reason, 'ws-down-grace-exceeded');
 });
 
-test('watchdog harness: soft signal 收到 pong 后保持 ok', async (t) => {
-  const ipcClient = createHarnessIpcClientStub({
-    pongSequence: [true],
-  });
-  const watchdog = createIsolatedWatchdog({
-    createWatchdogIpcClientImpl: () => ipcClient.client,
-    probes: {
-      cliProxy: async () => ok(),
-      hub: async () => ok(),
-      anthropic: async () => ok(),
-      dns: async () => ok(),
-      harness: async () => ({
-        ok: false,
-        connected: false,
-        error: 'disconnected-grace-exceeded',
-        reason: 'disconnected beyond grace',
-        requiresPing: true,
-      }),
-    },
-  });
-  t.after(async () => {
-    await watchdog.stop();
-  });
-
-  const state = await watchdog.runTick();
-
-  assert.equal(state.harness.state, 'ok');
-  assert.equal(state.harness.lastProbe.reason, 'soft signal but responded');
-  assert.equal(state.harness.lastProbe.failedPings, 0);
-  assert.equal(ipcClient.calls.sendPing.length, 1);
-});
-
-test('watchdog harness: probe-ok 记活性信号后，grace 内 silent-confirmed 可进入 down', async (t) => {
+test('watchdog harness: probe-ok 记活性信号后，grace 内 ws-down-grace-exceeded 可进入 down', async (t) => {
   const clock = createManualNow();
-  const ipcClient = createHarnessIpcClientStub({
-    pongSequence: [false, false, false],
-  });
+  const ipcClient = createHarnessIpcClientStub();
   const watchdog = createIsolatedWatchdog({
     now: clock.now,
     coldStartGraceMs: 120_000,
@@ -277,13 +325,12 @@ test('watchdog harness: probe-ok 记活性信号后，grace 内 silent-confirmed
       anthropic: async () => ok(),
       dns: async () => ok(),
       harness: createSequenceProbe([
-        { ok: true, connected: true, reason: 'online and active' },
+        { ok: true, connected: true, reason: 'ws open' },
         {
           ok: false,
-          connected: true,
-          error: 'silent',
-          reason: 'online but silent',
-          requiresPing: true,
+          connected: false,
+          error: 'ws-disconnected-grace-exceeded',
+          reason: 'ws down beyond grace',
         },
       ]),
     },
@@ -297,55 +344,6 @@ test('watchdog harness: probe-ok 记活性信号后，grace 内 silent-confirmed
   const state = await watchdog.runTick();
 
   assert.equal(state.harness.state, 'down');
-  assert.equal(state.harness.lastReason, 'soft-B-silent');
-  assert.equal(state.harness.lastProbe.error, 'silent-confirmed');
-});
-
-test('watchdog harness: pong 记活性信号后，grace 内后续 silent-confirmed 可进入 down', async (t) => {
-  const clock = createManualNow();
-  const ipcClient = createHarnessIpcClientStub({
-    pongSequence: [true, false, false, false],
-  });
-  const watchdog = createIsolatedWatchdog({
-    now: clock.now,
-    coldStartGraceMs: 120_000,
-    createWatchdogIpcClientImpl: () => ipcClient.client,
-    probes: {
-      cliProxy: async () => ok(),
-      hub: async () => ok(),
-      anthropic: async () => ok(),
-      dns: async () => ok(),
-      harness: createSequenceProbe([
-        {
-          ok: false,
-          connected: true,
-          error: 'silent',
-          reason: 'online but silent',
-          requiresPing: true,
-        },
-        {
-          ok: false,
-          connected: true,
-          error: 'silent',
-          reason: 'online but silent',
-          requiresPing: true,
-        },
-      ]),
-    },
-  });
-  t.after(async () => {
-    await watchdog.stop();
-  });
-
-  const firstState = await watchdog.runTick();
-  assert.equal(firstState.harness.state, 'ok');
-  assert.equal(firstState.harness.lastProbe.reason, 'soft signal but responded');
-
-  clock.advance(30_000);
-  const secondState = await watchdog.runTick();
-
-  assert.equal(secondState.harness.state, 'down');
-  assert.equal(secondState.harness.lastReason, 'soft-B-silent');
-  assert.equal(secondState.harness.lastProbe.error, 'silent-confirmed');
-  assert.equal(ipcClient.calls.sendPing.length, 4);
+  assert.equal(state.harness.lastReason, 'ws-down-grace-exceeded');
+  assert.equal(state.harness.lastProbe.error, 'ws-disconnected-grace-exceeded');
 });

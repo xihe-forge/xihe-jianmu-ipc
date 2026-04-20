@@ -38,11 +38,8 @@ function createIpcClientStub() {
   return {
     async start() {},
     async stop() {},
-    async sendPing() {
+    async sendMessage() {
       return true;
-    },
-    async waitForPong() {
-      return false;
     },
   };
 }
@@ -89,16 +86,18 @@ test('harness self-handover dryRun pipeline: heartbeat -> inline handover conten
     }, null, 2), 'utf8');
 
     const transitions = [];
+    const watchdogNow = () => new Date('2026-04-19T20:05:00Z').getTime();
     const watchdog = createNetworkWatchdog({
       internalToken: 'watchdog-token',
       coldStartGraceMs: 0,
+      now: watchdogNow,
       createWatchdogIpcClientImpl: () => createIpcClientStub(),
       probes: {
         cliProxy: async () => ok(),
         hub: async () => ok(),
         anthropic: async () => ok(),
         dns: async () => ok(),
-        harness: async () => ({ ok: true, connected: true, reason: 'online and active' }),
+        harness: async () => ({ ok: true, connected: true, reason: 'ws open' }),
       },
       onHarnessStateChange: (transition) => transitions.push(transition),
     });

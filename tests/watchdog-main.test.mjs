@@ -38,11 +38,8 @@ function createIpcClientStub() {
   return {
     async start() {},
     async stop() {},
-    async sendPing() {
+    async sendMessage() {
       return true;
-    },
-    async waitForPong() {
-      return false;
     },
   };
 }

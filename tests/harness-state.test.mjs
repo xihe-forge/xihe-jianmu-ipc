@@ -49,7 +49,7 @@ test('createHarnessStateMachine: critical + self-handover 触发 hard-signal dow
   assert.equal(machine.lastHeartbeatAt, 2000);
 });
 
-test('createHarnessStateMachine: silent-confirmed + disconnected 原因触发 soft-A down', () => {
+test('createHarnessStateMachine: ws-disconnected-grace-exceeded 触发 ws-down-grace-exceeded', () => {
   const now = createNow();
   const machine = createHarnessStateMachine({
     now,
@@ -57,29 +57,14 @@ test('createHarnessStateMachine: silent-confirmed + disconnected 原因触发 so
   });
 
   machine.ingestProbeResult({
-    error: 'silent-confirmed',
-    reason: 'disconnected beyond grace',
+    error: 'ws-disconnected-grace-exceeded',
+    reason: 'ws down beyond grace',
   });
 
   assert.equal(machine.state, 'down');
-  assert.equal(machine.lastReason, 'soft-A-ws-disconnect');
+  assert.equal(machine.lastReason, 'ws-down-grace-exceeded');
   assert.equal(machine.lastProbeAt, 2000);
-  assert.equal(machine.lastProbeError, 'silent-confirmed');
-});
-
-test('createHarnessStateMachine: silent-confirmed + 在线静默触发 soft-B down', () => {
-  const machine = createHarnessStateMachine({
-    now: createNow(),
-    coldStartGraceMs: 0,
-  });
-
-  machine.ingestProbeResult({
-    error: 'silent-confirmed',
-    reason: 'online but silent',
-  });
-
-  assert.equal(machine.state, 'down');
-  assert.equal(machine.lastReason, 'soft-B-silent');
+  assert.equal(machine.lastProbeError, 'ws-disconnected-grace-exceeded');
 });
 
 test('createHarnessStateMachine: warn 连续 3 次且无 compact 时触发 down', () => {
@@ -216,25 +201,73 @@ test('createHarnessStateMachine: cold-start 先收到 active heartbeat 后，后
   }]);
 });
 
-test('createHarnessStateMachine: cold-start grace 过后无活性信号时，hard-signal 正常 down', () => {
+test('createHarnessStateMachine: cold-start 窗口内 ws-down-grace-exceeded 被 held-by-grace 压成 degraded', () => {
   const clock = createManualNow();
   const machine = createHarnessStateMachine({
     now: clock.now,
     coldStartGraceMs: 120_000,
   });
 
-  clock.advance(120_000);
   machine.ingestProbeResult({
-    error: 'silent-confirmed',
-    reason: 'online but silent',
+    error: 'ws-disconnected-grace-exceeded',
+    reason: 'ws down beyond grace',
+  });
+
+  assert.equal(machine.state, 'degraded');
+  assert.equal(machine.heldByGrace, true);
+  assert.match(machine.lastReason, /^held-by-grace: ws-down-grace-exceeded/);
+  assert.equal(machine.lastProbeError, 'ws-disconnected-grace-exceeded');
+});
+
+test('createHarnessStateMachine: cold-start 窗口外 ws-down-grace-exceeded 可正常 transition 到 down', () => {
+  const clock = createManualNow();
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+  });
+
+  clock.advance(120_001);
+  machine.ingestProbeResult({
+    error: 'ws-disconnected-grace-exceeded',
+    reason: 'ws down beyond grace',
   });
 
   assert.equal(machine.state, 'down');
-  assert.equal(machine.lastReason, 'soft-B-silent');
-  assert.equal(machine.aliveSignalReceived, false);
+  assert.equal(machine.heldByGrace, false);
+  assert.equal(machine.lastReason, 'ws-down-grace-exceeded');
 });
 
-test('createHarnessStateMachine: cold-start 内先收到 pong 活性信号后，hard-signal 可正常 down', () => {
+test('createHarnessStateMachine: cold-start 内多次 ws-down-grace-exceeded 保持 degraded，出窗后下一次才真正 down', () => {
+  const clock = createManualNow();
+  const transitions = [];
+  const machine = createHarnessStateMachine({
+    now: clock.now,
+    coldStartGraceMs: 120_000,
+    onTransition: (transition) => transitions.push(transition),
+  });
+
+  machine.ingestProbeResult({ error: 'ws-disconnected-grace-exceeded' });
+  clock.advance(30_000);
+  machine.ingestProbeResult({ error: 'ws-disconnected-grace-exceeded' });
+  clock.advance(30_000);
+  machine.ingestProbeResult({ error: 'ws-disconnected-grace-exceeded' });
+
+  assert.equal(machine.state, 'degraded');
+  assert.equal(machine.heldByGrace, true);
+  assert.equal(transitions.length, 1);
+  assert.equal(transitions[0].to, 'degraded');
+
+  clock.advance(60_001);
+  machine.ingestProbeResult({ error: 'ws-disconnected-grace-exceeded' });
+
+  assert.equal(machine.state, 'down');
+  assert.equal(machine.heldByGrace, false);
+  assert.equal(machine.lastReason, 'ws-down-grace-exceeded');
+  assert.equal(transitions.length, 2);
+  assert.equal(transitions[1].to, 'down');
+});
+
+test('createHarnessStateMachine: cold-start 内先收到 pong 活性信号后，ws-down-grace-exceeded 可正常 down', () => {
   const clock = createManualNow();
   const machine = createHarnessStateMachine({
     now: clock.now,
@@ -245,28 +278,28 @@ test('createHarnessStateMachine: cold-start 内先收到 pong 活性信号后，
   machine.markAliveSignal('pong');
   clock.advance(1_000);
   machine.ingestProbeResult({
-    error: 'silent-confirmed',
-    reason: 'disconnected beyond grace',
+    error: 'ws-disconnected-grace-exceeded',
+    reason: 'ws down beyond grace',
   });
 
   assert.equal(machine.state, 'down');
-  assert.equal(machine.lastReason, 'soft-A-ws-disconnect');
+  assert.equal(machine.lastReason, 'ws-down-grace-exceeded');
   assert.equal(machine.lastAliveSignalSource, 'pong');
 });
 
-test('createHarnessStateMachine: coldStartGraceMs=0 时回退为旧行为', () => {
+test('createHarnessStateMachine: coldStartGraceMs=0 时 ws-down-grace-exceeded 直接 down', () => {
   const machine = createHarnessStateMachine({
     now: createManualNow().now,
     coldStartGraceMs: 0,
   });
 
   machine.ingestProbeResult({
-    error: 'silent-confirmed',
-    reason: 'online but silent',
+    error: 'ws-disconnected-grace-exceeded',
+    reason: 'ws down beyond grace',
   });
 
   assert.equal(machine.state, 'down');
-  assert.equal(machine.lastReason, 'soft-B-silent');
+  assert.equal(machine.lastReason, 'ws-down-grace-exceeded');
 });
 
 test('createHarnessStateMachine: 过旧 heartbeat ts 会被 stale-heartbeat 过滤', () => {

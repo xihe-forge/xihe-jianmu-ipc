@@ -18,14 +18,11 @@ function createManualNow(start = 0) {
   };
 }
 
-function createHarnessIpcClientStub({ pongSequence = [] } = {}) {
+function createHarnessIpcClientStub() {
   const calls = {
     start: 0,
     stop: 0,
-    sendPing: [],
-    waitForPong: [],
   };
-  let index = 0;
 
   return {
     calls,
@@ -36,16 +33,6 @@ function createHarnessIpcClientStub({ pongSequence = [] } = {}) {
       async stop() {
         calls.stop += 1;
       },
-      async sendPing() {
-        calls.sendPing.push('ping');
-        return true;
-      },
-      async waitForPong({ timeoutMs }) {
-        calls.waitForPong.push(timeoutMs);
-        const current = pongSequence[Math.min(index, Math.max(pongSequence.length - 1, 0))] ?? false;
-        index += 1;
-        return current;
-      },
       async sendMessage() {
         return true;
       },
@@ -53,12 +40,10 @@ function createHarnessIpcClientStub({ pongSequence = [] } = {}) {
   };
 }
 
-test('watchdog cold-start grace: 启动 2 分钟内 silent-confirmed 不触发 self-handover，grace 后恢复正常', async (t) => {
+test('watchdog cold-start grace: 启动 2 分钟内 ws-down-grace-exceeded 不触发 self-handover，grace 后恢复正常', async (t) => {
   const clock = createManualNow();
   const handoverCalls = [];
-  const ipcClient = createHarnessIpcClientStub({
-    pongSequence: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false],
-  });
+  const ipcClient = createHarnessIpcClientStub();
   const watchdog = createNetworkWatchdog({
     watchdogPort: 0,
     internalToken: 'watchdog-token',
@@ -81,10 +66,9 @@ test('watchdog cold-start grace: 启动 2 分钟内 silent-confirmed 不触发 s
       dns: async () => ok(),
       harness: async () => ({
         ok: false,
-        connected: true,
-        error: 'silent',
-        reason: 'online but silent',
-        requiresPing: true,
+        connected: false,
+        error: 'ws-disconnected-grace-exceeded',
+        reason: 'ws down beyond grace',
       }),
     },
   });
@@ -98,7 +82,7 @@ test('watchdog cold-start grace: 启动 2 分钟内 silent-confirmed 不触发 s
     const state = await watchdog.runTick();
     await watchdog.waitForIdle();
     assert.equal(state.harness.state, 'degraded');
-    assert.match(state.harness.lastReason, /^held-by-grace: soft-B-silent/);
+    assert.match(state.harness.lastReason, /^held-by-grace: ws-down-grace-exceeded/);
     assert.equal(handoverCalls.length, 0);
     clock.advance(30_000);
   }
@@ -108,6 +92,6 @@ test('watchdog cold-start grace: 启动 2 分钟内 silent-confirmed 不触发 s
 
   assert.equal(ipcClient.calls.start, 1);
   assert.equal(postGraceState.harness.state, 'down');
-  assert.equal(postGraceState.harness.lastReason, 'soft-B-silent');
+  assert.equal(postGraceState.harness.lastReason, 'ws-down-grace-exceeded');
   assert.equal(handoverCalls.length, 1);
 });

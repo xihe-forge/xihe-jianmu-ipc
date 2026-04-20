@@ -62,6 +62,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `POST /registry/update` — `{name, projects, requested_by?}` 仅更新 `sessions-registry.json` 中某 session 的 `projects`
 - `GET /health` — Hub状态 + session列表 + messageCount
 - `GET /sessions` — 仅session列表
+- `GET /session-alive?name=` — 返回 `{ok, name, alive, connectedAt, lastAliveProbe}`；`alive` 仅表示 `session.ws.readyState === OPEN`
 - `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
 - `GET /recent-messages?name=&since=&limit=` — 查询发给某个session（含广播）的近期持久化消息，默认6h/50条
 - `GET /stats?hours=N` — per-agent消息统计（默认24小时）
@@ -74,9 +75,12 @@ SKILL.md             — OpenClaw ClawHub skill清单
 
 - `bin/network-watchdog.mjs` 现在探测 5 项：`cliProxy / hub / anthropic / dns / harness`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
+- harness 存活判据改为 Hub `GET /session-alive?name=harness`：只有 `{ alive: true }` 才表示对应 WS 仍然 `OPEN`
+- watchdog 只在 probe 返回 `{ ok: true, connected: true }` 时刷新内存里的 `lastSeenOnlineAt`；其余情况一律不更新基线
+- `/session-alive` 返回 `alive=false` 时，probe 按 `lastSeenOnlineAt -> connectedAt -> null` 回退；超过 `wsDisconnectGraceMs`（默认 60s）后返回 `ws-disconnected-grace-exceeded`
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover
-- watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定都会被压成 `degraded` 并标记 `held-by-grace`
+- watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定（包括 `ws-down-grace-exceeded`）都会被压成 `degraded` 并标记 `held-by-grace`
 - `ingestHeartbeat()` 会校验 heartbeat `ts` 鲜度：早于 watchdog `startedAt - 60s` 的历史消息，或解析失败的非法 `ts`，一律忽略，不得驱动 transition / handover
 - `WATCHDOG_COLD_START_GRACE_MS` 可覆盖该冷启保护时长；测试或回归对比可传 `0`
 

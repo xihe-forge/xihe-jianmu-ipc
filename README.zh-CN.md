@@ -166,6 +166,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `POST /task`：`{from, to, title, ...}` 创建结构化任务，返回 `{ok, taskId, online, buffered}`
 - `POST /registry/register`：`{name, role?, projects?, access_scope?, cold_start_strategy?, note?, requested_by?}` 创建或更新 `sessions-registry.json` 条目
 - `POST /registry/update`：`{name, projects, requested_by?}` 仅更新 `sessions-registry.json` 里某 session 的 `projects`
+- `GET /session-alive?name=`：返回 `{ok, name, alive, connectedAt, lastAliveProbe}`；`alive` 只表示该 session 当前 `ws.readyState === OPEN`
 - `GET /recent-messages?name=&since=&limit=`：查询发给某个 session（含广播）的近期持久化消息，默认 6h / 50 条，适合崩溃重连补回 backlog
 - `flushInbox`：只推离线 inbox 缓冲；历史消息不会在连接时自动推送，需主动调用 `ipc_recent_messages` 或 `GET /recent-messages`
 - `GET /health`：返回 Hub 状态、session 列表与消息计数
@@ -202,8 +203,12 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 ## Harness 自交接
 
 - watchdog 订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
+- harness 存活判据改为 Hub `GET /session-alive?name=harness`：只有 `{alive: true}` 才表示 WS 仍在线
+- watchdog 只在 probe 返回 `{ok: true, connected: true}` 时刷新 `lastSeenOnlineAt`；`alive=false` 时按 `lastSeenOnlineAt -> connectedAt -> null` 回退
+- WS 断开超过 `wsDisconnectGraceMs`（默认 60s）后，probe 返回 `ws-disconnected-grace-exceeded`，状态机会映射为 `ws-down-grace-exceeded`
 - `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - 只有 harness 进入 `down` 时，watchdog 才会触发 `triggerHarnessSelfHandover()`；`degraded` 只表示风险态，不会直接 handover
+- watchdog 冷启默认仍有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，`ws-down-grace-exceeded` 也会被压成 `held-by-grace`
 - watchdog 会过滤历史 / 非法 heartbeat `ts`：若 `ts < watchdog startedAt - 60s` 或时间戳解析失败，该 heartbeat 会被忽略，不驱动 transition / handover
 - `lib/lineage.mjs` 用 SQLite `lineage` 表限制递归 handover 深度与频次，防止自拉起雪崩
 

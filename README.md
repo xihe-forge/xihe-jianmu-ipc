@@ -677,8 +677,12 @@ Update only the `projects` list for an existing registered session. Returns `404
 
 - `network-watchdog` 已扩成 5 路探测：`cliProxy / hub / anthropic / dns / harness`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
+- harness liveness now comes from `GET /session-alive?name=harness`: only `{ alive: true }` counts as WS still being `OPEN`
+- the watchdog only refreshes in-memory `lastSeenOnlineAt` when probe returns `{ ok: true, connected: true }`; otherwise the baseline stays unchanged
+- when `/session-alive` reports `alive=false`, the probe falls back through `lastSeenOnlineAt -> connectedAt -> null`; once `wsDisconnectGraceMs` (default 60s) expires it raises `ws-disconnected-grace-exceeded`
 - `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，包含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - 只有当 harness 进入 `down`，watchdog 才会调用 `triggerHarnessSelfHandover()`；`degraded` 只是风险态，不会直接触发 handover
+- the existing 2-minute cold-start grace still applies: before the first fresh `heartbeat` / `pong` / `probe-ok`, even `ws-down-grace-exceeded` is suppressed to `held-by-grace`
 - watchdog 会过滤历史 / 非法 heartbeat `ts`：若 `ts < watchdog startedAt - 60s` 或时间戳解析失败，该 heartbeat 会被忽略，不驱动 transition / handover
 - `lib/lineage.mjs` 用 SQLite `lineage` 表限制递归 handover 深度和滑动窗口频次，避免 watchdog 无限自拉起
 
@@ -714,6 +718,24 @@ Returns hub status, session list, and message count.
 
 仅返回 sessions 数组。
 Returns the sessions array only.
+
+#### `GET /session-alive?name=`
+
+按最窄职责返回某个 session 的 WS 存活状态。`alive=true` 仅表示 `session.ws.readyState === OPEN`；stub session（`ws=null`）和不存在的 session 都会返回 `alive=false`。
+Returns the narrow WS liveness view for one session. `alive=true` means only that `session.ws.readyState === OPEN`; stub sessions (`ws=null`) and missing sessions both return `alive=false`.
+
+若启用了 `IPC_AUTH_TOKEN` 或 `auth-tokens.json`，此 endpoint 复用现有全局 HTTP auth 网关，需要 `Authorization: Bearer ...` 或 `X-IPC-Token`。
+When `IPC_AUTH_TOKEN` or `auth-tokens.json` is enabled, this endpoint reuses the existing global HTTP auth gateway and requires `Authorization: Bearer ...` or `X-IPC-Token`.
+
+```json
+{
+  "ok": true,
+  "name": "harness",
+  "alive": true,
+  "connectedAt": 1776516090000,
+  "lastAliveProbe": 1776516123456
+}
+```
 
 #### `GET /stats?hours=N`
 

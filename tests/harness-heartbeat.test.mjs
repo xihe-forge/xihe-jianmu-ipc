@@ -12,80 +12,72 @@ function createClock(start = 0) {
   };
 }
 
-function createFetchImpl({ sessions = [], messages = [] }) {
+function createFetchImpl(body) {
   const calls = [];
 
   return {
     calls,
-    fetchImpl: async (url) => {
-      calls.push(String(url));
-      if (String(url).endsWith('/sessions')) {
-        return { status: 200, json: async () => sessions };
-      }
-      if (String(url).includes('/messages?peer=')) {
-        return { status: 200, json: async () => messages };
-      }
-      throw new Error(`unexpected url: ${url}`);
+    fetchImpl: async (url, init = {}) => {
+      calls.push({
+        url: String(url),
+        headers: normalizeHeaders(init.headers),
+      });
+      return { status: 200, json: async () => body };
     },
   };
 }
 
-test('probeHarnessHeartbeat: 在线且最近有活动时返回 ok', async () => {
+function normalizeHeaders(headers) {
+  const normalized = {};
+  if (!headers) {
+    return normalized;
+  }
+
+  for (const [key, value] of Object.entries(headers)) {
+    normalized[String(key).toLowerCase()] = String(value);
+  }
+
+  return normalized;
+}
+
+test('probeHarnessHeartbeat: /session-alive alive=true 时返回 ws open 并带 Bearer', async () => {
   const clock = createClock(10_000);
   const { fetchImpl, calls } = createFetchImpl({
-    sessions: [{ name: 'harness', connectedAt: 9_000 }],
-    messages: [{ id: 'msg-1', ts: 9_500 }],
+    ok: true,
+    name: 'harness',
+    alive: true,
+    connectedAt: 9_000,
+    lastAliveProbe: 10_000,
   });
 
   const result = await probeHarnessHeartbeat({
     fetchImpl,
     now: clock.now,
+    authToken: 'shared-secret',
   });
 
   assert.deepEqual(result, {
     ok: true,
     connected: true,
-    reason: 'online and active',
-    lastMsgAgeMs: 500,
+    reason: 'ws open',
     latencyMs: 0,
   });
-  assert.deepEqual(calls, [
-    'http://127.0.0.1:3179/sessions',
-    'http://127.0.0.1:3179/messages?peer=harness&limit=1',
-  ]);
+  assert.deepEqual(calls, [{
+    url: 'http://127.0.0.1:3179/session-alive?name=harness',
+    headers: {
+      authorization: 'Bearer shared-secret',
+    },
+  }]);
 });
 
-test('probeHarnessHeartbeat: 在线但静默超阈值时返回 requiresPing', async () => {
-  const clock = createClock(700_000);
-  const { fetchImpl } = createFetchImpl({
-    sessions: [{ name: 'harness', connectedAt: 1_000 }],
-    messages: [{ id: 'msg-1', ts: 50_000 }],
-  });
-
-  const result = await probeHarnessHeartbeat({
-    fetchImpl,
-    now: clock.now,
-    maxSilentMs: 600_000,
-  });
-
-  assert.deepEqual(result, {
-    ok: false,
-    connected: true,
-    error: 'silent',
-    reason: 'online but silent',
-    pingAttempts: 3,
-    pingIntervalMs: 30_000,
-    lastMsgAgeMs: 650_000,
-    requiresPing: true,
-    latencyMs: 0,
-  });
-});
-
-test('probeHarnessHeartbeat: 离线但仍在 grace 窗口内时保持 ok', async () => {
+test('probeHarnessHeartbeat: /session-alive alive=false 且仍在 grace 内时保持 ok', async () => {
   const clock = createClock(200_000);
   const { fetchImpl } = createFetchImpl({
-    sessions: [],
-    messages: [{ id: 'msg-1', ts: 20_000 }],
+    ok: true,
+    name: 'harness',
+    alive: false,
+    connectedAt: 20_000,
+    lastAliveProbe: 200_000,
   });
 
   const result = await probeHarnessHeartbeat({
@@ -104,29 +96,51 @@ test('probeHarnessHeartbeat: 离线但仍在 grace 窗口内时保持 ok', async
   });
 });
 
-test('probeHarnessHeartbeat: 离线超出 grace 窗口时返回 requiresPing', async () => {
+test('probeHarnessHeartbeat: /session-alive alive=false 且超过 grace 时返回 ws-disconnected-grace-exceeded', async () => {
   const clock = createClock(500_000);
   const { fetchImpl } = createFetchImpl({
-    sessions: [],
-    messages: [{ id: 'msg-1', ts: 100_000 }],
+    ok: true,
+    name: 'harness',
+    alive: false,
+    connectedAt: 200_000,
+    lastAliveProbe: 500_000,
   });
 
   const result = await probeHarnessHeartbeat({
     fetchImpl,
     now: clock.now,
-    lastSeenOnlineAt: 200_000,
     wsDisconnectGraceMs: 180_000,
   });
 
   assert.deepEqual(result, {
     ok: false,
     connected: false,
-    error: 'disconnected-grace-exceeded',
-    reason: 'disconnected beyond grace',
-    pingAttempts: 3,
-    pingIntervalMs: 30_000,
+    error: 'ws-disconnected-grace-exceeded',
+    reason: 'ws down beyond grace',
     disconnectedForMs: 300_000,
-    requiresPing: true,
+    latencyMs: 0,
+  });
+});
+
+test('probeHarnessHeartbeat: /session-alive alive=false 且无 baseline 时返回 disconnected, no baseline', async () => {
+  const clock = createClock(50_000);
+  const { fetchImpl } = createFetchImpl({
+    ok: true,
+    name: 'harness',
+    alive: false,
+    connectedAt: 0,
+    lastAliveProbe: 50_000,
+  });
+
+  const result = await probeHarnessHeartbeat({
+    fetchImpl,
+    now: clock.now,
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    connected: false,
+    reason: 'disconnected, no baseline',
     latencyMs: 0,
   });
 });

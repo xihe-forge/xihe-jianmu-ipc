@@ -94,6 +94,14 @@ Rename the current session.
 ipc_rename(name="my-new-name")
 ```
 
+### `ipc_reclaim_my_name`
+
+Reclaim your intended session name when a zombie holder blocks reconnect.
+
+```
+ipc_reclaim_my_name(name="harness")
+```
+
 ### `ipc_task`
 
 Manage structured tasks (create/update/list).

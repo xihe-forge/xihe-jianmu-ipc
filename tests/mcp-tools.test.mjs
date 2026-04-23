@@ -126,11 +126,11 @@ async function importMcpServerModule() {
   return import(`${moduleUrl.href}?test=${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
-test('listTools: 暴露 13 个 MCP 工具', () => {
+test('listTools: 暴露 14 个 MCP 工具', () => {
   const { tools } = createHarness();
   const result = tools.listTools();
 
-  assert.equal(result.tools.length, 13);
+  assert.equal(result.tools.length, 14);
   assert.deepEqual(
     result.tools.map((tool) => tool.name),
     [
@@ -140,6 +140,7 @@ test('listTools: 暴露 13 个 MCP 工具', () => {
       'ipc_subscribe',
       'ipc_spawn',
       'ipc_rename',
+      'ipc_reclaim_my_name',
       'ipc_reconnect',
       'ipc_task',
       'ipc_recent_messages',
@@ -604,6 +605,43 @@ test('ipc_rename: 更新 session 名并触发断开重连', async () => {
     from: 'alpha',
     to: 'worker-renamed',
   });
+});
+
+test('ipc_reclaim_my_name: 调用 Hub /reclaim-name 返回结果', async () => {
+  const { tools } = createHarness({
+    state: {
+      hubHost: '127.0.0.1',
+      hubPort: 8765,
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (url, options) => {
+    fetchCalls.push({ url, options });
+    return {
+      async json() {
+        return { ok: true, evicted: true };
+      },
+    };
+  };
+
+  try {
+    const result = await tools.handleToolCall('ipc_reclaim_my_name', { name: 'alpha' });
+
+    assert.deepEqual(fetchCalls, [
+      {
+        url: 'http://127.0.0.1:8765/reclaim-name',
+        options: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'alpha' }),
+        },
+      },
+    ]);
+    assert.equal(getText(result), JSON.stringify({ ok: true, evicted: true }));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('ipc_reconnect: 缺 host 和 port 时返回错误', async () => {

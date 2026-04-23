@@ -406,6 +406,19 @@ Rename the current session.
 ipc_rename(name="code-reviewer")
 ```
 
+### `ipc_reclaim_my_name`
+
+回收自己的目标 session 名称，当旧 holder 疑似 zombie 时先让 Hub 主动 ping 探测并在 5 秒无 pong 时踢掉旧连接。
+Reclaim your intended session name when the current holder looks stale. The hub actively pings the holder and evicts it only if no pong arrives within 5 seconds.
+
+| Param  | Type   | Required | Description                                                       |
+| ------ | ------ | -------- | ----------------------------------------------------------------- |
+| `name` | string | yes      | Session name to reclaim, typically the same as `process.env.IPC_NAME` |
+
+```
+ipc_reclaim_my_name(name="harness")
+```
+
 ### `ipc_task`
 
 结构化任务管理——创建、更新、查询任务。
@@ -569,6 +582,23 @@ Default `ttl_seconds` is `5` and the maximum is `60`. The caller must be the cur
   "will_release_at": 1776579000000,
   "ttl_seconds": 5
 }
+```
+
+#### `POST /reclaim-name`
+
+自助回收同名 zombie 占位入口。仅接受 loopback 调用，不走 `IPC_AUTH_TOKEN` / `auth-tokens.json` 全局网关；Hub 会对当前 holder 主动发送 ping，5 秒内若未收到 pong，则 terminate 旧连接，让后续同名 WS 连入复用现有 zombie/force-rebind 路径。
+
+Self-service zombie reclaim endpoint for a session name. It only accepts loopback callers and intentionally bypasses the global `IPC_AUTH_TOKEN` / `auth-tokens.json` gateway. The hub actively pings the current holder; if no pong arrives within 5 seconds, it terminates the old socket so the next same-name WS connect can reuse the existing zombie/force-rebind path.
+
+```json
+// Request
+{ "name": "harness" }
+
+// Response (evicted)
+{ "ok": true, "evicted": true, "previousConnectedAt": 1776579000000 }
+
+// Response (holder alive)
+{ "ok": false, "reason": "holder-alive", "lastAliveAt": 1776579005000 }
 ```
 
 #### `POST /wake-suspended`

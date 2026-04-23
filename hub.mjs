@@ -38,6 +38,7 @@ import { createHttpHandler } from './lib/http-handlers.mjs';
 import { getFeishuApps, getFeishuToken, startFeishuConfigPoller } from './lib/feishu-adapter.mjs';
 import { createNetworkEventBroadcaster } from './lib/network-events.mjs';
 import { loadInternalToken } from './lib/internal-auth.mjs';
+import { createSessionReclaimHandler } from './lib/session-reclaim.mjs';
 import {
   isOpenClawSession,
   deliverToOpenClaw,
@@ -139,6 +140,7 @@ function checkAuth(providedToken, sessionName = null) {
 const sessions = new Map();
 const ackPending = new Map(); // messageId → { sender, ts }
 const deliveredMessageIds = new Map(); // messageId → timestamp（去重）
+const sessionReclaim = createSessionReclaimHandler({ sessions, audit, findPendingRebind });
 
 setInterval(() => {
   const cutoff = Date.now() - 300000;
@@ -228,6 +230,7 @@ const ctx = {
     registryMaintainer.registerSession(payload, options),
   updateSessionRecordProjects: (payload, options = {}) =>
     registryMaintainer.updateSessionProjects(payload, options),
+  sessionReclaim,
 };
 
 const {

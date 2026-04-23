@@ -42,6 +42,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_subscribe(topic, action)` — 订阅/退订topic
 - `ipc_spawn(name, task, interactive?, model?, host?, cwd?)` — 启动新session；`host=wt|vscode-terminal|external`，默认 `external`；`cwd` 未传时回退到调用方 `process.cwd()`。`wt` / `external` 都以 `IPC_NAME` 环境变量传 session 名，不使用 `--session-name` / `--resume`；canonical cmdline 是 `"...\\bin\\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`
 - `ipc_rename(name)` — 重命名当前session
+- `ipc_reclaim_my_name(name)` — 自助回收同名 zombie 占位；Hub 会对当前 holder 主动 ping 5 秒，无 pong 才 evict
 - `ipc_task(action, ...)` — 结构化任务管理（create/update/list）
 - `ipc_reconnect(host?, port?)` — 重连到新的Hub地址
 - `ipc_recent_messages(name?, since?, limit?)` — 拉取当前session近期持久化 backlog（默认6h/50条）
@@ -53,6 +54,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 ## HTTP API
 
 - `POST /send` — `{from, to, content}` 发消息，返回 `{accepted, id, online, buffered}`；若 target 不存在，sender 会收到 `unknown-target` 警告
+- `POST /reclaim-name` — `{name}` 自助回收同名 zombie 占位；仅允许 loopback，请求成功只 terminate 老 ws，后续重连复用现有 zombie/force-rebind 分支
 - `POST /prepare-rebind` — `{name, ttl_seconds?, topics?, next_session_hint?}` 显式会话接力；调用方必须是当前在线 session。默认宽限期 5 秒、最大 60 秒；若启用了 `IPC_AUTH_TOKEN` 或 `auth-tokens.json`，需额外带 `Authorization: Bearer ...`
 - `POST /suspend` — `{from, reason?, task_description?, suspended_by?}` 记录挂起 session（`suspended_by=self|watchdog|harness`），返回 `{ok, name, suspended_at, suspended_by}`
 - `POST /wake-suspended` — 广播结构化 `network-up` 事件并清空 `suspended_sessions`，返回 `{ok, broadcastTo, subscribers, clearedSessions}`；旧 `{reason, from}` body 仅为兼容保留

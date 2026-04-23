@@ -159,6 +159,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 ## HTTP API
 
 - `POST /send`：`{from, to, content}` 发送消息，返回 `{accepted, id, online, buffered}`；若 target 不存在，sender 会收到 `unknown-target` 警告
+- `POST /reclaim-name`：`{name}` 自助回收同名 zombie 占位；仅允许 loopback，Hub 会主动 ping 当前 holder 5 秒，无 pong 才 evict
 - `POST /prepare-rebind`：`{name, ttl_seconds?, topics?, next_session_hint?}` 显式会话接力。在线 session 下线前先调用，Hub 会预写 `pending_rebind`，默认宽限期 5 秒，继任者同名连入后继承 topics 并收到 `inbox + buffered_messages`
 - `POST /suspend`：`{from, reason?, task_description?, suspended_by?}` 记录挂起 session，返回 `{ok, name, suspended_at, suspended_by}`
 - `POST /wake-suspended`：`{reason?, from?}` 临时运维 endpoint，通过 topic fanout 向所有订阅 `network-up` 的 session 广播手动唤醒消息，返回 `{ok, broadcastTo, subscribers, clearedSessions}`
@@ -186,6 +187,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `ipc_subscribe(topic, action)`：订阅 / 退订 topic
 - `ipc_spawn(name, task, interactive?, model?, host?, cwd?)`：拉起新的 Claude Code session；`host=wt|vscode-terminal|external`，默认 `external`；`cwd` 未传时回退到调用方 `process.cwd()`
 - `ipc_rename(name)`：重命名当前 session
+- `ipc_reclaim_my_name(name)`：当冷启动发现自己的目标名被 zombie holder 卡住时，先请求 Hub 主动 ping 探测并回收该占位
 - `ipc_reconnect(host?, port?)`：切换 Hub 地址并重连
 - `ipc_task(action, ...)`：结构化任务 create / update / list
 - `ipc_recent_messages(name?, since?, limit?)`：拉取当前或指定 session 的近期持久化 backlog（默认 6h / 50 条）

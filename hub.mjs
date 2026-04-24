@@ -446,6 +446,12 @@ wss.on('connection', (ws, req) => {
         break;
       case 'ack': {
         const pending = ackPending.get(msg.messageId);
+        audit('ack_received', {
+          message_id: msg.messageId,
+          confirmed_by: session.name,
+          original_sender: pending?.sender ?? null,
+          rtt_ms: pending ? Date.now() - pending.ts : null,
+        });
         if (pending) {
           ackPending.delete(msg.messageId);
           const senderSession = sessions.get(pending.sender);

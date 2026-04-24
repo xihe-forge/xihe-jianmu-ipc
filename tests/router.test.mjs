@@ -192,6 +192,28 @@ test('broadcast: 跳过离线 session', { timeout: 5000 }, () => {
   // bob 离线，不会报错，inbox 也不受 broadcast 影响（broadcast 只发在线）
 });
 
+
+test('broadcastToTopic: records push_deliver for each online subscriber', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { broadcastToTopic } = createRouter(ctx);
+
+  for (const name of ['alice', 'bob', 'charlie']) {
+    const session = createOnlineSession(name, createMockWs());
+    session.topics.add('ops');
+    ctx.sessions.set(name, session);
+  }
+
+  const delivered = broadcastToTopic('ops', { id: 'topic_msg', type: 'message', topic: 'ops', content: 'fanout' });
+
+  assert.deepEqual(delivered, ['alice', 'bob', 'charlie']);
+  const pushAudits = ctx._audits.filter((entry) => entry.event === 'push_deliver');
+  assert.equal(pushAudits.length, 3);
+  assert.deepEqual(pushAudits.map((entry) => entry.to), ['alice', 'bob', 'charlie']);
+  assert.ok(pushAudits.every((entry) => entry.msg_id === 'topic_msg'));
+  assert.ok(pushAudits.every((entry) => entry.send_ok === true));
+  assert.ok(pushAudits.every((entry) => entry.reason === 'broadcast-topic'));
+});
+
 // ── pushInbox ─────────────────────────────────────────────────────────────────
 
 test('pushInbox: 将消息加入 inbox', { timeout: 5000 }, () => {
@@ -401,6 +423,51 @@ test('routeMessage: 发送到在线 session — 目标 ws 收到消息', { timeo
 
   assert.equal(wsTarget._sent.length, 1);
   assert.equal(wsTarget._sent[0].content, 'direct msg');
+});
+
+
+test('routeMessage: records push_deliver when direct send succeeds', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+
+  ctx.sessions.set('eve', createOnlineSession('eve', createMockWs()));
+  const msg = { id: 'direct_audit', type: 'message', from: 'alice', to: 'eve', content: 'audit me' };
+
+  routeMessage(msg, { name: 'alice' });
+
+  const pushAudits = ctx._audits.filter((entry) => entry.event === 'push_deliver');
+  assert.equal(pushAudits.length, 1);
+  assert.deepEqual(pushAudits[0], {
+    event: 'push_deliver',
+    msg_id: 'direct_audit',
+    to: 'eve',
+    ws_ready_state: 1,
+    send_ok: true,
+    send_err: null,
+    reason: 'route-direct',
+  });
+});
+
+test('routeMessage: records failed push_deliver when ws.send throws', { timeout: 5000 }, () => {
+  const ctx = createMockCtx();
+  const { routeMessage } = createRouter(ctx);
+  const ws = createMockWs();
+  ws.send = () => {
+    throw new Error('mock send failed');
+  };
+  ctx.sessions.set('eve', createOnlineSession('eve', ws));
+
+  routeMessage({ id: 'send_fail', type: 'message', from: 'alice', to: 'eve', content: 'boom' }, { name: 'alice' });
+
+  const pushAudits = ctx._audits.filter((entry) => entry.event === 'push_deliver');
+  assert.equal(pushAudits.length, 1);
+  assert.equal(pushAudits[0].msg_id, 'send_fail');
+  assert.equal(pushAudits[0].to, 'eve');
+  assert.equal(pushAudits[0].ws_ready_state, 1);
+  assert.equal(pushAudits[0].send_ok, false);
+  assert.match(pushAudits[0].send_err, /mock send failed/);
+  assert.equal(pushAudits[0].reason, 'route-direct');
+  assert.ok(ctx._logs.some((line) => line.includes('send error: mock send failed')));
 });
 
 test('routeMessage: 发送到离线 session — 消息进入 inbox', { timeout: 5000 }, () => {
@@ -657,10 +724,10 @@ test('routeMessage: 调用 audit 记录路由事件', { timeout: 5000 }, () => {
 
   routeMessage(msg, senderSession);
 
-  assert.equal(ctx._audits.length, 1);
-  assert.equal(ctx._audits[0].event, 'message_route');
-  assert.equal(ctx._audits[0].from, 'alice');
-  assert.equal(ctx._audits[0].to, 'eve');
+  const routeAudits = ctx._audits.filter((entry) => entry.event === 'message_route');
+  assert.equal(routeAudits.length, 1);
+  assert.equal(routeAudits[0].from, 'alice');
+  assert.equal(routeAudits[0].to, 'eve');
 });
 
 // ── routeMessage — OpenClaw 路径 ──────────────────────────────────────────────

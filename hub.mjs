@@ -33,7 +33,7 @@ import { parentPort } from 'node:worker_threads';
 import { WebSocketServer } from 'ws';
 import { audit } from './lib/audit.mjs';
 import { startCIRelay, stopCIRelay } from './lib/ci-relay.mjs';
-import { createRouter } from './lib/router.mjs';
+import { createRouter, safePushAndAudit } from './lib/router.mjs';
 import { createHttpHandler } from './lib/http-handlers.mjs';
 import { getFeishuApps, getFeishuToken, startFeishuConfigPoller } from './lib/feishu-adapter.mjs';
 import { createNetworkEventBroadcaster } from './lib/network-events.mjs';
@@ -449,12 +449,17 @@ wss.on('connection', (ws, req) => {
         if (pending) {
           ackPending.delete(msg.messageId);
           const senderSession = sessions.get(pending.sender);
-          if (senderSession?.ws?.readyState === senderSession?.ws?.OPEN)
-            send(senderSession.ws, {
-              type: 'ack',
-              messageId: msg.messageId,
-              confirmedBy: session.name,
-            });
+          if (senderSession?.ws?.readyState === senderSession?.ws?.OPEN) {
+            try {
+              safePushAndAudit(senderSession, {
+                type: 'ack',
+                messageId: msg.messageId,
+                confirmedBy: session.name,
+              }, { reason: 'ack-notify', audit });
+            } catch (err) {
+              stderr(`[ipc-hub] send error: ${err.message}`);
+            }
+          }
           stderr(
             `[ipc-hub] ack: ${session.name} confirmed ${msg.messageId} → notified ${pending.sender}`,
           );

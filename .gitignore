@@ -12,6 +12,7 @@ skills/
 # 测试临时文件
 temp/
 .test-tmp/
+.tmp/
 
 # 天枢 Harness（本地方法论，不上传）
 .tianshu/

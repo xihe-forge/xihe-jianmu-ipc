@@ -5,7 +5,7 @@
 ' 由 Windows 任务计划（CliProxyDaemon）触发，wscript //B 隐藏运行
 
 Set shell = CreateObject("WScript.Shell")
-proxyDir = "D:\workspace\ai\opensource\CLIProxyAPI_6.9.19_windows_amd64"
+proxyDir = "D:\workspace\ai\opensource\CLIProxyAPI_6.9.36_windows_amd64"
 logDir = "D:\workspace\ai\research\xiheAi\temp\jianmu-ipc\logs"
 shell.CurrentDirectory = proxyDir
 

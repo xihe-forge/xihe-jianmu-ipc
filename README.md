@@ -1,4 +1,4 @@
-[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+﻿[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [English](README.md) | [中文](README.zh-CN.md)
 
 # xihe-jianmu-ipc
@@ -105,7 +105,7 @@ The standard path for multi-agent coordination — routing messages through the 
 
 ┌─────────────────────────────────────────────────────────────┐
 │  network-watchdog (bin/network-watchdog.mjs)                │
-│  4 probes every 30s: cliProxy / hub / anthropic / dns       │
+│  6 probes every 30s: cliProxy / hub / anthropic / dns / harness / committed_pct       │
 │  POST /internal/network-event -> Hub                        │
 │  GET 127.0.0.1:3180/status for daemon health checks         │
 └─────────────────────────────────────────────────────────────┘
@@ -181,7 +181,7 @@ node hub.mjs
 setsid node hub.mjs &
 ```
 
-**4. 启动 network-watchdog（推荐无人值守时启用，自动探测 `CliProxy / Hub / Anthropic / DNS / harness`） / Start the network-watchdog (recommended for unattended runs, probes `CliProxy / Hub / Anthropic / DNS / harness`)**
+**4. 启动 network-watchdog（推荐无人值守时启用，自动探测 `cliProxy / hub / anthropic / dns / harness / committed_pct`） / Start the network-watchdog (recommended for unattended runs, probes `cliProxy / hub / anthropic / dns / harness / committed_pct`)**
 
 ```bash
 npm run watchdog
@@ -705,11 +705,12 @@ Update only the `projects` list for an existing registered session. Returns `404
 
 ### Harness Self-Handover
 
-- `network-watchdog` 已扩成 5 路探测：`cliProxy / hub / anthropic / dns / harness`
+- `network-watchdog` 已扩成 6 路探测：`cliProxy / hub / anthropic / dns / harness / committed_pct`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - harness liveness now comes from `GET /session-alive?name=harness`: only `{ alive: true }` counts as WS still being `OPEN`
 - the watchdog only refreshes in-memory `lastSeenOnlineAt` when probe returns `{ ok: true, connected: true }`; otherwise the baseline stays unchanged
 - when `/session-alive` reports `alive=false`, the probe falls back through `lastSeenOnlineAt -> connectedAt -> null`; once `wsDisconnectGraceMs` (default 60s) expires it raises `ws-disconnected-grace-exceeded`
+- `committed_pct` monitors system commit ratio: 90% broadcasts a `critique` WARN, 95% runs `session-guard.ps1 -Action tree-kill` to clean the largest vitest subtree with identity safeguards.
 - `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，包含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - 只有当 harness 进入 `down`，watchdog 才会调用 `triggerHarnessSelfHandover()`；`degraded` 只是风险态，不会直接触发 handover
 - the existing 2-minute cold-start grace still applies: before the first fresh `heartbeat` / `pong` / `probe-ok`, even `ws-down-grace-exceeded` is suppressed to `held-by-grace`
@@ -1076,3 +1077,6 @@ More products for AI collaboration, search, growth, and digital experiences are 
 ## License
 
 MIT — by [xihe-forge](https://github.com/xihe-forge)
+
+
+

@@ -1,4 +1,4 @@
-[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+﻿[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [English](README.md) | [中文](README.zh-CN.md)
 
 # xihe-jianmu-ipc
@@ -80,7 +80,7 @@ npm install
 node hub.mjs
 ```
 
-4. 建议同时启动 `network-watchdog`，自动探测 `CliProxy / Hub / Anthropic / DNS / harness`：
+4. 建议同时启动 `network-watchdog`，自动探测 `cliProxy / hub / anthropic / dns / harness / committed_pct`：
 
 ```bash
 npm run watchdog
@@ -137,7 +137,7 @@ powershell -ExecutionPolicy Bypass -File bin\verify-daemons.ps1 -Service Hub
 核心组件如下：
 
 - `hub.mjs`：Hub 主进程，提供 WebSocket 服务与 HTTP API
-- `bin/network-watchdog.mjs`：独立 watchdog 进程，负责 5 路探测、`POST /internal/network-event`、订阅 `harness-heartbeat`，并提供 `GET /status`
+- `bin/network-watchdog.mjs`：独立 watchdog 进程，负责 6 路探测、`POST /internal/network-event`、订阅 `harness-heartbeat`，并提供 `GET /status`
 - `mcp-server.mjs`：MCP 接入层，供 Claude Code、OpenClaw 等工具使用
 - `lib/db.mjs`：SQLite 持久化，保存消息历史、任务状态与统计数据
 - `dashboard/`：监控面板，查看 session、消息流和任务状态
@@ -208,6 +208,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - harness 存活判据改为 Hub `GET /session-alive?name=harness`：只有 `{alive: true}` 才表示 WS 仍在线
 - watchdog 只在 probe 返回 `{ok: true, connected: true}` 时刷新 `lastSeenOnlineAt`；`alive=false` 时按 `lastSeenOnlineAt -> connectedAt -> null` 回退
 - WS 断开超过 `wsDisconnectGraceMs`（默认 60s）后，probe 返回 `ws-disconnected-grace-exceeded`，状态机会映射为 `ws-down-grace-exceeded`
+- `committed_pct` 监测系统 commit ratio，90% 广播 `critique` WARN，95% 调 `session-guard.ps1 -Action tree-kill` 自动清 vitest 最大子树（三维验明正身保护）
 - `GET http://127.0.0.1:3180/status` 现在额外返回 `harness` 字段，含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - 只有 harness 进入 `down` 时，watchdog 才会触发 `triggerHarnessSelfHandover()`；`degraded` 只表示风险态，不会直接 handover
 - watchdog 冷启默认仍有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，`ws-down-grace-exceeded` 也会被压成 `held-by-grace`
@@ -246,3 +247,6 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 ## License
 
 MIT — by [xihe-forge](https://github.com/xihe-forge)
+
+
+

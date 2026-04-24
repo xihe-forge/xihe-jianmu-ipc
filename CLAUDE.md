@@ -1,4 +1,4 @@
-# xihe-jianmu-ipc
+﻿# xihe-jianmu-ipc
 
 多AI会话实时通信Hub。WebSocket消息路由 + MCP集成 + Channel推送。
 
@@ -75,11 +75,12 @@ SKILL.md             — OpenClaw ClawHub skill清单
 
 ## Watchdog
 
-- `bin/network-watchdog.mjs` 现在探测 5 项：`cliProxy / hub / anthropic / dns / harness`
+- `bin/network-watchdog.mjs` 现在探测 6 项：`cliProxy / hub / anthropic / dns / harness / committed_pct`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - harness 存活判据改为 Hub `GET /session-alive?name=harness`：只有 `{ alive: true }` 才表示对应 WS 仍然 `OPEN`
 - watchdog 只在 probe 返回 `{ ok: true, connected: true }` 时刷新内存里的 `lastSeenOnlineAt`；其余情况一律不更新基线
 - `/session-alive` 返回 `alive=false` 时，probe 按 `lastSeenOnlineAt -> connectedAt -> null` 回退；超过 `wsDisconnectGraceMs`（默认 60s）后返回 `ws-disconnected-grace-exceeded`
+- `committed_pct` 监测系统 commit ratio，90% 广播 `critique` topic，95% 调 `session-guard.ps1 -Action tree-kill` 自动清 vitest 最大子树（三维验明正身保护）
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover
 - watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定（包括 `ws-down-grace-exceeded`）都会被压成 `degraded` 并标记 `held-by-grace`
@@ -150,3 +151,6 @@ Agent上下线自动推送飞书通知。状态卡片支持刷新按钮。审批
 - 推送到 xihe-forge org
 - 纯JS (.mjs)，不用TypeScript
 - 依赖: `ws` + `@modelcontextprotocol/sdk` + `better-sqlite3` + `@larksuiteoapi/node-sdk`
+
+
+

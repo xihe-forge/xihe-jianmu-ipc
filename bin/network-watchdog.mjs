@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
@@ -17,6 +18,7 @@ import { isLoopbackAddress, loadInternalToken } from '../lib/internal-auth.mjs';
 import {
   probeAnthropic,
   probeCliProxy,
+  probeCommittedPct,
   probeDns,
   probeHub,
 } from '../lib/network-probes.mjs';
@@ -32,6 +34,9 @@ export const HARNESS_SESSION_NAME = 'harness';
 export const HARNESS_HEARTBEAT_TOPIC = 'harness-heartbeat';
 export const HARNESS_HEARTBEAT_PATTERN = /【harness\s+(.+?)\s+·\s+context-pct】(\d+)% \| state=(\w+) \| next_action=(\S+)/;
 export const WATCHDOG_WS_RECONNECT_DELAY_MS = 3_000;
+export const COMMIT_WARN_PCT = 90;
+export const COMMIT_CRIT_PCT = 95;
+export const COMMIT_DEDUP_MS = 5 * 60 * 1000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
@@ -176,6 +181,7 @@ async function postInternalNetworkEvent({
 
 export function createDefaultWatchdogProbes({
   ipcPort = DEFAULT_IPC_PORT,
+  timeoutMs = 5000,
   harnessProbeConfig = {},
 } = {}) {
   const nowImpl = harnessProbeConfig.now ?? Date.now;
@@ -208,8 +214,98 @@ export function createDefaultWatchdogProbes({
     hub: () => probeHub({ port: ipcPort }),
     anthropic: () => probeAnthropic(),
     dns: () => probeDns(),
+    committed_pct: () => probeCommittedPct({ timeoutMs }),
     harness: harnessProbe,
   };
+}
+
+export function invokeTreeKill({
+  dryRun = false,
+  spawnImpl = spawn,
+} = {}) {
+  return new Promise((resolveTreeKill, rejectTreeKill) => {
+    const args = [
+      '-NoProfile',
+      '-NonInteractive',
+      '-File',
+      'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness/tools/session-guard.ps1',
+      '-Action',
+      'tree-kill',
+      '-ExcludePattern',
+      '(?i)claude|anthropic|session-guard|codex|openai',
+    ];
+    if (dryRun) {
+      args.push('-DryRun');
+    }
+
+    const child = spawnImpl('pwsh', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        rejectTreeKill(new Error(`session-guard exit ${code}: ${stderr}`));
+        return;
+      }
+      try {
+        resolveTreeKill(JSON.parse(stdout));
+      } catch {
+        rejectTreeKill(new Error(`session-guard JSON parse fail: ${stdout}`));
+      }
+    });
+    child.on('error', rejectTreeKill);
+  });
+}
+
+export function handleCommittedPct(result, {
+  ipcSend = null,
+  spawnImpl = spawn,
+  now = Date.now,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+  lastCommitAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY },
+} = {}) {
+  if (!result?.ok || !Number.isFinite(result.pct)) {
+    return false;
+  }
+
+  const pct = result.pct;
+  const nowTs = now();
+  if (pct >= COMMIT_CRIT_PCT) {
+    if (nowTs - lastCommitAction.CRIT < COMMIT_DEDUP_MS) {
+      return false;
+    }
+    lastCommitAction.CRIT = nowTs;
+    void invokeTreeKill({ pct, dryRun: false, spawnImpl })
+      .then((json) => {
+        stderr(`[watchdog] committed_pct CRIT ${pct}% -> tree-kill suspects=${json?.suspects_found ?? '?'} killed=${json?.killed?.length ?? 0} aborted_reason=${json?.aborted_reason ?? 'none'}`);
+      })
+      .catch((error) => {
+        stderr(`[watchdog] committed_pct CRIT ${pct}% -> tree-kill FAILED: ${toErrorMessage(error)}`);
+      });
+    return true;
+  }
+
+  if (pct >= COMMIT_WARN_PCT) {
+    if (nowTs - lastCommitAction.WARN < COMMIT_DEDUP_MS) {
+      return false;
+    }
+    lastCommitAction.WARN = nowTs;
+    void Promise.resolve(ipcSend?.({
+      to: '*',
+      topic: 'critique',
+      content: `[watchdog] system committed_pct ${pct.toFixed(1)}% 破 90% WARN（阈值 95% 将自动 tree-kill）`,
+    })).catch((error) => {
+      stderr(`[watchdog] committed_pct WARN ${pct}% -> broadcast FAILED: ${toErrorMessage(error)}`);
+    });
+    return true;
+  }
+
+  return false;
 }
 
 export function createWatchdogIpcClient({
@@ -367,7 +463,7 @@ export function createWatchdogIpcClient({
 
 function omitHarnessProbe(probes) {
   return Object.fromEntries(
-    Object.entries(probes).filter(([name]) => name !== 'harness'),
+    Object.entries(probes).filter(([name]) => name !== 'harness' && name !== 'committed_pct'),
   );
 }
 
@@ -417,6 +513,7 @@ export function createNetworkWatchdog({
   setTimeoutImpl = setTimeout,
   clearTimeoutImpl = clearTimeout,
   waitImpl,
+  spawnImpl = spawn,
   createStateMachineImpl = createStateMachine,
   createHarnessStateMachineImpl = createHarnessStateMachine,
   createWatchdogIpcClientImpl = createWatchdogIpcClient,
@@ -449,6 +546,8 @@ export function createNetworkWatchdog({
   let pendingHarnessHandover = null;
   const wait = createWait(waitImpl, setTimeoutImpl);
   const pendingTransitions = new Set();
+  const lastCommitAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
+  let lastCommittedPctCheck = null;
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
     harnessProbeConfig: {
@@ -464,6 +563,9 @@ export function createNetworkWatchdog({
   const networkProbes = omitHarnessProbe(resolvedProbes);
   const harnessProbe = typeof resolvedProbes.harness === 'function'
     ? resolvedProbes.harness
+    : null;
+  const committedPctProbe = typeof resolvedProbes.committed_pct === 'function'
+    ? resolvedProbes.committed_pct
     : null;
   const canAutoHandover = typeof triggerHarnessSelfHandoverImpl === 'function'
     && lineage
@@ -620,10 +722,41 @@ export function createNetworkWatchdog({
 
   function buildCompositeState() {
     const snapshot = networkStateMachine.getState();
+    const lastChecks = lastCommittedPctCheck
+      ? { ...snapshot.lastChecks, committed_pct: lastCommittedPctCheck }
+      : snapshot.lastChecks;
     return {
       ...snapshot,
+      lastChecks,
       harness: buildHarnessSnapshot(),
     };
+  }
+
+  async function runCommittedPctTick() {
+    if (!committedPctProbe) {
+      return null;
+    }
+
+    let result;
+    try {
+      result = await committedPctProbe();
+    } catch (error) {
+      result = { ok: false, pct: null, error: toErrorMessage(error) };
+    }
+
+    const check = {
+      ...result,
+      ts: now(),
+    };
+    lastCommittedPctCheck = check;
+    handleCommittedPct(result, {
+      ipcSend: resolvedHandoverIpcSend,
+      spawnImpl,
+      now,
+      stderr,
+      lastCommitAction,
+    });
+    return check;
   }
 
   async function runHarnessTick() {
@@ -682,12 +815,17 @@ export function createNetworkWatchdog({
 
   async function runTick({ scheduleNext = false } = {}) {
     try {
-      const [networkState] = await Promise.all([
+      const [networkState, committedPctCheck] = await Promise.all([
         networkStateMachine.tick(),
+        runCommittedPctTick(),
         runHarnessTick(),
       ]);
+      const lastChecks = committedPctCheck
+        ? { ...networkState.lastChecks, committed_pct: committedPctCheck }
+        : networkState.lastChecks;
       return {
         ...networkState,
+        lastChecks,
         harness: buildHarnessSnapshot(),
       };
     } catch (error) {

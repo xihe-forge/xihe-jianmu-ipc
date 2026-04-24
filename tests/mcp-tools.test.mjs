@@ -493,7 +493,7 @@ test('ipc_spawn: host=external dryRun 返回修正后的 spawn-fallback IPC cont
     assert.equal(payload.dryRun, true);
     assert.match(
       payload.ipc_content,
-      /cmdline: "C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --channels server:ipc/,
+      /cmdline: "C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc/,
     );
     assert.doesNotMatch(payload.ipc_content, /--session-name/);
     assert.doesNotMatch(payload.ipc_content, /--resume/);
@@ -551,7 +551,7 @@ test(
       );
       assert.match(
         payload.command_hint,
-        /cmd \/c "set IPC_NAME=worker-b && ""C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe"" --dangerously-skip-permissions --channels server:ipc --model opus"$/,
+        /cmd \/c "set IPC_NAME=worker-b && ""C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe"" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus"$/,
       );
     } finally {
       rmSync(sandbox, { recursive: true, force: true });

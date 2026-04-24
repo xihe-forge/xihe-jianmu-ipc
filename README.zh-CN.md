@@ -1,4 +1,4 @@
-﻿[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [English](README.md) | [中文](README.zh-CN.md)
 
 # xihe-jianmu-ipc
@@ -198,7 +198,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 
 `host="external"` 保持旧行为，只返回 `command_hint` 或 fallback 信息；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起新会话；`host="vscode-terminal"` 当前返回 not implemented 提示。
 
-`host="wt"` / `spawn-fallback` 的标准启动命令是 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC 认证，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
+`host="wt"` / `spawn-fallback` 的标准启动命令是 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC 认证，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
 
 `cwd` 属于 spawn 契约：调用方显式传什么目录，新 session 就从什么目录启动；不传则为兼容旧行为，回退到调用方 `process.cwd()`。
 

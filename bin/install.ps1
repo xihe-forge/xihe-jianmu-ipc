@@ -4,7 +4,7 @@ if (!(Test-Path $PROFILE)) { New-Item -Path $PROFILE -Force | Out-Null }
 
 # Claude Code 2.x+ 改成 native binary 分发，不再有 cli.js 可 patch
 # 对话框跳过改为：
-#   - Claude Code 2.1.119 起旧 dev-channels 入口会再弹 warning，用 --channels server:ipc 是官方推荐替代
+#   - Claude Code 2.1.119 起旧 dev-channels 入口会再弹 warning，用 --dangerously-load-development-channels server:ipc 是官方推荐替代
 #   - trust 对话框：通过 ~/.claude/settings.json 配置 hasTrustDialogAccepted=true 永久信任
 # 原 patch-channels.mjs 保留作 LEGACY，不再调用
 
@@ -12,7 +12,7 @@ $funcCode = @"
 function ipc {
     param([Parameter(Mandatory)][string]`$Name)
     `$env:IPC_NAME = `$Name
-    claude --dangerously-skip-permissions --channels server:ipc
+    claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc
 }
 "@
 

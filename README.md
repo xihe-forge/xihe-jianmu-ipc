@@ -1,4 +1,4 @@
-﻿[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [English](README.md) | [中文](README.zh-CN.md)
 
 # xihe-jianmu-ipc
@@ -389,7 +389,7 @@ Spawned sessions automatically know their IPC name and are instructed to report 
 
 `host="external"` 保持兼容旧行为，只返回 `command_hint` / fallback 信息而不真正起进程；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起进程；`host="vscode-terminal"` 当前返回 not implemented 提示。
 
-`host="wt"` / `spawn-fallback` 的 canonical 启动命令为 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC auth，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
+`host="wt"` / `spawn-fallback` 的 canonical 启动命令为 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC auth，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
 
 `cwd` 是 spawn 契约的一部分。调用方若显式传入，则新 session 从该目录启动；未传时保持兼容，回退到调用方 `process.cwd()`。
 

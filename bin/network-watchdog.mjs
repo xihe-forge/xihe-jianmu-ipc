@@ -17,6 +17,7 @@ import { createLineageTracker } from '../lib/lineage.mjs';
 import { isLoopbackAddress, loadInternalToken } from '../lib/internal-auth.mjs';
 import {
   probeAnthropic,
+  probeAvailableRamMb,
   probeCliProxy,
   probeCommittedPct,
   probeDns,
@@ -37,6 +38,9 @@ export const WATCHDOG_WS_RECONNECT_DELAY_MS = 3_000;
 export const COMMIT_WARN_PCT = 90;
 export const COMMIT_CRIT_PCT = 95;
 export const COMMIT_DEDUP_MS = 5 * 60 * 1000;
+export const AVAILABLE_RAM_WARN_MB = 10000;
+export const AVAILABLE_RAM_CRIT_MB = 5000;
+export const AVAILABLE_RAM_DEDUP_MS = 5 * 60 * 1000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
@@ -215,6 +219,7 @@ export function createDefaultWatchdogProbes({
     anthropic: () => probeAnthropic(),
     dns: () => probeDns(),
     committed_pct: () => probeCommittedPct({ timeoutMs }),
+    available_ram_mb: () => probeAvailableRamMb({ timeoutMs }),
     harness: harnessProbe,
   };
 }
@@ -301,6 +306,51 @@ export function handleCommittedPct(result, {
       content: `[watchdog] system committed_pct ${pct.toFixed(1)}% 破 90% WARN（阈值 95% 将自动 tree-kill）`,
     })).catch((error) => {
       stderr(`[watchdog] committed_pct WARN ${pct}% -> broadcast FAILED: ${toErrorMessage(error)}`);
+    });
+    return true;
+  }
+
+  return false;
+}
+
+export function handleAvailableRamMb(result, {
+  ipcSend = null,
+  now = Date.now,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+  lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY },
+} = {}) {
+  if (!result?.ok || !Number.isFinite(result.availableMb)) {
+    return false;
+  }
+
+  const mb = result.availableMb;
+  const nowTs = now();
+  if (mb < AVAILABLE_RAM_CRIT_MB) {
+    if (nowTs - lastAvailableRamAction.CRIT < AVAILABLE_RAM_DEDUP_MS) {
+      return false;
+    }
+    lastAvailableRamAction.CRIT = nowTs;
+    void Promise.resolve(ipcSend?.({
+      to: '*',
+      topic: 'critique',
+      content: `🚨 available_ram_mb=${mb.toFixed(0)} 破 5GB 临界。立即：kill 正在跑的 Stryker/cargo mutants / 停 pnpm test 新启动 / 轻量工作（docs/git/IPC）照常干`,
+    })).catch((error) => {
+      stderr(`[watchdog] available_ram_mb CRIT ${mb}MB -> broadcast FAILED: ${toErrorMessage(error)}`);
+    });
+    return true;
+  }
+
+  if (mb < AVAILABLE_RAM_WARN_MB) {
+    if (nowTs - lastAvailableRamAction.WARN < AVAILABLE_RAM_DEDUP_MS) {
+      return false;
+    }
+    lastAvailableRamAction.WARN = nowTs;
+    void Promise.resolve(ipcSend?.({
+      to: '*',
+      topic: 'critique',
+      content: `⚠️ available_ram_mb=${mb.toFixed(0)} 破 10GB 警戒。建议：降多 worker 测试频率 / 暂停新 Codex dispatch / 等 ~15min 观察回升`,
+    })).catch((error) => {
+      stderr(`[watchdog] available_ram_mb WARN ${mb}MB -> broadcast FAILED: ${toErrorMessage(error)}`);
     });
     return true;
   }
@@ -463,7 +513,7 @@ export function createWatchdogIpcClient({
 
 function omitHarnessProbe(probes) {
   return Object.fromEntries(
-    Object.entries(probes).filter(([name]) => name !== 'harness' && name !== 'committed_pct'),
+    Object.entries(probes).filter(([name]) => name !== 'harness' && name !== 'committed_pct' && name !== 'available_ram_mb'),
   );
 }
 
@@ -547,7 +597,9 @@ export function createNetworkWatchdog({
   const wait = createWait(waitImpl, setTimeoutImpl);
   const pendingTransitions = new Set();
   const lastCommitAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
+  const lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   let lastCommittedPctCheck = null;
+  let lastAvailableRamCheck = null;
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
     harnessProbeConfig: {
@@ -566,6 +618,9 @@ export function createNetworkWatchdog({
     : null;
   const committedPctProbe = typeof resolvedProbes.committed_pct === 'function'
     ? resolvedProbes.committed_pct
+    : null;
+  const availableRamProbe = typeof resolvedProbes.available_ram_mb === 'function'
+    ? resolvedProbes.available_ram_mb
     : null;
   const canAutoHandover = typeof triggerHarnessSelfHandoverImpl === 'function'
     && lineage
@@ -722,9 +777,11 @@ export function createNetworkWatchdog({
 
   function buildCompositeState() {
     const snapshot = networkStateMachine.getState();
-    const lastChecks = lastCommittedPctCheck
-      ? { ...snapshot.lastChecks, committed_pct: lastCommittedPctCheck }
-      : snapshot.lastChecks;
+    const lastChecks = {
+      ...snapshot.lastChecks,
+      ...(lastCommittedPctCheck ? { committed_pct: lastCommittedPctCheck } : {}),
+      ...(lastAvailableRamCheck ? { available_ram_mb: lastAvailableRamCheck } : {}),
+    };
     return {
       ...snapshot,
       lastChecks,
@@ -755,6 +812,32 @@ export function createNetworkWatchdog({
       now,
       stderr,
       lastCommitAction,
+    });
+    return check;
+  }
+
+  async function runAvailableRamTick() {
+    if (!availableRamProbe) {
+      return null;
+    }
+
+    let result;
+    try {
+      result = await availableRamProbe();
+    } catch (error) {
+      result = { ok: false, availableMb: null, error: toErrorMessage(error) };
+    }
+
+    const check = {
+      ...result,
+      ts: now(),
+    };
+    lastAvailableRamCheck = check;
+    handleAvailableRamMb(result, {
+      ipcSend: resolvedHandoverIpcSend,
+      now,
+      stderr,
+      lastAvailableRamAction,
     });
     return check;
   }
@@ -815,14 +898,17 @@ export function createNetworkWatchdog({
 
   async function runTick({ scheduleNext = false } = {}) {
     try {
-      const [networkState, committedPctCheck] = await Promise.all([
+      const [networkState, committedPctCheck, availableRamCheck] = await Promise.all([
         networkStateMachine.tick(),
         runCommittedPctTick(),
+        runAvailableRamTick(),
         runHarnessTick(),
       ]);
-      const lastChecks = committedPctCheck
-        ? { ...networkState.lastChecks, committed_pct: committedPctCheck }
-        : networkState.lastChecks;
+      const lastChecks = {
+        ...networkState.lastChecks,
+        ...(committedPctCheck ? { committed_pct: committedPctCheck } : {}),
+        ...(availableRamCheck ? { available_ram_mb: availableRamCheck } : {}),
+      };
       return {
         ...networkState,
         lastChecks,

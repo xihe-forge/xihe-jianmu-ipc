@@ -139,7 +139,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
 function buildInteractiveCommand({ sessionName, model }) {
   const patchScript = join(PROJECT_DIR, 'bin', 'patch-channels.mjs').replace(/\\/g, '\\\\');
   const extraArgs = model ? ` --model ${model}` : '';
-  return `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
+  return `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --channels server:ipc${extraArgs}`;
 }
 
 const DEFAULT_CLAUDE_BIN = 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
@@ -150,7 +150,7 @@ function getClaudeBinPath() {
 }
 
 function buildClaudeLaunchArgs({ model } = {}) {
-  return `--dangerously-skip-permissions --dangerously-load-development-channels server:ipc${model ? ` --model ${model}` : ''}`;
+  return `--dangerously-skip-permissions --channels server:ipc${model ? ` --model ${model}` : ''}`;
 }
 
 function escapeForCmdQuotedArgument(value) {
@@ -510,7 +510,7 @@ export async function spawnSession({
           '\uFEFF', // UTF-8 BOM — prevents PowerShell from garbling non-ASCII
           `$env:IPC_NAME = '${sessionName}'`,
           `node '${patchScriptWin}'`,
-          `& '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`,
+          `& '${claudeCmd}' --dangerously-skip-permissions --channels server:ipc${extraArgs}`,
         ].join('\r\n');
         _wfs(tmpPs1Wsl, ps1Content, 'utf8');
 
@@ -541,7 +541,7 @@ export async function spawnSession({
         let spawned = false;
         for (const term of terminals) {
           try {
-            spawn(term, ['--', 'bash', '-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`], {
+            spawn(term, ['--', 'bash', '-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --channels server:ipc`], {
               detached: true,
               stdio: 'ignore',
               env: ipcEnv,
@@ -551,7 +551,7 @@ export async function spawnSession({
           } catch { continue; }
         }
         if (!spawned) {
-          spawn('bash', ['-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`], {
+          spawn('bash', ['-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --channels server:ipc`], {
             detached: true,
             stdio: 'ignore',
             env: ipcEnv,

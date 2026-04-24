@@ -85,13 +85,14 @@ SKILL.md             — OpenClaw ClawHub skill清单
 
 ## Watchdog
 
-- `bin/network-watchdog.mjs` 现在探测 7 项：`cliProxy / hub / anthropic / dns / committed_pct / available_ram_mb / harness`
+- `bin/network-watchdog.mjs` 现在探测 8 项：`cliProxy / hub / anthropic / dns / committed_pct / available_ram_mb / phys_ram_used_pct / harness`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - harness 存活判据改为 Hub `GET /session-alive?name=harness`：只有 `{ alive: true }` 才表示对应 WS 仍然 `OPEN`
 - watchdog 只在 probe 返回 `{ ok: true, connected: true }` 时刷新内存里的 `lastSeenOnlineAt`；其余情况一律不更新基线
 - `/session-alive` 返回 `alive=false` 时，probe 按 `lastSeenOnlineAt -> connectedAt -> null` 回退；超过 `wsDisconnectGraceMs`（默认 60s）后返回 `ws-disconnected-grace-exceeded`
 - `committed_pct` 监测系统 commit ratio，90% 广播 `critique` topic，95% 调 `session-guard.ps1 -Action tree-kill` 自动清 vitest 最大子树（三维验明正身保护）
 - `available_ram_mb` 监测系统可用物理 RAM（MB），< 10GB WARN 广播建议 session 自主降负载，< 5GB CRIT 广播建议立即 kill 重度任务。**不调 tree-kill**——UX 警告 role，vitest 硬 kill 兜底由 `committed_pct` 95% 负责，两条线不重叠。
+- `phys_ram_used_pct` 监测系统物理 RAM 用量百分比 `(1 - avail_mb/total_mb) × 100`，80% 广播 WARN / 90% 广播 CRIT topic critique 5min dedup per-level，**不 tree-kill**（UX 警告 role，与 committed_pct 95% 硬兜底不重叠）。阈值来源 vitest-memory-discipline v1.0.3 §3.4 单 gate。
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover
 - watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定（包括 `ws-down-grace-exceeded`）都会被压成 `degraded` 并标记 `held-by-grace`

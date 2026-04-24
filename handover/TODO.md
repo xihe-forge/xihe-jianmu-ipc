@@ -2,7 +2,7 @@
 
 > IPC 基础设施 repo 的活清单。按优先级分段。所有条目有明确"现状 / 目标 / 验收 / Owner / ETA"。
 
-**最后刷新**：2026-04-24T14:28+08:00（jianmu-pm）
+**最后刷新**：2026-04-24T15:35+08:00（jianmu-pm）
 **刷新节奏**：每次重要产出 + 每周一 portfolio-sync
 
 ---
@@ -73,6 +73,33 @@
 - **验收**：jianmu-pm 给出 review 意见（LGTM / 改动单）；harness 落 v1.0
 - **Owner**：harness 主出 v0.2 · jianmu-pm 审
 - **ETA**：2026-04-28
+
+### network-watchdog 加 committed_pct 采样（harness P1-a）
+
+- **现状**：2026-04-24 14:49 / 15:00 xuanji 在 xiheAi 根目录 `pnpm -r test` 把 vitest 16 worker 爆 commit 两次（98.6% / 99.3% 只差 1.1GB / 0.5GB 爆 pagefile），tech-worker 两次 tree-kill 兜住释放 25GB + 32GB。事后 harness 15:17 方案 P1-a 归我（network-watchdog owner）加 committed_pct 采样
+- **目标**：
+  - `bin/network-watchdog.mjs` `createDefaultWatchdogProbes` 加第 6 项 `committed_pct` probe，Windows 采样走 `Get-Counter '\Memory\Committed Bytes In Use'` 或 `Get-CimInstance Win32_PerfRawData_PerfOS_Memory` 取 CommitTotal/CommitLimit
+  - 90% 阈值：`ipc_send({to:'*', topic:'critique', content:'committed_pct 破 90%'})` 广播
+  - 95% 阈值：调 session-guard.ps1 tree-kill vitest/node 最大子树（session-guard 接口格式等 tech-worker P0-c 落地后对齐）
+- **验收**：
+  1. watchdog `/status` 返回 5 项 probe → 6 项含 `committed_pct`
+  2. mock `Get-Counter` 返回 60 / 90 / 95 三档，各自对应无动作 / 广播 / tree-kill 调用断言
+  3. `npm test` 全绿新增至少 3 条测试用例
+  4. CLAUDE.md watchdog 段 + README 清单同步
+- **Owner**：jianmu-pm 派 Codex + 实现验证 · tech-worker 协审（session-guard 接口）· harness 协审
+- **ETA**：2026-04-26T12:00+08:00
+- **前置依赖**：tech-worker P0-c session-guard.ps1 85% 硬 kill 落地时预留 95% tree-kill entrypoint（如 `session-guard.ps1 -Action tree-kill -PidPattern vitest|node`），否则需先对齐接口
+
+### ADR-002 Phase 2 A1 · session-state hook ipc_spawn IPC_NAME 注入 verify
+
+- **现状**：yuheng 14:58 查出 A1 hook 从未实现（ADR-003 MVP 只含 A4+A5，harness.json 是 harness 手 Write 的）。harness 15:23 方案 ADR-002 Phase 2 指名 tech-worker 主做 `session-state-writer.sh`（bash 脚本 stdin JSON merge `~/.claude/session-state/$IPC_NAME.json`）+ `templates/hooks-snippet.json` Stop hook writer；**我侧负责 ipc_spawn 的 IPC_NAME env 注入**
+- **本仓现状扫描**：`mcp-server.mjs` grep `IPC_NAME` 实证 5 个 spawn host 路径全注入（PowerShell `$env:IPC_NAME` / cmd `set IPC_NAME` / WSL env line / Linux terminal shell prefix / bash fallback），Claude Code 进程继承父 shell env，hook 内部应能读到 `$IPC_NAME`
+- **目标**：等 tech-worker ready `session-state-writer.sh` 后做 E2E verify——ipc_spawn 测试 session → 触发 Stop hook → cat `~/.claude/session-state/$IPC_NAME.json` 验证文件名含 session name 而非 `session-<pid>` fallback
+- **验收**：
+  1. verify 场景 5 host 全通过（wt / vscode-terminal / external / Linux terminal / bash fallback）
+  2. 若发现任何 env 丢失的 edge case 同回合补 injection 代码 + 回归测试
+- **Owner**：jianmu-pm 主 verify · tech-worker 主做 hook 脚本
+- **ETA**：阻塞在 tech-worker `session-state-writer.sh` 出稿，她出稿当日我做 verify（~30min 零代码改动前提）
 
 ### hub-daemon.vbs 时间盒改造 · 根治孤儿 wscript 累积
 
@@ -177,3 +204,4 @@
 |---|---|---|
 | 2026-04-24T12:50+08:00 | jianmu-pm | 首版 TODO，接 handover-20260420-jianmu-pm.md §NextSteps 第 5 条"PROJECT-PLAN.md + TODO.md 下次交接前必补"承诺；P0 装 ADR-008 Phase 2 / P1 装 Phase 3 + bug 2 v0.2 review + v0.5.0 release cut / P2 装 dependabot 9 漏洞 / P3 装 uptime 基线 + 调度 agent 评估 / P4 装 OpenClaw 整合 + 飞书控制台指令扩展 |
 | 2026-04-24T14:28+08:00 | jianmu-pm | P1 增"hub-daemon.vbs 时间盒改造"条目（harness A+B 双登约定的 B 侧，A 侧为 retro v1.0 §8.5 bug 9）；已完成清单追 2026-04-24 的 channels flag swap 93f94db + daemon wscript cleanup 8e0b806 两 commit |
+| 2026-04-24T15:35+08:00 | jianmu-pm | P1 增 2 条：network-watchdog committed_pct 采样（harness P1-a，ETA 2026-04-26）+ ADR-002 Phase 2 A1 session-state hook IPC_NAME 注入 verify（阻塞在 tech-worker session-state-writer.sh 出稿）；触发事件 xuanji 2026-04-24 14:49 / 15:00 两次 vitest 近爆 pagefile · tech-worker tree-kill 兜住 57GB · 老板批严格档 maxForks=2 + NODE_OPTIONS=2048 + 70% 硬 abort 预检 + 95% tree-kill rollout；jianmu-ipc 不在 T-VITEST-001 范围（node --test runner 栈证据已回执 yuheng） |

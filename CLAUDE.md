@@ -75,12 +75,13 @@ SKILL.md             — OpenClaw ClawHub skill清单
 
 ## Watchdog
 
-- `bin/network-watchdog.mjs` 现在探测 6 项：`cliProxy / hub / anthropic / dns / harness / committed_pct`
+- `bin/network-watchdog.mjs` 现在探测 7 项：`cliProxy / hub / anthropic / dns / committed_pct / available_ram_mb / harness`
 - watchdog 会订阅 topic `harness-heartbeat`，解析 `【harness <ISO-ts> · context-pct】<N>% | state=... | next_action=...`
 - harness 存活判据改为 Hub `GET /session-alive?name=harness`：只有 `{ alive: true }` 才表示对应 WS 仍然 `OPEN`
 - watchdog 只在 probe 返回 `{ ok: true, connected: true }` 时刷新内存里的 `lastSeenOnlineAt`；其余情况一律不更新基线
 - `/session-alive` 返回 `alive=false` 时，probe 按 `lastSeenOnlineAt -> connectedAt -> null` 回退；超过 `wsDisconnectGraceMs`（默认 60s）后返回 `ws-disconnected-grace-exceeded`
 - `committed_pct` 监测系统 commit ratio，90% 广播 `critique` topic，95% 调 `session-guard.ps1 -Action tree-kill` 自动清 vitest 最大子树（三维验明正身保护）
+- `available_ram_mb` 监测系统可用物理 RAM（MB），< 10GB WARN 广播建议 session 自主降负载，< 5GB CRIT 广播建议立即 kill 重度任务。**不调 tree-kill**——UX 警告 role，vitest 硬 kill 兜底由 `committed_pct` 95% 负责，两条线不重叠。
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover
 - watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定（包括 `ws-down-grace-exceeded`）都会被压成 `degraded` 并标记 `held-by-grace`
@@ -91,6 +92,12 @@ SKILL.md             — OpenClaw ClawHub skill清单
 
 - `release-rebind`（显式）: 旧 session 先 `POST /prepare-rebind`，随后主动断开；新 session 同名连入后继承旧 `topics`，并收到宽限期内缓冲的 `buffered_messages` 与已有 `SQLite inbox`
 - `force/zombie rebind`（隐式）: 旧 session 崩溃或卡死时，新连接通过 `?force=1` 或僵尸检测接管；该路径只回放 `inbox`，**不恢复 topics**；历史需主动调 `ipc_recent_messages` 或 `GET /recent-messages`
+
+## MCP initialize race 修复（2026-04-24）
+
+- 根因：`server.connect(transport)` 只等待 stdio transport start，不等待 Claude Code 完成 MCP `initialize`；Hub inbox flush 若在此窗口触发 `notifications/claude/channel`，client 侧 handler 尚未注册会静默丢弃。
+- 修法：`mcp-server.mjs` 通过 `lib/channel-notification.mjs` 工厂维护 pre-init queue，`server.oninitialized` 触发后 FIFO flush，之后即时 push。
+- 边界：本修复只处理 MCP push 冷启 race，不改变 Hub delivered / inbox 语义；相关证据链见 `feedback_ipc_push_vs_hub_delivered.md` 与 `docs/adr/009-mcp-initialize-race-fix.md`。
 
 ## 飞书AI控制台
 
@@ -151,6 +158,9 @@ Agent上下线自动推送飞书通知。状态卡片支持刷新按钮。审批
 - 推送到 xihe-forge org
 - 纯JS (.mjs)，不用TypeScript
 - 依赖: `ws` + `@modelcontextprotocol/sdk` + `better-sqlite3` + `@larksuiteoapi/node-sdk`
+
+
+
 
 
 

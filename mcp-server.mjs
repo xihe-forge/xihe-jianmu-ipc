@@ -13,6 +13,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { createChannelNotifier } from './lib/channel-notification.mjs';
 import { createMcpTools } from './lib/mcp-tools.mjs';
 import {
   DEFAULT_PORT,
@@ -106,6 +107,14 @@ const server = new Server(
       'IPC messages from other sessions arrive as <channel> tags. When you receive one, read the content and act on it. If the sender expects a reply, use ipc_send to respond.',
   },
 );
+
+const channelNotifier = createChannelNotifier({
+  serverNotify: (payload) => server.notification(payload),
+  stderr: (message) => process.stderr.write(message),
+  now: () => new Date(),
+});
+
+server.oninitialized = () => channelNotifier.markInitialized();
 
 // ---------------------------------------------------------------------------
 // Tool handlers
@@ -602,24 +611,7 @@ export async function spawnSession({
 // Channel notification push
 // ---------------------------------------------------------------------------
 function pushChannelNotification(msg) {
-  const from = msg.from || 'unknown';
-  const topic = msg.topic ? ` [${msg.topic}]` : '';
-  const time = new Date().toLocaleString('zh-CN', { hour12: false });
-  const body = msg.content || JSON.stringify(msg);
-  const content = `[${time} from: ${from}${topic}]\n${body}`;
-  server.notification({
-    method: 'notifications/claude/channel',
-    params: {
-      content,
-      meta: {
-        from: msg.from || 'unknown',
-        message_id: msg.id || '',
-        topic: msg.topic || '',
-      },
-    },
-  }).catch((err) => {
-    process.stderr.write(`[ipc] failed to push channel notification: ${err?.message ?? err}\n`);
-  });
+  channelNotifier.pushChannelNotification(msg);
 }
 
 // ---------------------------------------------------------------------------

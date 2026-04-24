@@ -41,6 +41,10 @@ export const COMMIT_DEDUP_MS = 5 * 60 * 1000;
 export const AVAILABLE_RAM_WARN_MB = 10000;
 export const AVAILABLE_RAM_CRIT_MB = 5000;
 export const AVAILABLE_RAM_DEDUP_MS = 5 * 60 * 1000;
+export const PHYS_RAM_WARN_PCT = 80;
+export const PHYS_RAM_CRIT_PCT = 90;
+export const PHYS_RAM_RESET_PCT = 70;
+export const PHYS_RAM_DEDUP_MS = 5 * 60 * 1000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
@@ -73,6 +77,107 @@ function isSuccessfulResponse(response) {
 
 function toErrorMessage(error) {
   return error?.message ?? String(error);
+}
+
+function normalizePhysRamError(error) {
+  if (!error) {
+    return 'unknown error';
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (error.name === 'AbortError' || error.code === 'ETIMEDOUT') {
+    return 'timeout';
+  }
+  return toErrorMessage(error);
+}
+
+function runWithPhysRamTimeout(runner, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return Promise.resolve().then(runner);
+  }
+
+  let timer = null;
+  return Promise.race([
+    Promise.resolve().then(runner),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(`timeout after ${timeoutMs}ms`);
+        error.code = 'ETIMEDOUT';
+        reject(error);
+      }, timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
+}
+
+function sampleWindowsPhysRam() {
+  return new Promise((resolveSample, rejectSample) => {
+    const child = spawn('pwsh', [
+      '-NoProfile',
+      '-Command',
+      "$ErrorActionPreference='Stop'; $total=(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory; $avail=(Get-Counter '\\Memory\\Available MBytes' -EA Stop).CounterSamples[0].CookedValue; [pscustomobject]@{available_mb=$avail;total_mb=($total/1MB)} | ConvertTo-Json -Compress",
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        rejectSample(new Error(`phys_ram_used_pct sample exit ${code}: ${stderr.trim()}`));
+        return;
+      }
+      try {
+        resolveSample(JSON.parse(stdout.trim()));
+      } catch {
+        rejectSample(new Error(`invalid phys_ram_used_pct sample: ${stdout.trim()}`));
+      }
+    });
+    child.on('error', rejectSample);
+  });
+}
+
+async function defaultSamplePhysRam() {
+  if (process.platform === 'win32') {
+    return sampleWindowsPhysRam();
+  }
+  return null;
+}
+
+export async function probeAvailableRamPct({
+  sample = defaultSamplePhysRam,
+  now = Date.now,
+  timeoutMs = 5000,
+} = {}) {
+  try {
+    const result = await runWithPhysRamTimeout(() => sample(), timeoutMs);
+    if (!result) {
+      return { ok: false, error: 'unsupported platform' };
+    }
+
+    const availableMb = Number(result.available_mb);
+    const totalMb = Number(result.total_mb);
+    if (!Number.isFinite(availableMb) || !Number.isFinite(totalMb) || totalMb <= 0) {
+      return { ok: false, error: 'invalid phys ram sample' };
+    }
+
+    return {
+      ok: true,
+      pct: Math.round((1 - availableMb / totalMb) * 1000) / 10,
+      available_mb: availableMb,
+      total_mb: totalMb,
+      timestamp: now(),
+    };
+  } catch (error) {
+    return { ok: false, error: normalizePhysRamError(error) };
+  }
 }
 
 function normalizeMaybeFunction(value) {
@@ -220,6 +325,7 @@ export function createDefaultWatchdogProbes({
     dns: () => probeDns(),
     committed_pct: () => probeCommittedPct({ timeoutMs }),
     available_ram_mb: () => probeAvailableRamMb({ timeoutMs }),
+    phys_ram_used_pct: () => probeAvailableRamPct({ timeoutMs }),
     harness: harnessProbe,
   };
 }
@@ -356,6 +462,54 @@ export function handleAvailableRamMb(result, {
   }
 
   return false;
+}
+
+export function handleAvailableRamPct(check, {
+  ipcSend = null,
+  now = Date.now,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+  lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY },
+} = {}) {
+  if (check?.ok !== true || !Number.isFinite(check.pct)) {
+    return null;
+  }
+
+  const pct = check.pct;
+  if (pct < PHYS_RAM_RESET_PCT) {
+    lastPhysRamAction.WARN = Number.NEGATIVE_INFINITY;
+    lastPhysRamAction.CRIT = Number.NEGATIVE_INFINITY;
+    return null;
+  }
+
+  const nowTs = now();
+  let level = null;
+  let threshold = null;
+  let content = null;
+  if (pct >= PHYS_RAM_CRIT_PCT) {
+    level = 'CRIT';
+    threshold = PHYS_RAM_CRIT_PCT;
+    content = `[watchdog] system phys_ram_used_pct ${pct.toFixed(1)}% 破 90% CRIT · 建议 session 立即 kill 重任务（watchdog 不 tree-kill · committed_pct 95% 硬兜底）`;
+  } else if (pct >= PHYS_RAM_WARN_PCT) {
+    level = 'WARN';
+    threshold = PHYS_RAM_WARN_PCT;
+    content = `[watchdog] system phys_ram_used_pct ${pct.toFixed(1)}% 破 80% WARN（90% 广播 CRIT · 不 tree-kill 与 committed_pct 95% 不重叠）`;
+  } else {
+    return null;
+  }
+
+  if (nowTs - lastPhysRamAction[level] < PHYS_RAM_DEDUP_MS) {
+    return null;
+  }
+
+  lastPhysRamAction[level] = nowTs;
+  void Promise.resolve(ipcSend?.({
+    to: '*',
+    topic: 'critique',
+    content,
+  })).catch((error) => {
+    stderr(`[watchdog] phys_ram_used_pct ${level} ${pct}% >= ${threshold}% -> broadcast FAILED: ${toErrorMessage(error)}`);
+  });
+  return level;
 }
 
 export function createWatchdogIpcClient({
@@ -513,7 +667,7 @@ export function createWatchdogIpcClient({
 
 function omitHarnessProbe(probes) {
   return Object.fromEntries(
-    Object.entries(probes).filter(([name]) => name !== 'harness' && name !== 'committed_pct' && name !== 'available_ram_mb'),
+    Object.entries(probes).filter(([name]) => name !== 'harness' && name !== 'committed_pct' && name !== 'available_ram_mb' && name !== 'phys_ram_used_pct'),
   );
 }
 
@@ -598,8 +752,10 @@ export function createNetworkWatchdog({
   const pendingTransitions = new Set();
   const lastCommitAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
+  const lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   let lastCommittedPctCheck = null;
   let lastAvailableRamCheck = null;
+  let lastPhysRamPctCheck = null;
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
     harnessProbeConfig: {
@@ -621,6 +777,9 @@ export function createNetworkWatchdog({
     : null;
   const availableRamProbe = typeof resolvedProbes.available_ram_mb === 'function'
     ? resolvedProbes.available_ram_mb
+    : null;
+  const physRamPctProbe = typeof resolvedProbes.phys_ram_used_pct === 'function'
+    ? resolvedProbes.phys_ram_used_pct
     : null;
   const canAutoHandover = typeof triggerHarnessSelfHandoverImpl === 'function'
     && lineage
@@ -781,6 +940,7 @@ export function createNetworkWatchdog({
       ...snapshot.lastChecks,
       ...(lastCommittedPctCheck ? { committed_pct: lastCommittedPctCheck } : {}),
       ...(lastAvailableRamCheck ? { available_ram_mb: lastAvailableRamCheck } : {}),
+      ...(lastPhysRamPctCheck ? { phys_ram_used_pct: lastPhysRamPctCheck } : {}),
     };
     return {
       ...snapshot,
@@ -842,6 +1002,32 @@ export function createNetworkWatchdog({
     return check;
   }
 
+  async function runPhysRamPctTick() {
+    if (!physRamPctProbe) {
+      return null;
+    }
+
+    let result;
+    try {
+      result = await physRamPctProbe();
+    } catch (error) {
+      result = { ok: false, pct: null, error: toErrorMessage(error) };
+    }
+
+    const check = {
+      ...result,
+      ts: now(),
+    };
+    lastPhysRamPctCheck = check;
+    handleAvailableRamPct(result, {
+      ipcSend: resolvedHandoverIpcSend,
+      now,
+      stderr,
+      lastPhysRamAction,
+    });
+    return check;
+  }
+
   async function runHarnessTick() {
     if (!harnessProbe) {
       return buildHarnessSnapshot();
@@ -898,16 +1084,18 @@ export function createNetworkWatchdog({
 
   async function runTick({ scheduleNext = false } = {}) {
     try {
-      const [networkState, committedPctCheck, availableRamCheck] = await Promise.all([
+      const [networkState, committedPctCheck, availableRamCheck, physRamPctCheck] = await Promise.all([
         networkStateMachine.tick(),
         runCommittedPctTick(),
         runAvailableRamTick(),
+        runPhysRamPctTick(),
         runHarnessTick(),
       ]);
       const lastChecks = {
         ...networkState.lastChecks,
         ...(committedPctCheck ? { committed_pct: committedPctCheck } : {}),
         ...(availableRamCheck ? { available_ram_mb: availableRamCheck } : {}),
+        ...(physRamPctCheck ? { phys_ram_used_pct: physRamPctCheck } : {}),
       };
       return {
         ...networkState,

@@ -159,6 +159,10 @@
 
 ## 已完成（按日期倒排，最近 14 天）
 
+### 2026-04-25
+
+- [x] network-watchdog P1-b · 第 8 probe phys_ram_used_pct 百分比化 TDD Red→Green（origin/master 三 commit：RED `e0d3baa` + GREEN `f46b7b6` + docs `bd073ea`，`npm test` 554→558 pass，AC-WATCHDOG-008 grep 5 命中 4 case + 1 describe，CLAUDE.md 7→8 项同步）。**Q9 鲁棒性压测最终战绩**：一晚派 4 次 Codex，挂 3 次（btfq3nm92 bash quote 5h1m / br691gxlk model capacity 34min / by1kiiq0o stream disconnect 3min），work state 零污染累计递增，最终 bosnf4y8s（240s cooldown + 三要素 brief）一次闭环。feedback_codex_dispatch.md 沉淀"bash quote 陷阱"+ "Q9 四型失效模式锚点" + "Q9 follow-up brief 模板三要素"三段
+
 ### 2026-04-24
 
 - [x] ipc_reclaim_my_name MCP 工具 + /reclaim-name Hub endpoint ADR-008 Phase 1 DONE（master HEAD 90590a4，+654/-3，545/545 tests，Codex+jianmu-pm+harness 三签 LGTM）
@@ -191,3 +195,5 @@
 | 2026-04-24T14:28+08:00 | jianmu-pm | P1 增"hub-daemon.vbs 时间盒改造"条目（harness A+B 双登约定的 B 侧，A 侧为 retro v1.0 §8.5 bug 9）；已完成清单追 2026-04-24 的 channels flag swap 93f94db + daemon wscript cleanup 8e0b806 两 commit |
 | 2026-04-24T15:35+08:00 | jianmu-pm | P1 增 2 条：network-watchdog committed_pct 采样（harness P1-a，ETA 2026-04-26）+ ADR-002 Phase 2 A1 session-state hook IPC_NAME 注入 verify（阻塞在 tech-worker session-state-writer.sh 出稿）；触发事件 xuanji 2026-04-24 14:49 / 15:00 两次 vitest 近爆 pagefile · tech-worker tree-kill 兜住 57GB · 老板批严格档 maxForks=2 + NODE_OPTIONS=2048 + 70% 硬 abort 预检 + 95% tree-kill rollout；jianmu-ipc 不在 T-VITEST-001 范围（node --test runner 栈证据已回执 yuheng） |
 | 2026-04-24T17:05+08:00 | jianmu-pm | P1-a 闭环（提前 43h）：master HEAD f722ed4 committed_pct 第 6 probe + 90 WARN 广播 + 95 CRIT session-guard tree-kill + 5min dedup per-level；tech-worker d4b435b 接口 + 三维验明正身安全保护 + ExcludePattern 扩 codex\|openai 采纳；npm test 545→554 pass；P1-a 条目从 P1 区移至已完成；A1 仍 standby 等 tech-worker hook 出稿 |
+| 2026-04-25T00:23:53+08:00 | jianmu-pm | P1 增"network-watchdog 第 8 probe · phys_ram_used_pct 百分比化"条目，ETA 2026-04-28。触发：harness 00:02 广播 commit% gate 作废改物理 RAM<80% used 单 gate；vitest-memory-discipline v1.0.3 fb7e196 附录 D line 470 要求 watchdog 补百分比指标；tech-worker msg_b14a96 IPC 确认 DIM4 1b85ee9 对齐百分比语义。hub-daemon vbs 时间盒 Codex 后台 btfq3nm92 跑中 |
+| 2026-04-25T05:34+08:00 | jianmu-pm | P1 phys_ram_used_pct 第 8 probe 闭环（提前 3 天）：origin/master RED e0d3baa + GREEN f46b7b6 + docs bd073ea 三 commit push · 558 pass · AC-WATCHDOG-008 grep 5 命中。Q9 鲁棒性压测战绩一晚派 4 次挂 3 次（bash quote 5h1m / capacity 34min / stream disconnect 3min）work state 零污染，bosnf4y8s 最终闭环。条目移至已完成段。hub-daemon vbs 时间盒因 btfq3nm92 死讯排期 2026-04-26 窗口 |

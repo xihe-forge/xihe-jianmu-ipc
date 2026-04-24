@@ -2,7 +2,7 @@
 
 > IPC 基础设施 repo 的活清单。按优先级分段。所有条目有明确"现状 / 目标 / 验收 / Owner / ETA"。
 
-**最后刷新**：2026-04-24T12:50+08:00（jianmu-pm）
+**最后刷新**：2026-04-24T14:28+08:00（jianmu-pm）
 **刷新节奏**：每次重要产出 + 每周一 portfolio-sync
 
 ---
@@ -74,6 +74,18 @@
 - **Owner**：harness 主出 v0.2 · jianmu-pm 审
 - **ETA**：2026-04-28
 
+### hub-daemon.vbs 时间盒改造 · 根治孤儿 wscript 累积
+
+- **现状**：`bin/hub-daemon.vbs` 设计成 `Do...Loop` 无限循环常驻运行，叠加 task scheduler 的 `MultipleInstances=IgnoreNew` 策略本应挡住重复启动，但历史累积已漏过 49 个孤儿 wscript 进程（每个 ~5-10MB，近 500MB 内存浪费）。2026-04-24 harness CMD 闪窗清理过程中发现并手工清掉 49 个孤儿。install-cliproxy-daemon.ps1 与 install-daemon.ps1 已在 8e0b806 commit 去 cmd 外壳，但 vbs 本体的 Do/Loop 设计没动。retro §8.5 bug 9 并登作治理层证据链（harness 2026-04-25 retro v1.0 patch 落）
+- **目标**：vbs 本体改成 exit-after-once 时间盒——每次启动只跑一次 health-check/housekeeping 即 `WScript.Quit 0`，周期性依赖 task scheduler `AtLogOn + Repetition 10min` 触发器负责 re-run，彻底消除孤儿累积风险
+- **验收**：
+  1. `hub-daemon.vbs` 无 `Do` / `Loop` 关键字
+  2. 启动后 30s 内进程自然退出（tasklist 里 wscript.exe 不长存）
+  3. 48h 连续观察 `wscript.exe` 进程数稳定 ≤ 2（hub-daemon 某次触发 + cliproxy-daemon 某次触发，瞬时最多 2，持续态应为 0）
+  4. Hub `/health` 每 10min 应出现一次 `[housekeeping] OK` 日志
+- **Owner**：jianmu-pm 派 Codex 改 vbs + 实地观察 48h · harness 审观察数据
+- **ETA**：2026-04-28（对齐 bug 2 瘦身设计稿 v0.2 同周窗口）
+
 ### v0.5.0 release cut
 
 - **现状**：v0.5.0 Phase 1-4 代码 @ 2026-04-19 implemented；commit 18（2026-04-21）+ reclaim-my-name（2026-04-24）作为补丁特性一并入 release。package.json 当前 `0.4.1`。CHANGELOG.md [Unreleased] 段有累积改动未 tag
@@ -140,6 +152,8 @@
 
 - [x] ipc_reclaim_my_name MCP 工具 + /reclaim-name Hub endpoint ADR-008 Phase 1 DONE（master HEAD 90590a4，+654/-3，545/545 tests，Codex+jianmu-pm+harness 三签 LGTM）
 - [x] handover/PROJECT-PLAN.md + TODO.md 首版补齐（兑现 2026-04-20 handover-20260420-jianmu-pm.md §NextSteps 第 5 条承诺）
+- [x] `--dangerously-load-development-channels` → `--channels server:ipc` 批量替换（master HEAD 93f94db，7 files +13/-13，545/545 tests pass，retro §8.5 bug 5 收口）
+- [x] daemon wscript cleanup · 去 cmd /c 外壳 + CPA 6.9.36 路径 bump（master HEAD 8e0b806，3 files +9/-9，CMD 闪窗修复 + GPT-5.5 via CPA 6.9.36 支持）
 
 ### 2026-04-21
 
@@ -162,3 +176,4 @@
 | 时间 | 操作人 | 操作 |
 |---|---|---|
 | 2026-04-24T12:50+08:00 | jianmu-pm | 首版 TODO，接 handover-20260420-jianmu-pm.md §NextSteps 第 5 条"PROJECT-PLAN.md + TODO.md 下次交接前必补"承诺；P0 装 ADR-008 Phase 2 / P1 装 Phase 3 + bug 2 v0.2 review + v0.5.0 release cut / P2 装 dependabot 9 漏洞 / P3 装 uptime 基线 + 调度 agent 评估 / P4 装 OpenClaw 整合 + 飞书控制台指令扩展 |
+| 2026-04-24T14:28+08:00 | jianmu-pm | P1 增"hub-daemon.vbs 时间盒改造"条目（harness A+B 双登约定的 B 侧，A 侧为 retro v1.0 §8.5 bug 9）；已完成清单追 2026-04-24 的 channels flag swap 93f94db + daemon wscript cleanup 8e0b806 两 commit |

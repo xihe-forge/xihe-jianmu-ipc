@@ -20,7 +20,7 @@ import {
   HUB_AUTOSTART_TIMEOUT,
   HUB_AUTOSTART_RETRY_INTERVAL,
 } from './lib/constants.mjs';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'fs';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -30,6 +30,35 @@ import http from 'http';
 // Project directory (needed for hub autostart)
 // ---------------------------------------------------------------------------
 const PROJECT_DIR = dirname(fileURLToPath(import.meta.url));
+
+const MCP_TRACE_LOG = join(
+  PROJECT_DIR,
+  'data',
+  `mcp-trace-${(process.env.IPC_NAME || 'unknown').replace(/[^\w.-]/g, '_')}.log`,
+);
+const MCP_TRACE_ENABLED = process.env.IPC_MCP_TRACE_DISABLE !== '1';
+let mcpTraceSizeWarningShown = false;
+try { mkdirSync(dirname(MCP_TRACE_LOG), { recursive: true }); } catch {}
+
+function mcpTrace(event, detail = {}) {
+  if (!MCP_TRACE_ENABLED) return;
+  try {
+    if (!mcpTraceSizeWarningShown && existsSync(MCP_TRACE_LOG) && statSync(MCP_TRACE_LOG).size > 50 * 1024 * 1024) {
+      mcpTraceSizeWarningShown = true;
+      process.stderr.write(`[ipc] warning: MCP trace log exceeds 50MB: ${MCP_TRACE_LOG}\n`);
+    }
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      ipc_name: process.env.IPC_NAME || null,
+      event,
+      ...detail,
+    }) + '\n';
+    appendFileSync(MCP_TRACE_LOG, line, { encoding: 'utf8' });
+  } catch {
+    // Trace failures must never crash MCP server.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -112,6 +141,7 @@ const channelNotifier = createChannelNotifier({
   serverNotify: (payload) => server.notification(payload),
   stderr: (message) => process.stderr.write(message),
   now: () => new Date(),
+  trace: mcpTrace,
 });
 
 server.oninitialized = () => channelNotifier.markInitialized();
@@ -670,6 +700,7 @@ function scheduleReconnect() {
     RECONNECT_MAX_DELAY,
   );
   reconnectAttempts++;
+  mcpTrace('ws_reconnect_scheduled', { delay, attempt: reconnectAttempts });
   process.stderr.write(`[ipc] reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})\n`);
   setTimeout(connect, delay);
 }
@@ -678,6 +709,7 @@ function scheduleReconnect() {
 // Shared WebSocket message handler
 // ---------------------------------------------------------------------------
 function handleWsMessage(event) {
+  mcpTrace('ws_inbound', { raw_len: event.data?.length ?? 0 });
   let msg;
   try {
     msg = JSON.parse(event.data);
@@ -686,6 +718,14 @@ function handleWsMessage(event) {
     return;
   }
 
+  mcpTrace('ws_message_parsed', {
+    type: msg.type,
+    from: msg.from,
+    id: msg.id,
+    topic: msg.topic,
+    has_content: !!msg.content,
+  });
+
   if (msg.type === 'message') {
     // Intercept feishu ping: reply directly without pushing to LLM (0 token)
     const isFeishuPing = msg.from?.startsWith('feishu') &&
@@ -693,6 +733,7 @@ function handleWsMessage(event) {
       (msg.content.trim().toLowerCase() === 'ping' || msg.content.trim().toLowerCase() === '/ping');
 
     if (isFeishuPing) {
+      mcpTrace('feishu_ping_intercepted', { msg_id: msg.id, from: msg.from });
       const replyTo = msg.from; // "feishu:jianmu-pm" or "feishu-group:oc_xxx"
       const pong = `pong (full chain: feishu → bridge → hub → ${IPC_NAME} → hub → feishu)`;
       const body = JSON.stringify(
@@ -712,10 +753,16 @@ function handleWsMessage(event) {
       return; // Don't push to LLM
     }
 
+    mcpTrace('channel_push_begin', {
+      msg_id: msg.id,
+      from: msg.from,
+      mcp_initialized: channelNotifier.isInitialized(),
+    });
     pushChannelNotification(msg);
     // Send ack back to Hub so the sender knows delivery succeeded
     if (msg.id) {
       wsSend({ type: 'ack', messageId: msg.id, from: IPC_NAME });
+      mcpTrace('ack_sent', { msg_id: msg.id, confirmed_by: IPC_NAME });
 
       // Update pending-cards.json so feishu-bridge can advance task to stage 2
       try {
@@ -747,7 +794,10 @@ function handleWsMessage(event) {
   } else if (msg.type === 'inbox') {
     const messages = Array.isArray(msg.messages) ? msg.messages : [];
     for (const m of messages) {
-      if (m.type === 'message') pushChannelNotification(m);
+      if (m.type === 'message') {
+        mcpTrace('inbox_channel_push_begin', { msg_id: m.id, from: m.from });
+        pushChannelNotification(m);
+      }
     }
     process.stderr.write(`[ipc] pushed ${messages.length} buffered messages\n`);
   }
@@ -760,6 +810,7 @@ function handleWsMessage(event) {
 // ---------------------------------------------------------------------------
 function connect() {
   const url = buildWsUrl();
+  mcpTrace('ws_reconnect_attempt', { url });
   process.stderr.write(`[ipc] connecting to hub at ${url}\n`);
 
   let socket;
@@ -772,6 +823,7 @@ function connect() {
   }
 
   socket.addEventListener('open', () => {
+    mcpTrace('ws_reconnect_open', { url });
     process.stderr.write('[ipc] connected to hub\n');
     reconnectAttempts = 0;
     ws = socket;
@@ -782,12 +834,14 @@ function connect() {
   socket.addEventListener('message', handleWsMessage);
 
   socket.addEventListener('close', (event) => {
+    mcpTrace('ws_disconnect', { code: event.code, reason: event.reason });
     process.stderr.write(`[ipc] disconnected from hub (code=${event.code})\n`);
     ws = null;
     scheduleReconnect();
   });
 
   socket.addEventListener('error', (event) => {
+    mcpTrace('ws_error', { message: event.message ?? 'unknown' });
     process.stderr.write(`[ipc] WebSocket error: ${event.message ?? 'unknown'}\n`);
     // 'close' fires after 'error', reconnect will be scheduled there
   });
@@ -802,9 +856,11 @@ async function initialConnect() {
     let autostartDone = false;
 
     function tryOnce() {
+      const url = buildWsUrl();
+      mcpTrace('ws_connect_attempt', { url });
       let socket;
       try {
-        socket = new WebSocket(buildWsUrl());
+        socket = new WebSocket(url);
       } catch {
         handleFailure();
         return;
@@ -817,6 +873,7 @@ async function initialConnect() {
 
       const onOpen = () => {
         cleanup();
+        mcpTrace('ws_connect_open', { url });
         process.stderr.write('[ipc] initial connection to hub succeeded\n');
         reconnectAttempts = 0;
         ws = socket;
@@ -827,20 +884,23 @@ async function initialConnect() {
         socket.addEventListener('message', handleWsMessage);
 
         socket.addEventListener('close', (ev) => {
+          mcpTrace('ws_disconnect', { code: ev.code, reason: ev.reason });
           process.stderr.write(`[ipc] disconnected from hub (code=${ev.code})\n`);
           ws = null;
           scheduleReconnect();
         });
 
         socket.addEventListener('error', (ev) => {
+          mcpTrace('ws_error', { message: ev.message ?? 'unknown' });
           process.stderr.write(`[ipc] WebSocket error: ${ev.message ?? 'unknown'}\n`);
         });
 
         resolve();
       };
 
-      const onError = () => {
+      const onError = (ev) => {
         cleanup();
+        mcpTrace('ws_connect_error', { message: ev?.message ?? 'unknown' });
         try { socket.close(); } catch { /* ignore */ }
         handleFailure();
       };

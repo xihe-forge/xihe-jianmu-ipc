@@ -200,12 +200,17 @@ function quoteForCmd(value) {
   return `"${escapeForCmdQuotedArgument(value)}"`;
 }
 
-function buildWtLaunchCommand({ sessionName, model }) {
+export function buildWtLaunchCommand({ sessionName, model }) {
   return `set IPC_NAME=${sessionName} && ${quoteForCmd(getClaudeBinPath())} ${buildClaudeLaunchArgs({ model })}`;
 }
 
-function buildWtStartCommand({ sessionName, model, cwd }) {
-  return `start "" wt.exe new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} cmd /c ${quoteForCmd(buildWtLaunchCommand({ sessionName, model }))}`;
+export function buildWtStartCommand({ sessionName, model, cwd }) {
+  const claudeBin = getClaudeBinPath();
+  const args = buildClaudeLaunchArgs({ model });
+  // 去 `start ""` 包装（wt.exe 自身 detached）
+  // 用 wt `--` 分隔符（wt 文档支持 wt new-tab [-d <dir>] -- <command>）替代 cmd /c 嵌套包装
+  // cmd /k （keep open）调试期 console window 留下看错误 · production 后续改 /c
+  return `wt.exe new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} -- cmd /k "set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}"`;
 }
 
 function countWindowsTerminalProcesses() {

@@ -201,7 +201,14 @@ dec1535 test(harness): AC-HOOKS-001 install-hooks merge 逻辑 · RED
 ### 5.1 22:00 重启后立即做（successor 第一件）
 1. **冷启 v1.5 7 步**（含读 `D:/.../.session-state/jianmu-pm.json` last breath，应已含 PS hook v2 自动写的 fresh mtime）
 2. **IPC harness 报"冷启继承 + PS hook v2 已激活"** · 含本 session 战绩简报
-3. **观察 hook v2 真激活**：手跑一个 Bash → 检查 `~/.claude/session-state/jianmu-pm.json` mtime 是否 < 30s 内更新 + 是否含正确 git snapshot
+3. **观察 hook v2 真激活**：手跑一个 Bash → 检查 `D:/workspace/ai/research/xiheAi/.session-state/jianmu-pm.json` mtime 是否 < 30s 内更新 + 是否含正确 git snapshot
+4. **派 codex follow-up 增量 case 6**（tester-worker 16:35 review 发现）：
+   - AC-PS-CHECKPOINT-002 当前 5 case 含 49% 边界 + 50/65/80/95 各一阈值
+   - **缺 case 6**：30min throttle 测试 · 同 session 50% hit 后 30min 内再次 PostToolUse 应 silent（避免 advisory 疲劳）
+   - checkpoint-refresh.ps1 v2 实现已含 throttle（contextStampFile + ContextThrottleSec 1800），但对应 RED 测试 case 缺
+   - follow-up brief：在 `tests/checkpoint-refresh-context.test.mjs` 加 case 6 · invoke 两次同阈值 · 第二次 stderr 无 [CONTEXT-N%] tag
+   - ETA ~15-20min Codex TDD 单 case 增量 commit
+   - 仓 = xihe-tianshu-harness · push origin main
 
 ### 5.2 P1 待跟（本周内）
 1. **bug 2 self-handover-slim v0.2 review**（等 harness 出稿 ETA 04-28 · 我 standby）

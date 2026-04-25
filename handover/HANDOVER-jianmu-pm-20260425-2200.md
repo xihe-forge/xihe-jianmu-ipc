@@ -39,6 +39,7 @@ files_completed:
   - ADR-008 Phase 3 cold-start 演练设计 v0.1（jianmu-ipc · doc）
   - ADR-003 真自动 spawn 设计 gap 评估 v0.1（jianmu-ipc · doc）
   - Hub /health 7 天 uptime 基线测量设计 v0.1（jianmu-ipc · doc）
+  - AC-PORTFOLIO-ACCEPTANCE-001 portfolio acceptance e2e self-test + ship gate（jianmu-ipc · c95cbc1/429cc61）
   - install-hooks v1 TDD（xihe-tianshu-harness · 老板派单 P0 失效修）
   - install-hooks Stop hook hot-fix（user config A3 止血）
   - PS hook 重写 4 TDD pair（xihe-tianshu-harness · 老板 critique 转 PS native）

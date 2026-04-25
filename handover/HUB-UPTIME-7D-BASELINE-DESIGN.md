@@ -266,8 +266,89 @@ schtasks /Create /TN "JianmuBaselineCollector" /TR "node D:\...\bin\baseline-col
 
 ---
 
-## 14. 版本
+## 14. v0.2 patch · hook 装载验证 metrics extension（2026-04-25 19:15 自驱续推）
+
+老板 18:27 自驱 critique 触发 + ADR-003 v2 PostToolUse advisory hook ship 后必须含 hook 真激活实证作 baseline · 2026-04-25 19:15 jianmu-pm 自驱续 v0.2 加段。
+
+### 14.1 hook 装载验证 metrics（§3 测量指标扩展）
+
+| 指标 | 来源 | 目标 | 计算 |
+|---|---|---|---|
+| **PS hook 装载率** | `~/.claude/settings.json` hooks.PostToolUse 段 | 100%（4 commands 全 powershell.exe pattern） | jq 解析 + grep -c "powershell.exe" 命中数 |
+| **session-state-writer.ps1 mtime 自动更新率** | `D:/workspace/ai/research/xiheAi/.session-state/<session>.json` mtime - 上次手 write ts | 100%（每个 active session 5min 内有自动 mtime 刷新） | per-session ratio 7 天均值 |
+| **PostToolUse hook 触发频率** | session-state-writer.ps1 throttle stamp file 计数 | 与 PostToolUse 实际频率匹配（throttle 30s 后允许触发） | per-session 平均次/小时 |
+| **handover-threshold-check 三级降级触发分布** | hub.log（如有 stderr capture）/ checkpoint-refresh.ps1 stamp | 50%/65%/80%/95% 各阈值触发计数 + 触发到 self-handover 间隔 | aggregate 7 天 |
+| **session 自驱手动 self-handover 频率** | git log handover/HANDOVER-*-*.md 的 author + ts | 高 context % 后 5-15min 内 ship handover doc 算 advisory 真生效 | 触发次数 + 平均响应时间 |
+
+### 14.2 advisory_hit log v1 design
+
+`handover-threshold-check.ps1` + `checkpoint-refresh.ps1` 加 advisory_hit log 段（不破坏现有 stderr/decision 输出 · 增量 file write）：
+
+```powershell
+# 增段位 在 Write-Log "[CONTEXT-N%] ..." 之后
+function Write-AdvisoryHitLog([int]$pct, [string]$level, [string]$ipcName, [string]$transcriptPath) {
+  $logDir = if ($env:XIHE_PORTFOLIO_ROOT) { Join-Path $env:XIHE_PORTFOLIO_ROOT '.session-state' } else { 'D:/workspace/ai/research/xiheAi/.session-state' }
+  $logFile = Join-Path $logDir "advisory-hit-$ipcName.log"
+  $iso = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz')
+  $entry = "[$iso] level=$level pct=$pct transcript=$(Split-Path -Leaf $transcriptPath)"
+  Add-Content -Path $logFile -Value $entry -Encoding UTF8 -ErrorAction SilentlyContinue
+}
+```
+
+写入路径：`D:/workspace/ai/research/xiheAi/.session-state/advisory-hit-<ipc-name>.log`
+
+每次 hook 触发 advisory（PostToolUse 50%/65%/80%/95% 任一档）追加一行。文件 7 天预估大小：< 1MB（throttle 30min · 高 context session 100 行/天 · 18 active session ~10MB total）。
+
+7 天后归档：`temp/baseline-archive/advisory-hit-YYYY-MM-DD.tar.gz`。
+
+### 14.3 collector advisory_hit log scan（§4 采集方案扩展）
+
+`bin/baseline-collector.mjs` v0.2 增量 read advisory-hit-*.log（与 hub.log seek 同模式）：
+
+```js
+async function scanAdvisoryHitLogs() {
+  const stateDir = process.env.XIHE_PORTFOLIO_ROOT 
+    ? path.join(process.env.XIHE_PORTFOLIO_ROOT, '.session-state')
+    : 'D:/workspace/ai/research/xiheAi/.session-state';
+  const files = await fs.readdir(stateDir).catch(() => []);
+  const results = {};
+  for (const file of files) {
+    if (!file.startsWith('advisory-hit-') || !file.endsWith('.log')) continue;
+    const session = file.replace(/^advisory-hit-/, '').replace(/\.log$/, '');
+    const fullPath = path.join(stateDir, file);
+    const content = await fs.readFile(fullPath, 'utf8').catch(() => '');
+    const lines = content.split('\n').filter(Boolean);
+    results[session] = {
+      total: lines.length,
+      level1: lines.filter(l => /level=L1/.test(l)).length,
+      level2: lines.filter(l => /level=L2/.test(l)).length,
+      level3: lines.filter(l => /level=L3/.test(l)).length,
+      emergency: lines.filter(l => /level=EMERGENCY/.test(l)).length,
+    };
+  }
+  return results;
+}
+```
+
+baseline-collector jsonl 增字段 `advisory_hit`：
+```jsonl
+{"ts":"...","health":{...},"watchdog":{...},"log_events":{...},"advisory_hit":{"jianmu-pm":{"total":5,"level1":3,"level2":2,"level3":0,"emergency":0},"taiwei_builder":{"total":2,...},...}}
+```
+
+### 14.4 ADR-003 v2 + ADR-004 v0.1.1 联动
+
+7 天 baseline 数据驱动 ADR-004 v3 真自动 spawn 议题决策：
+- **PS hook v2 advisory 充分**（70%+ session 在 65%/80% advisory 后 5-15min 内自驱手动 self-handover）→ ADR-004 v3 真自动 spawn 不必做 · accept advisory 路径
+- **PS hook v2 advisory 不足**（<50% session 响应 advisory 仍需 daemon 强制 spawn）→ ADR-004 v3 立项 daemon 跨 session lifecycle 控制（绑 portfolio-boot 脚本）
+- **混合**（部分 session 自驱响应 + 部分长 in-flight 不响应）→ ADR-004 v3 仅对长 in-flight 高优先级 session 加强制 spawn · 其他保 advisory
+
+baseline 报告 `HEALTH-BASELINE-2026-05-08-7D.md` §"ADR-004 v3 决策依据" 段直接引此数据驱动决策。
+
+---
+
+## 15. 版本
 
 | 版本 | 日期 | 作者 | 说明 |
 |---|---|---|---|
 | v0.1 | 2026-04-25 16:35 | jianmu-pm | 草案，等 harness review + 老板拍排期。Self-driven 自抓本 P3 backlog 提前规划 |
+| v0.2 | 2026-04-25 19:15 | jianmu-pm | 老板 18:27 自驱 critique + ADR-003 v2 ship 后续推 · 加 §14 hook 装载验证 metrics extension（4 段：装载率 / mtime 自动刷新率 / advisory_hit log v1 design + collector scan / ADR-003 v2+ADR-004 v0.1.1 联动 7 天数据驱动 v3 决策）|

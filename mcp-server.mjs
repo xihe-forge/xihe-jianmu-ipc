@@ -213,6 +213,20 @@ export function buildWtStartCommand({ sessionName, model, cwd }) {
   return `wt.exe new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} -- cmd /k "set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}"`;
 }
 
+export function buildWtSpawnArgs({ sessionName, model, cwd }) {
+  const claudeBin = getClaudeBinPath();
+  const args = buildClaudeLaunchArgs({ model });
+  // wt.exe 直接 spawn · 跳过 outer cmd /c · Node 用 C runtime escape (\") · wt parser 兼容
+  // inner cmd /k 子串只剩单层引号 cmd 能正确 strip
+  const innerCmd = `set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}`;
+  return [
+    'new-tab',
+    '--title', sessionName,
+    '--starting-directory', cwd,
+    '--', 'cmd', '/k', innerCmd,
+  ];
+}
+
 function countWindowsTerminalProcesses() {
   if (process.platform !== 'win32') {
     return Promise.resolve(null);
@@ -423,8 +437,8 @@ export async function spawnSession({
       };
     }
 
-    const startCommand = buildWtStartCommand({ sessionName, model, cwd: spawnCwd });
-    const commandHint = `cmd /c ${startCommand}`;
+    const wtArgs = buildWtSpawnArgs({ sessionName, model, cwd: spawnCwd });
+    const commandHint = `wt.exe ${wtArgs.join(' ')}`;
     if (dryRun) {
       return {
         spawned: false,
@@ -436,7 +450,7 @@ export async function spawnSession({
     }
 
     const baselineTerminalCount = await countWindowsTerminalProcesses();
-    const child = spawn('cmd', ['/c', startCommand], {
+    const child = spawn('wt.exe', wtArgs, {
       detached: true,
       stdio: 'ignore',
       env: ipcEnv,

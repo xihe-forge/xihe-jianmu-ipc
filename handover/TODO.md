@@ -85,25 +85,13 @@
 - **Owner**：jianmu-pm 主 verify · tech-worker 主做 hook 脚本
 - **ETA**：阻塞在 tech-worker `session-state-writer.sh` 出稿，她出稿当日我做 verify（~30min 零代码改动前提）
 
-### hub-daemon.vbs 时间盒改造 · 根治孤儿 wscript 累积
+### v0.5.0 release cut · 等 SSH push tag
 
-- **现状**：`bin/hub-daemon.vbs` 设计成 `Do...Loop` 无限循环常驻运行，叠加 task scheduler 的 `MultipleInstances=IgnoreNew` 策略本应挡住重复启动，但历史累积已漏过 49 个孤儿 wscript 进程（每个 ~5-10MB，近 500MB 内存浪费）。2026-04-24 harness CMD 闪窗清理过程中发现并手工清掉 49 个孤儿。install-cliproxy-daemon.ps1 与 install-daemon.ps1 已在 8e0b806 commit 去 cmd 外壳，但 vbs 本体的 Do/Loop 设计没动。retro §8.5 bug 9 并登作治理层证据链（harness 2026-04-25 retro v1.0 patch 落）
-- **目标**：vbs 本体改成 exit-after-once 时间盒——每次启动只跑一次 health-check/housekeeping 即 `WScript.Quit 0`，周期性依赖 task scheduler `AtLogOn + Repetition 10min` 触发器负责 re-run，彻底消除孤儿累积风险
-- **验收**：
-  1. `hub-daemon.vbs` 无 `Do` / `Loop` 关键字
-  2. 启动后 30s 内进程自然退出（tasklist 里 wscript.exe 不长存）
-  3. 48h 连续观察 `wscript.exe` 进程数稳定 ≤ 2（hub-daemon 某次触发 + cliproxy-daemon 某次触发，瞬时最多 2，持续态应为 0）
-  4. Hub `/health` 每 10min 应出现一次 `[housekeeping] OK` 日志
-- **Owner**：jianmu-pm 派 Codex 改 vbs + 实地观察 48h · harness 审观察数据
-- **ETA**：2026-04-28（对齐 bug 2 瘦身设计稿 v0.2 同周窗口）
-
-### v0.5.0 release cut
-
-- **现状**：v0.5.0 Phase 1-4 代码 @ 2026-04-19 implemented；commit 18（2026-04-21）+ reclaim-my-name（2026-04-24）作为补丁特性一并入 release。package.json 当前 `0.4.1`。CHANGELOG.md [Unreleased] 段有累积改动未 tag
-- **目标**：cut v0.5.0 tag + push GitHub + dependabot 漏洞清零前置链路打通
-- **验收**：`git tag v0.5.0 + push` 可见；CHANGELOG [Unreleased] → [0.5.0] 切换且 diff 链接更新；GitHub Releases 页面有 v0.5.0 entry
+- **现状**：CHANGELOG.md `[0.5.0] - 2026-04-25` 段写完（50+ commits 整合 4 大主题：ADR-002 Phase 1 / ADR-005 observation / ADR-008 reclaim / ADR-009 race fix + watchdog 6/7/8 probe + hub-daemon 时间盒）。package.json `0.4.1` → `0.5.0` bump。本地 commit `158eaf1` chore(release): v0.5.0 已 land local · ahead origin/master by 1 commit
+- **目标**：等 SSH 恢复批量 push origin master + `git tag v0.5.0` + push tag + `/release-check` skill 门禁
+- **验收**：`git tag v0.5.0 + push` 可见；GitHub Releases 页面有 v0.5.0 entry
 - **Owner**：jianmu-pm 主做 · harness 审 /release-check 门禁
-- **ETA**：2026-04-30（v0.5.0 稳定 1-2 天后再开 v0.6.0）
+- **ETA**：2026-04-25（SSH 恢复后）/ 2026-04-30 兜底窗口
 
 ---
 
@@ -161,6 +149,9 @@
 
 ### 2026-04-25
 
+- [x] **hub-daemon.vbs 时间盒改造 + schtasks 触发器修复 TDD Red→Green**（origin/master 三 commit：RED `e694790` + GREEN `2f375ed` + chore `43d6f97` schtasks AtLogOn+Repetition 10min · `npm test` 558→587 pass · AC-DAEMON-001 4 case：vbs 无 Do/Loop / cscript 30s 内 exit 0 / data/hub.log 末行 [housekeeping] ISO-ts OK / 严守 feedback_no_kill_node）。Q9 第 5 例 stream disconnect 实证：bbrj22chz 13:48 起跑 13:50 stream 截断 task-notification exit 0 但 GREEN/push 未跑，b94q23pql 13:57 起 14:18:04 续完 push=ok 587 pass schtasks 顺手 fix
+- [x] **ADR-003 hook 失效修复 install-hooks 工具 TDD Red→Green**（仓 = xihe-tianshu-harness · origin/main 二 commit：RED `dec1535` + GREEN `46722fd` + 实际跑 `node tools/install-hooks.mjs` 把 templates/hooks-snippet.json 幂等 merge 进 ~/.claude/settings.json）。AC-HOOKS-001 4 case：empty + snippet → settings.hooks / 保留非 hooks 段 / 同 matcher append 不覆盖 / 幂等。**根因**：~/.claude/settings.json 完全无 hooks 段，模板 hooks-snippet.json 完整 + 三脚本本体正确（含 ADR-002 §二 55%/60%/65% Stop hook + ≥95% 放行）但**从未被 merge**，6 天历史欠账。**hot-reload 限制**：当前老 session 不重读 settings.json，新 session 启动才装 hook
+- [x] **v0.5.0 CHANGELOG + version bump 准备**（local commit `158eaf1` chore(release): v0.5.0 · 50+ commits 自 v0.4.1 整合 · skip-tdd: release · 待 SSH 恢复 push + tag v0.5.0 + /release-check 门禁）
 - [x] network-watchdog P1-b · 第 8 probe phys_ram_used_pct 百分比化 TDD Red→Green（origin/master 三 commit：RED `e0d3baa` + GREEN `f46b7b6` + docs `bd073ea`，`npm test` 554→558 pass，AC-WATCHDOG-008 grep 5 命中 4 case + 1 describe，CLAUDE.md 7→8 项同步）。**Q9 鲁棒性压测最终战绩**：一晚派 4 次 Codex，挂 3 次（btfq3nm92 bash quote 5h1m / br691gxlk model capacity 34min / by1kiiq0o stream disconnect 3min），work state 零污染累计递增，最终 bosnf4y8s（240s cooldown + 三要素 brief）一次闭环。feedback_codex_dispatch.md 沉淀"bash quote 陷阱"+ "Q9 四型失效模式锚点" + "Q9 follow-up brief 模板三要素"三段
 
 ### 2026-04-24
@@ -197,3 +188,4 @@
 | 2026-04-24T17:05+08:00 | jianmu-pm | P1-a 闭环（提前 43h）：master HEAD f722ed4 committed_pct 第 6 probe + 90 WARN 广播 + 95 CRIT session-guard tree-kill + 5min dedup per-level；tech-worker d4b435b 接口 + 三维验明正身安全保护 + ExcludePattern 扩 codex\|openai 采纳；npm test 545→554 pass；P1-a 条目从 P1 区移至已完成；A1 仍 standby 等 tech-worker hook 出稿 |
 | 2026-04-25T00:23:53+08:00 | jianmu-pm | P1 增"network-watchdog 第 8 probe · phys_ram_used_pct 百分比化"条目，ETA 2026-04-28。触发：harness 00:02 广播 commit% gate 作废改物理 RAM<80% used 单 gate；vitest-memory-discipline v1.0.3 fb7e196 附录 D line 470 要求 watchdog 补百分比指标；tech-worker msg_b14a96 IPC 确认 DIM4 1b85ee9 对齐百分比语义。hub-daemon vbs 时间盒 Codex 后台 btfq3nm92 跑中 |
 | 2026-04-25T05:34+08:00 | jianmu-pm | P1 phys_ram_used_pct 第 8 probe 闭环（提前 3 天）：origin/master RED e0d3baa + GREEN f46b7b6 + docs bd073ea 三 commit push · 558 pass · AC-WATCHDOG-008 grep 5 命中。Q9 鲁棒性压测战绩一晚派 4 次挂 3 次（bash quote 5h1m / capacity 34min / stream disconnect 3min）work state 零污染，bosnf4y8s 最终闭环。条目移至已完成段。hub-daemon vbs 时间盒因 btfq3nm92 死讯排期 2026-04-26 窗口 |
+| 2026-04-25T14:25+08:00 | jianmu-pm | 三 P1 同日闭环（自驱模式）：(1) hub-daemon.vbs 时间盒 TDD origin/master e694790/2f375ed/43d6f97 587 pass schtasks 10min repetition fix，提前 3 天；(2) ADR-003 hook 失效 install-hooks TDD（xihe-tianshu-harness 仓 dec1535/46722fd）+ 实际 install merge user settings.json，老板派单 ~1.5h 闭环；(3) v0.5.0 CHANGELOG+version bump local commit 158eaf1 prep · 待 SSH push tag。Q9 mode #3 stream disconnect 第 4 例（bbrj22chz）+ feedback_codex_dispatch.md "heredoc + codex exec 同 Bash call 禁止"段（xuanji 踩坑同步沉淀）。两条目同步：hub-daemon 时间盒删 P1 移已完成段；v0.5.0 release cut 现状改为"local commit 待 SSH push tag" |

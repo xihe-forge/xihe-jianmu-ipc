@@ -231,6 +231,8 @@ npm publish
 
 publish 前必跑 portfolio acceptance e2e 验“老板/portfolio 真用场景”通畅。pass 才许 publish。
 
+**测试 fixture**：`temp/test-portfolio-acceptance/messages.db`（已 .gitignore，使用独立 test 端口 :31891 不冲突生产 :3179）。**Cleanup 语义**：每次 invoke 前 `before()` 钩子 `rm -force` test db（pre-test cleanup before each run），跑完不主动 cleanup（4KB+32KB+333KB SQLite 三文件残留 temp/ · 不污染仓 · v0.2 计划加 `after()` block 真自动 cleanup · e2e-tester 2026-04-25 17:36 verify-ok advisory follow-up）。
+
 ```bash
 # 跑 portfolio acceptance e2e（5 case 含 Hub /health / 单播 / 广播 / SQLite 持久化 / HTTP /send）
 node --test tests/e2e/portfolio-acceptance.test.mjs

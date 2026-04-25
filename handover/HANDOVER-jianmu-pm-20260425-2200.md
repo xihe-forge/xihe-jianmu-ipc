@@ -210,6 +210,13 @@ dec1535 test(harness): AC-HOOKS-001 install-hooks merge 逻辑 · RED
    - follow-up brief：在 `tests/checkpoint-refresh-context.test.mjs` 加 case 6 · invoke 两次同阈值 · 第二次 stderr 无 [CONTEXT-N%] tag
    - ETA ~15-20min Codex TDD 单 case 增量 commit
    - 仓 = xihe-tianshu-harness · push origin main
+5. **派 codex follow-up · portfolio acceptance test after() cleanup**（e2e-tester 17:36 verify-ok advisory）：
+   - `tests/e2e/portfolio-acceptance.test.mjs` 当前只 before() pre-test cleanup（line 25-27 rm test db）
+   - **缺 after()**：跑完 4KB+32KB+333KB SQLite 三文件残留 `temp/test-portfolio-acceptance/`（已 .gitignore 不污染仓但 nice-to-have 真 cleanup）
+   - follow-up brief：加 after() block 跑 `await rm(TEST_DB_DIR, { recursive: true, force: true })` · 5 case 跑完后清残留
+   - ETA ~5-10min Codex TDD 增量 commit
+   - 仓 = xihe-jianmu-ipc · push origin master
+   - **不阻塞 ship**（e2e-tester verify-ok 已 release · 仅 nice-to-have）
 
 ### 5.2 P1 待跟（本周内）
 1. **bug 2 self-handover-slim v0.2 review**（等 harness 出稿 ETA 04-28 · 我 standby）

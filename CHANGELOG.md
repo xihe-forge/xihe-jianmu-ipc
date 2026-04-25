@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-25
+
+> ADR-002 完整 Phase 1 + ADR-005 observation 层 Phase 0 + ADR-008 reclaim + ADR-009 channel race fix + commit 18 watchdog Hub WS keepalive + 第 6/7/8 watchdog probe + hub-daemon 时间盒。50+ commits 自 v0.4.1 累积。
+
+### Added
+
+#### 会话接力 (Phase 1) + IPC 工具 (Phase 2)
+
+- `POST /prepare-rebind` 显式会话接力端点，支持 `topics` + `buffered_messages` 继承（默认宽限期 5s 最大 60s，兼容 `IPC_AUTH_TOKEN` / `auth-tokens.json`）
+- `pending_rebind` 表 + `lib/db.mjs` 持久化层 + flushInbox 与 release-rebind 联动（重连时继承宽限期内缓冲消息）
+- `ipc_spawn` MCP 工具扩 `host` 参数（`wt` / `vscode-terminal` / `external`，默认 `external`）+ canonical cmdline + `cwd` 透传
+- `ipc_spawn` 5 host 路径全注入 `IPC_NAME` 环境变量（替代 `--session-name` / `--resume`）
+- `ipc_reclaim_my_name(name)` MCP 工具 + `POST /reclaim-name` Hub endpoint（自助回收同名 zombie 占位，holder 主动 ping 5s 无 pong 才 evict，5 分支状态机：no-holder / pending-rebind / rate-limit 10s / holder-alive / evict）
+
+#### Watchdog 健康监测 (Phase 3 + 后续)
+
+- 第 5 probe `harness-heartbeat`：`probeHarnessHeartbeat` + `createHarnessStateMachine` + watchdog 集成 + `/status` 扩 `harness` 字段（`state` / `contextWarnPct` / `lastTransition` / `lastReason` / `lastProbe`）
+- 第 6 probe `committed_pct`：90% WARN 广播 `critique` topic + 95% CRIT 调 `session-guard.ps1 -Action tree-kill` 自动清 vitest 最大子树（三维验明正身保护：Get-Process + 端口 LISTENING 关联 + cmdline 一致）+ 5min dedup per-level
+- 第 7 probe `available_ram_mb`：< 10GB WARN / < 5GB CRIT 纯广播（UX 警告 role，与 committed_pct 95% tree-kill 不重叠）
+- 第 8 probe `phys_ram_used_pct`：80% WARN / 90% CRIT 物理 RAM 用量百分比 `(1 - avail_mb/total_mb) × 100` 纯广播（vitest-memory-discipline v1.0.3 §3.4 单 gate）
+- watchdog 冷启 2min cold-start grace（`WATCHDOG_COLD_START_GRACE_MS` 可覆盖），防误触 self-handover
+- watchdog `ingestHeartbeat()` 校验 heartbeat `ts` 鲜度：早于 watchdog `startedAt - 60s` 的历史消息或解析失败的非法 `ts` 一律忽略，不驱动 transition / handover
+- watchdog 仅在 probe 返回 `{ ok: true, connected: true }` 时刷新内存 `lastSeenOnlineAt`
+
+#### Self-handover (Phase 4)
+
+- `lib/harness-handover.mjs` schema v2 生成器 + git commit 自动化 + dryRun 模式
+- `triggerHarnessSelfHandover()` 仅在 harness `down` 时触发（`degraded` 仅风险态不触发）
+- 全链路集成测试 dryRun（harness-state.down → triggerHarnessSelfHandover → ipc_spawn stub）
+
+#### ADR-005 Observation 层 + Registry
+
+- `ipc_recall(project, since?, limit?, ipc_name?, tool_name?, tags?, keyword?)` MCP 工具，跨项目 FTS5 检索（支持 `project="*"` 跨项目合并，文本字段预览截断 500 chars）
+- `ipc_observation_detail(project, id)` MCP 工具，拉单条 observation 完整字段不截断 `tool_input` / `tool_output`，含 `jsonl:` 元数据
+- `ipc_register_session(name, role?, projects?, access_scope?, cold_start_strategy?, note?)` + `ipc_update_session(name, projects)` MCP 工具
+- Hub `POST /registry/register` + `POST /registry/update` 端点（集中维护 `~/.claude/sessions-registry.json` 避免并发竞态）
+- `lib/observation-query.mjs` 层（`~/.claude/project-state/<project>/observations.db` + FTS5）
+- `lib/lineage.mjs` `createLineageTracker` + SQLite `lineage` 表，session 派生关系追踪
+
+#### Daemon + 守护进程
+
+- `bin/hub-daemon.vbs` 时间盒改造（exit-after-once + `WScript.Quit 0` + ISO-8601 housekeeping log），周期性依赖 schtasks `AtLogOn + Repetition 10min + Indefinitely + MultipleInstances=IgnoreNew` 触发器，根治孤儿 wscript 累积
+
+#### 诊断 audit 三层
+
+- `push_deliver` per-session audit event（区分 Hub send 成功 vs client 真收到，含 `msg_id` / `ws_ready_state` / `send_ok` / `send_err` / `reason`）
+- `ack_received` audit event（client 真收到的端到端证据）
+- `mcp-trace` 接收端诊断日志 + `server.notification` 调用 trace
+- `feedback_ipc_push_vs_hub_delivered.md` 沉淀（Hub `status: delivered` 不等于 AI 看到，pull 诊断三阶法）
+
+#### MCP server 工具化与可测性
+
+- `lib/mcp-tools.mjs` 抽出 `createMcpTools(ctx)` 工厂函数，支持单元测试
+- `tests/` 目录重组：单元（`tests/*.test.mjs`）+ 集成（`tests/integration/`）+ E2E（`tests/e2e/`），集成测试占比 4% → 21%
+- `npm test` 基线 558 → 587（v0.5.0 收口含 hub-daemon-timebox + phys-ram-used-pct + AC-DAEMON/AC-WATCHDOG-008/AC-HOOKS-001 等新 AC）
+
+### Changed
+
+- watchdog 存活判据从 `lastMsgTs + maxSilentMs=10min`（消息静默判死）改为 `GET /session-alive?name=X → ws.readyState===OPEN` + `wsDisconnectGraceMs=60s`（commit 18，2026-04-21 cutover 4 阶段 0 false positive）
+- `flushInbox` 重连时不再自动推 messages 表历史（防 token 轰炸），历史改走 `ipc_recent_messages` pull
+- `harness-state.markAliveSignal` 移到 `ingestHeartbeat` 顶部，hard-signal 优先于 cold-start grace
+- `wt` spawn 改用 `cmd /c start` 处理 UI session
+- `spawnSession` 增 `cwd` 参数 + `triggerHarnessSelfHandover` 透传 `handoverRepoPath`
+- canonical cmdline：`bin/claude.exe --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`（删 `--session-name` / `--resume`，靠 `IPC_NAME` env）
+- daemon scripts 去 `cmd /c` 外壳（每 10min CMD 闪窗修复）+ 路径指向 CPA 6.9.36（GPT-5.5 支持）
+
+### Fixed
+
+- **ADR-009** channel notification pre-initialize race：`mcp-server.mjs` 通过 `lib/channel-notification.mjs` 工厂维护 pre-init queue，`server.oninitialized` 触发后 FIFO flush（解决 Hub inbox flush 在 initialize 完成前 `notifications/claude/channel` 静默丢失）
+- channel-notification 加 5s timeout fallback：抢救 Claude Code 2.1.119 MCP handshake 死锁，5s 无 `oninitialized` 触发即 force flush
+- watchdog `onTransition` 只触发 `down` + dryRun 不落盘 + heartbeat ts 过滤（防孤儿 commit）
+- watchdog cold-start grace period（默认 2min），冷启不误触 harness self-handover
+
+### Removed
+
+- 死代码清理：`instance_id` / `session_instances`（commit 14 变迁遗留）
+
+### Security
+
+- `POST /reclaim-name` 仅允许 loopback 调用 + 1KB body cap
+
+### Reverted
+
+- 93f94db `--dangerously-load-development-channels server:ipc` → `--channels server:ipc` swap 误改在 7bfbd94 全量 revert 13 处：误读 Claude Code 2.1.119 warning 文案 `approved channels` 当等价新写法，实际两 flag 走完全不同 allowlist 分支（前者 dev=true 绕 allowlist 注册 handler，后者走 Teams/Enterprise allowlist `server:ipc` 不在任何官方 allowlist），导致 ~6h portfolio push 全失灵（feedback_cli_flag_semantics 同步沉淀，详见 retro §8.5 bug 5）
+
 ## [0.4.1] - 2026-04-19
 
 ### Added

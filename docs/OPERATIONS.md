@@ -208,18 +208,42 @@ grep "file watch" data/hub.log | tail -3
 ### 标准流程
 
 ```bash
-# 1. 确认登录态（避免 401 被伪装成 404）
+# 1. 全量测试（unit + 集成 + 协议层 E2E）
+npm test
+
+# 2. portfolio acceptance e2e self-test（acceptance 同口径 ship gate）
+node --test tests/e2e/portfolio-acceptance.test.mjs
+
+# 3. 确认登录态（避免 401 被伪装成 404）
 npm whoami
 # 预期返回你的 npm 账号名；若 401 → npm login 重登
 
-# 2. 预检（dry-run 确认 tarball 内容 + 警告数）
+# 4. 预检（dry-run 确认 tarball 内容 + 警告数）
 npm publish --dry-run
 # 警告数必须为 0
 
-# 3. 正式 publish
+# 5. 正式 publish
 npm publish
 # WebAuthn 2FA（Windows Hello）会弹本机 PIN/指纹框
 ```
+
+### e2e self-test（acceptance 同口径 · 必跑 ship gate）
+
+publish 前必跑 portfolio acceptance e2e 验“老板/portfolio 真用场景”通畅。pass 才许 publish。
+
+```bash
+# 跑 portfolio acceptance e2e（5 case 含 Hub /health / 单播 / 广播 / SQLite 持久化 / HTTP /send）
+node --test tests/e2e/portfolio-acceptance.test.mjs
+```
+
+**fail 不许 publish**。这条是治理层硬规则（2026-04-25 老板 critique 后立）：ship 标准 = acceptance 标准，partial check（unit/集成/协议层 E2E）虽全绿但不替代 acceptance 同口径 e2e。
+
+完整 ship gate 顺序：
+1. `npm test` 全套（unit + 集成 + 协议层 E2E）
+2. **`node --test tests/e2e/portfolio-acceptance.test.mjs`（acceptance 同口径 · 新增）**
+3. `npm whoami` 登录态确认
+4. `npm publish --dry-run` 警告 0
+5. `npm publish` 正式发布
 
 ### 常见错误
 
@@ -252,7 +276,8 @@ npm test
 ```bash
 npm run test:unit         # 单元测试
 npm run test:integration  # 集成测试
-npm run test:e2e          # E2E 测试（10 个）
+npm run test:e2e          # 协议层 E2E 测试
+node --test tests/e2e/portfolio-acceptance.test.mjs  # portfolio acceptance e2e self-test（ship gate）
 ```
 
 ### 突变测试

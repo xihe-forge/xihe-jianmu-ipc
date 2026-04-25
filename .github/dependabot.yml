@@ -1,8 +1,12 @@
 version: 2
 
+# 仓本体 = 纯 JS (.mjs) Hub + MCP server + watchdog
+# 依赖：ws / @modelcontextprotocol/sdk / better-sqlite3 / @larksuiteoapi/node-sdk + dev: @stryker-mutator/core
+# 没有 Cargo / 没有 apps/desktop（前任配置疑似从天罡 Mesh 模板复制未改 · 2026-04-25 jianmu-pm 修正）
+
 updates:
-  # Rust (Cargo)
-  - package-ecosystem: "cargo"
+  # Node.js (npm) - 仓根 package.json
+  - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -10,24 +14,11 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "type/dependencies"
-      - "scope/rust"
+      - "scope/node"
     commit-message:
       prefix: "chore(deps):"
 
-  # Node.js (npm/pnpm)
-  - package-ecosystem: "npm"
-    directory: "/apps/desktop"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels:
-      - "type/dependencies"
-      - "scope/frontend"
-    commit-message:
-      prefix: "chore(deps):"
-
-  # GitHub Actions
+  # GitHub Actions - .github/workflows
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

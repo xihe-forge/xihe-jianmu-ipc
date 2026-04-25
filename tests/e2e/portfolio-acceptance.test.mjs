@@ -166,6 +166,10 @@ async function waitForHealth(predicate, timeout = MESSAGE_TIMEOUT) {
 describe('AC-PORTFOLIO-ACCEPTANCE-001 portfolio acceptance e2e self-test', () => {
   before(startTestHub);
   after(stopTestHub);
+  after(async () => {
+    // post-test cleanup：跑完所有 case 后清 TEST_DB_DIR · 真自动 cleanup（e2e-tester 17:36 verify-ok advisory follow-up）
+    await rm(TEST_DB_DIR, { recursive: true, force: true });
+  });
 
   test('AC-PORTFOLIO-ACCEPTANCE-001-a: Hub /health returns ok + session list + uptime', async () => {
     const response = await fetch(`${HUB_BASE}/health`);

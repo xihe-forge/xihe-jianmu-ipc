@@ -274,4 +274,13 @@ describe('AC-PORTFOLIO-ACCEPTANCE-001 portfolio acceptance e2e self-test', () =>
       await closeClient(charlie);
     }
   });
+
+  test('AC-PORTFOLIO-ACCEPTANCE-001-f: after() cleanup 跑完 TEST_DB_DIR 不残留 SQLite 三文件', async () => {
+    const fs = await import('node:fs/promises');
+    const testFilePath = import.meta.url.replace('file://', '').replace('/D:', 'D:');
+    const testFile = await fs.readFile(testFilePath, 'utf8');
+
+    assert.match(testFile, /after\(\s*async\s*\(\s*\)\s*=>/);
+    assert.match(testFile, /rm\(TEST_DB_DIR/);
+  });
 });

@@ -543,15 +543,15 @@ test(
       assert.equal(payload.cwd, normalizedSandbox);
       assert.match(
         payload.command_hint,
-        /^cmd \/c wt\.exe new-tab --title "worker-b" --starting-directory "/,
+        /^wt\.exe new-tab --title worker-b --starting-directory /,
       );
       assert.match(
         payload.command_hint,
-        new RegExp(`--starting-directory "${escapeRegex(sandbox)}"`),
+        new RegExp(`--starting-directory ${escapeRegex(sandbox)}`),
       );
       assert.match(
         payload.command_hint,
-        / -- cmd \/k "set IPC_NAME=worker-b && "C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus"$/,
+        / -- cmd \/k set IPC_NAME=worker-b && "C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus$/,
       );
     } finally {
       rmSync(sandbox, { recursive: true, force: true });

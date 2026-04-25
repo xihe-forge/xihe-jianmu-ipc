@@ -2,8 +2,8 @@
 
 > IPC 基础设施 repo 的活清单。按优先级分段。所有条目有明确"现状 / 目标 / 验收 / Owner / ETA"。
 
-**最后刷新**：2026-04-24T17:05+08:00（jianmu-pm）
-**刷新节奏**：每次重要产出 + 每周一 portfolio-sync
+**最后刷新**：2026-04-26T02:14+08:00（jianmu-pm）
+**刷新节奏**：每次重要产出 + 每周一 portfolio-sync · 老板 88% 周限额硬规矩：每完成任务立即落盘 + commit + push（不批量积压）
 
 ---
 
@@ -46,13 +46,23 @@
 
 ## P0 当前焦点
 
-### ADR-008 Phase 2 · session-cold-start.md v1.3 切换
+### 切账号窗口待 trigger · spawn fix v2 keystone 已解锁
 
-- **现状**：2026-04-24 12:46 reclaim merge master 90590a4，工具上线。harness 12:49 回执承诺本回合直做 `xihe-tianshu-harness/domains/software/knowledge/session-cold-start.md` v1.2 → v1.3：删场景 B "工具未上线兜底"段 + changelog 标 reclaim merge 90590a4 工具上线
-- **目标**：v1.3 落档，场景 B 标准路径单一指向 `ipc_reclaim_my_name()`，无兜底分支；ADR-008 doc Phase 1 DONE 段已在 2026-04-24 12:46 本仓更新
-- **验收**：xihe-tianshu-harness 仓 `domains/software/knowledge/session-cold-start.md` 搜索"工具未上线"命中 0；v1.3 版本号出现在文档顶部
-- **Owner**：harness 主做 · jianmu-pm 审
-- **ETA**：2026-04-24（当日内）
+- **现状**：2026-04-26T01:34 AC-IPC-SPAWN-WT-002 fix v2 三层校验全过（git origin push 5b9a6b9+0967749+df9de3a / 独立 node --test 7/7 PASS / harness mkdir 补救后 reports 目录已建）。harness 01:41 manual verify 暴露 portfolio runtime 全 fix v1 cache · runtime cache 不 hot-reload · 切账号 reload 是 fix v2 真生效 trigger 不是切账号前 prerequisite。harness 01:42 已 IPC 老板"切账号 ready"信号
+- **目标**：boss 关 wt 窗口 → portfolio 全 session /exit → 新账号 fresh load fix v2 → successor 接班 ADR-004 v0.2 三步 atomic handoff 第一例 dogfood = ipc_spawn host=wt 真 acceptance gate
+- **验收**：
+  1. successor 调 `ipc_rename` 让名 → `ipc_spawn(name=原名, host=wt)` → `/exit` 三步成功
+  2. 新 session 真起 claude.exe（Get-Process claude 见进程）+ 真注册 IPC name（ipc_sessions 见）
+  3. ADR-004 v0.2 mark spawn path Accepted
+- **Owner**：boss trigger · successor 执行 · harness 验
+- **ETA**：boss 切账号当时
+
+### ADR-009 / API rate limit 治理 gap · 4 SOP
+
+- **现状**：2026-04-25T21:34 boss 派 P0 · 4 SOP 待立：API health probe / session stuck detection / wake 自动 IPC / portfolio level dashboard。当前 89% 周限额预警（02:02 boss 升 88%）证明此 gap 实存
+- **目标**：4 SOP 起草 + 落 ADR-009 / handover/ design 文档 · 阻塞自动 IPC wake successor 路径
+- **Owner**：jianmu-pm 主驱（successor 接班后）· harness 审
+- **ETA**：2026-04-28
 
 ---
 
@@ -147,6 +157,22 @@
 
 ## 已完成（按日期倒排，最近 14 天）
 
+### 2026-04-26
+
+- [x] **AC-IPC-SPAWN-WT-002 ipc_spawn host=wt fix v2 真起 acceptance** TDD Red→Green（origin/master 三 commit：RED `0967749` + GREEN `5b9a6b9` + sync `df9de3a`，7/7 tests PASS，npm test 全绿，push origin OK）。**真 root cause**：fix v1 (ba0ccef+2ad7d1a+fa526ff) 5/5 unit case PASS 但 harness 23:42 manual verify 暴露 partial — wt cmdline 构造对但 claude.exe 0 process · trace log 不存在 · ipc_sessions 5min 后空。第三层根因：mcp-server.mjs L439 `spawn('cmd', ['/c', startCommand], shell:false)` Node Windows 自动用 `\"` escape vs cmd.exe 期待 `""` doubled-quote · cmd 看 `\"` 当引号结束 inner path 截断。fix v2 方案 A：直接 `spawn('wt.exe', [args 数组])` 跳 outer cmd · Node 对 wt.exe 用 C runtime escape 兼容。新增 `buildWtSpawnArgs` + 保留 `buildWtStartCommand` v1 5 case 维持 PASS。**Q9 第 6 例 + dispatch lessons**：bash task notification exit 1 因 tee 写不存在目录 silent fail · 真值 fallback `git log origin/master --grep` + 独立 `node --test` 三层校验全过 · 立 `feedback_codex_log_dir_mkdir.md` + `feedback_mcp_server_no_hot_reload.md` 双 user memory（mcp-server 改 ship ≠ portfolio runtime 生效 · 必须切账号或重启 session 才 fresh load · 与 settings.json hot-reload 同源 · ADR-004 v0.1.1 §背景已点）
+
+### 2026-04-25 (晚 P0 spawn 链)
+
+- [x] **AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复 fix v1** TDD Red→Green（origin/master 三 commit：RED `ba0ccef` + GREEN `2ad7d1a` + test sync `fa526ff`，5/5 tests PASS）。修 buildWtStartCommand 去 `start ""` 包装 + wt `--` 分隔符 + cmd /k 替代 cmd /c。**遗漏**：5/5 unit 验 cmdline 字符串构造 ≠ 验真起 claude（ship=acceptance 教训复刻 → 触发 fix v2）
+- [x] **AC-PORTFOLIO-ACCEPTANCE-001-f after() cleanup 真自动** TDD Red→Green（origin/master：RED `849d042` + GREEN `3a35844`，6/6 tests PASS · TEST_DB_DIR 跑完不残留 SQLite 三文件）。e2e-tester 17:36 verify-ok advisory follow-up
+- [x] **portfolio-acceptance e2e self-test ship gate** 立（origin/master `c95cbc1` 5 cases first-write 5/5 PASS · `429cc61` OPERATIONS.md ship gate §加 + `a9bd6ab` cleanup 语义精确文案）。老板 16:55 critique "ship 标准 = acceptance 标准 partial check 自欺禁止" → harness portfolio 通告
+- [x] **ADR-003 hook 失效修复 v2 PowerShell native 4 hook**（xihe-tianshu-harness 仓 · `1c957d9`/`020204b` checkpoint-refresh.ps1 v1 + `5aa948a`/`fc9eb9a` v2 4 阈值 advisory + `341d79e` v2.1 advisory-hit.log telemetry · `dec86e7` install-hooks.mjs v2 PS pattern · 老板 15:27 critique "Windows 用 PowerShell not WSL bash" 后 1.5h 闭环）
+- [x] **HUB-UPTIME-7D-BASELINE-DESIGN.md** v0.1+v0.2（origin/master `8c3eeb8` + `9bdb375` §14 patch 4 sub-section）
+- [x] **HANDOVER-jianmu-pm-20260425-2200.md schema v2** 286 lines（`47c77ae` v1.0 + `ef9efe3` §5.1 case 6 + `af5ad41` linter auto-update）
+- [x] **dependabot.yml fix**（`a47be84` 删 Cargo ecosystem + npm directory /apps/desktop 不存在）
+- [x] **ADR-003-AUTO-ROLLOVER-GAP-EVAL.md**（`c9f46f5` v0.1 215 lines · 3 paths：advisory⭐⭐⭐⭐⭐ / true spawn⭐⭐ rejected / deployment⭐⭐⭐ one-time）
+- [x] **DESIGN-cold-start-scenario-B-drill.md**（`e411f62` v0.1 249 lines · ADR-008 Phase 3 drill design）
+
 ### 2026-04-25
 
 - [x] **hub-daemon.vbs 时间盒改造 + schtasks 触发器修复 TDD Red→Green**（origin/master 三 commit：RED `e694790` + GREEN `2f375ed` + chore `43d6f97` schtasks AtLogOn+Repetition 10min · `npm test` 558→587 pass · AC-DAEMON-001 4 case：vbs 无 Do/Loop / cscript 30s 内 exit 0 / data/hub.log 末行 [housekeeping] ISO-ts OK / 严守 feedback_no_kill_node）。Q9 第 5 例 stream disconnect 实证：bbrj22chz 13:48 起跑 13:50 stream 截断 task-notification exit 0 但 GREEN/push 未跑，b94q23pql 13:57 起 14:18:04 续完 push=ok 587 pass schtasks 顺手 fix
@@ -189,3 +215,4 @@
 | 2026-04-25T00:23:53+08:00 | jianmu-pm | P1 增"network-watchdog 第 8 probe · phys_ram_used_pct 百分比化"条目，ETA 2026-04-28。触发：harness 00:02 广播 commit% gate 作废改物理 RAM<80% used 单 gate；vitest-memory-discipline v1.0.3 fb7e196 附录 D line 470 要求 watchdog 补百分比指标；tech-worker msg_b14a96 IPC 确认 DIM4 1b85ee9 对齐百分比语义。hub-daemon vbs 时间盒 Codex 后台 btfq3nm92 跑中 |
 | 2026-04-25T05:34+08:00 | jianmu-pm | P1 phys_ram_used_pct 第 8 probe 闭环（提前 3 天）：origin/master RED e0d3baa + GREEN f46b7b6 + docs bd073ea 三 commit push · 558 pass · AC-WATCHDOG-008 grep 5 命中。Q9 鲁棒性压测战绩一晚派 4 次挂 3 次（bash quote 5h1m / capacity 34min / stream disconnect 3min）work state 零污染，bosnf4y8s 最终闭环。条目移至已完成段。hub-daemon vbs 时间盒因 btfq3nm92 死讯排期 2026-04-26 窗口 |
 | 2026-04-25T14:25+08:00 | jianmu-pm | 三 P1 同日闭环（自驱模式）：(1) hub-daemon.vbs 时间盒 TDD origin/master e694790/2f375ed/43d6f97 587 pass schtasks 10min repetition fix，提前 3 天；(2) ADR-003 hook 失效 install-hooks TDD（xihe-tianshu-harness 仓 dec1535/46722fd）+ 实际 install merge user settings.json，老板派单 ~1.5h 闭环；(3) v0.5.0 CHANGELOG+version bump local commit 158eaf1 prep · 待 SSH push tag。Q9 mode #3 stream disconnect 第 4 例（bbrj22chz）+ feedback_codex_dispatch.md "heredoc + codex exec 同 Bash call 禁止"段（xuanji 踩坑同步沉淀）。两条目同步：hub-daemon 时间盒删 P1 移已完成段；v0.5.0 release cut 现状改为"local commit 待 SSH push tag" |
+| 2026-04-26T02:14+08:00 | jianmu-pm | P0 全面重置（响应 boss 88% 周限额 + harness 02:10 todo 频次升级硬规矩）：(1) ADR-008 Phase 2 P0 标 done（harness 已 ship session-cold-start.md v1.3 切换 · 移已完成）；(2) 新 P0 = 切账号窗口待 trigger · spawn fix v2 keystone 已解锁（5b9a6b9+0967749+df9de3a · 7/7 PASS）· runtime cache 是 reload trigger 不是 prerequisite；(3) 新 P0 = ADR-009 / API rate limit 治理 gap 4 SOP（boss 21:34 派 · successor 接班后做）；(4) 已完成段加 2026-04-26 spawn fix v2 + 2026-04-25 晚 P0 spawn 链 11 条目（fix v1 / portfolio acceptance e2e ship gate / hook PS native v2 / hub-uptime baseline v0.2 / handover schema v2 / dependabot fix / ADR-003-gap-eval / cold-start-drill design）；(5) 双 user memory 沉淀 feedback_codex_log_dir_mkdir + feedback_mcp_server_no_hot_reload（mcp-server 改 ship ≠ portfolio runtime 生效 · 必须切账号 reload · 与 settings.json hot-reload 同源） |

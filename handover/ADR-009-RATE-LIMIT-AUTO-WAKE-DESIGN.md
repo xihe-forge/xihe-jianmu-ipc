@@ -1,178 +1,345 @@
-# ADR-009 Design · API rate limit / 周限额自动接续 4 SOP
+# ADR-009：API 周限额预警与自动唤醒方案设计
 
-> 注：xihe-jianmu-ipc 仓 `docs/adr/009-mcp-initialize-race-fix.md` 已占用 ADR-009 编号。本文档走 `handover/` design 路径 · 待 review 后转正式 ADR 时按 portfolio ADR 编号约定（xihe-tianshu-harness 仓 ADR-010 候选 / 或本仓 ADR-010）拍板。
-
-## 状态
-
-**v0.1 Proposed**（2026-04-26T14:18+08:00 · jianmu-pm 起草 · 等老板 review）
-
-## 背景
-
-### 触发事件
-
-2026-04-25T21:34+08:00 老板派 P0："API 限额管理 4 SOP 缺失 · 周限额到 88% 才被发现 · session 卡 idle 时无自动唤醒 · portfolio 无 dashboard 实时显示 token 用量"
-
-2026-04-26T02:02+08:00 老板再 critique：周限额 88% · 明天 token 用尽风险 · session 可能突然 stop · todo 落盘频次必须升级。
-
-### 现有规范的 4 个 gap
-
-| Gap | 现状 | 影响 |
-|---|---|---|
-| **API health probe** 只看 connection（`anthropic` probe 8 项之一）· 不看 rate limit usage | network-watchdog `bin/network-watchdog.mjs` 8 项 probe 仅 anthropic API 连接性 · 不读 X-RateLimit-* headers | 周限额 80% 阈值无人广播 · 老板手动发现 |
-| **Session stuck detection** 不区分 retry stuck / rate-limit stuck / network stuck | ADR-006 v0.1 Plan A/B/C 处理 ECONNRESET retry · 不处理 rate limit 429 | 429 卡住 session 走相同 idle 路径 · 但 wake 后还是 429 重 retry | 
-| **Wake 自动 IPC** 仅触发 anthropic-up 事件 · 不区分 rate-limit-reset 时间 | `lib/network-events.mjs` broadcastNetworkUp 在 anthropic API 恢复时触发 · rate limit reset 是按时间窗（1d / 7d）· 当前不读 reset header | rate-limit 卡住 session 被 ECONNRESET 路径误 wake · 立即再 429 |
-| **Portfolio level dashboard** 无 token 用量实时视图 | 飞书控制台 7 命令仅状态/派发/广播等 · 无 token 用量 / rate-limit 用量 / 周限额累计 | 老板靠手动 npx 看 / 切账号才发现 |
-
-= **rate limit 治理是 ADR-006 ECONNRESET 自动接续之外的独立 gap** · ADR-006 处理 retry exhausted / network down · ADR-009 处理 rate limit 429 + 周限额预警。
-
-### portfolio 实证
-
-- 2026-04-25T22:00 boss 周限额 ~70% 派 self-handover 准备
-- 2026-04-26T00:25 boss 周限额 80% 切账号准备 broadcast
-- 2026-04-26T02:02 boss 88% · 明天 token 用尽风险
-- = **24h 内 18pp 上涨** · 无自动预警 · 无早期补救
-
-## 决策（4 SOP 综合方案）
-
-### SOP-1 · API health probe 扩 rate limit 字段
-
-**机制**：
-- `bin/network-watchdog.mjs` anthropic probe 改 HEAD/GET 验连接性 + 读响应 headers：
-  - `X-RateLimit-Limit-Requests` · `X-RateLimit-Remaining-Requests`
-  - `X-RateLimit-Limit-Tokens` · `X-RateLimit-Remaining-Tokens`
-  - `X-RateLimit-Reset-Requests` · `X-RateLimit-Reset-Tokens`
-  - `Anthropic-RateLimit-*` 系列（如有）
-- 计算 `usedPct = 1 - (remaining / limit)` · 80% 广播 WARN topic critique · 90% 广播 CRIT topic critique（5min dedup per-level · 与 phys_ram_used_pct 同治理路径）
-- 加第 9 probe `anthropic_rate_limit_pct` · CLAUDE.md "Watchdog" 段同步
-
-**Token 成本**：watchdog daemon 跑不消耗 portfolio token · 0 token / 次
-
-### SOP-2 · Session stuck detection 三态分类
-
-**机制**：
-- Hub `lib/session-stuck-detector.mjs` 新增（或扩 `lib/network-events.mjs`）
-- 监三态：
-  - **retry-exhausted**（ADR-006 已处理）：retry counter 满 10 + ECONNRESET / network down
-  - **rate-limited**：HTTP 429 / X-RateLimit-Remaining-* = 0
-  - **network-down**：watchdog `network-down` topic 广播
-- 不同态走不同 wake 路径（防止 rate-limited session 立即重 retry 浪费 token）
-
-**实施位置**：lib 层抽象 stuck reason · stderr hook (ADR-006 Plan B `claude-stderr-watch.ps1`) 扩 grep `429 Too Many Requests` / `rate limit` 关键字 · POST /suspend 时带 `reason: 'rate-limited'`
-
-### SOP-3 · Rate-limit aware wake IPC
-
-**机制**：
-- `broadcastNetworkUp` 现 wake all stale sessions（ADR-006 Plan A）
-- 加 `wakeRateLimited({ resetAt })` 路径：当 `Anthropic-RateLimit-Reset-*` header 显示 reset 时刻已过 · 才 wake `reason: 'rate-limited'` 的 suspended sessions
-- IPC 内容：
-  ```
-  【rate-limit auto-wake from jianmu-pm】 X-RateLimit reset 已恢复 · 自动续上 rate-limited 任务 · 如仍 429 立即 IPC 我重 suspend 不主动 retry
-  ```
-- 防止 reset 前误 wake 立即再 429 · 保护 token 不浪费
-
-**Token 成本**：< 80 token / 次 wake IPC + < 200 token session 处理
-
-### SOP-4 · Portfolio level dashboard
-
-**机制**：
-- 飞书控制台命令扩第 8 指令 `用量` / `usage`
-- 飞书 bridge 调 Hub `GET /usage` 新端点：
-  ```json
-  {
-    "anthropic_weekly_used_pct": 0.88,
-    "anthropic_weekly_reset_at": "2026-04-30T00:00:00Z",
-    "rate_limit_requests_remaining": 12000,
-    "rate_limit_tokens_remaining": 4500000,
-    "rate_limit_reset_at": "2026-04-26T15:00:00Z",
-    "suspended_sessions": [...],
-    "stuck_sessions_by_reason": { "rate-limited": 2, "retry-exhausted": 1, "network-down": 0 }
-  }
-  ```
-- Hub `/usage` endpoint 从 watchdog memory + db.suspended_sessions 聚合
-- 飞书卡片渲染：3 段进度条（周限额 / 请求 / token）+ 卡住 session 列表
-
-**Token 成本**：飞书命令拦截不进 IPC · 卡片渲染 server-side · 0 portfolio token
-
-### 30 天观察期
-
-- 30 天内 portfolio 周限额 80% 阈值预警准时率（早期 vs 老板手动发现） ≥ 90% = 高速达成
-- 30 天后 audit · < 90% 升 v0.2
-
-## 与现有 ADR 的关系
-
-| ADR | 关系 | scope |
-|---|---|---|
-| ADR-006 (ECONNRESET auto-wake) | **互补** | ADR-006 处理 retry exhausted / network down / 全局连接性 |
-| ADR-003 (advisory hook) | **复用 hook 装载路径** | SOP-2 stderr hook grep 扩 429 关键字 · 与 checkpoint-refresh.ps1 / claude-stderr-watch.ps1 共享 portfolio 重启窗口装载 |
-| ADR-005 (commit-msg-validate.ps1) | 共享 PS hook 装载路径 | install-hooks.mjs v2 PS pattern 复用 |
-| ADR-004 (portfolio auto-rollover) | **互补** | rate-limit reset 后续命可解 · 不需立即切账号 · ADR-009 是切账号前置缓冲 |
-
-## 后果
-
-### 正面
-- **周限额 80% 自动预警**（不靠老板手动发现）· 解决 02:02 critique 根因
-- **rate-limited vs retry-exhausted 分治** · 防止误 wake 浪费 token
-- **portfolio 实时 token 用量视图** · 老板飞书一键看
-- **共享现有基础设施**（watchdog probe + Hub /suspend + PS hook + 飞书 bridge）· 实施成本低
-
-### 负面
-- watchdog probe 加读 anthropic API headers · 网络抖时 probe 失败概率上升 · 需 graceful fallback（headers 缺失时仅看连接性 · 现有逻辑保留）
-- `/usage` endpoint 暴露 rate-limit 数据 · 需 loopback 限制（与 `/internal/network-event` 同源）
-- 飞书"用量"命令 30 天观察期内可能误读（X-RateLimit headers 文档不全 · 需手动校对 anthropic console 真值）
-
-### 中性
-- 与 ADR-002/003/004/005/006 治理升级链共享 30 天 advisory event log
-- 4 SOP 实施可拆 4 个独立 PR 增量 ship · 不需大单整合
-
-## 替代方案
-
-### 方案 D · 周限额到了切账号（已否决 · 当前路径）
-当前 portfolio 流程：周限额 80% → 老板手动 critique → 切账号准备 → 关 wt 窗口
-- ❌ 老板每次手动发现 + critique
-- ❌ session 卡 88% 不是 80% 才动手 · 缓冲窗口被动消耗
-- ❌ 切账号是末端方案 · 不解决"为何到 80% 才发现"
-- 评分 ⭐ · 是当前现实路径但不是设计路径
-
-### 方案 E · 限流式 token 预算分配（已否决）
-给每 session 分配 token 预算配额 · 用满即冻结
-- ❌ 实施复杂（需要 portfolio level token tracking · session 间转账）
-- ❌ 与"AI 自驱拓展"理念矛盾 · session 应按需 token 不应配额限制
-- 评分 ⭐⭐ · 不采纳（v2 候选若 4 SOP 仍不够）
-
-### 方案 F · OpenAI/其他 LLM 双链路（候选 v0.2 升级）
-周限额触发后切 OpenAI/其他后端
-- ⭐⭐⭐ 不消耗 anthropic 周限额
-- ⭐⭐⭐ 但 model capability gap（其他 LLM ≠ Claude Opus）· 可能影响 session 表现
-- 评分 ⭐⭐⭐ · v0.2 候选
-
-## 参考
-
-- `xihe-tianshu-harness/handover/adr/ADR-006-PORTFOLIO-ECONNRESET-AUTO-RECOVERY.md` v0.1（同源 wake 机制 · ADR-009 互补）
-- `xihe-tianshu-harness/domains/software/knowledge/network-resilience.md` v1.0（§3 假设破产 / §4 全局容错语境）
-- `xihe-jianmu-ipc/CLAUDE.md` "Watchdog" 段（8 项 probe · ADR-009 SOP-1 加第 9 项 rate_limit_pct）
-- `xihe-jianmu-ipc/CLAUDE.md` "HTTP API" 段（/suspend + /wake-suspended · ADR-009 SOP-2/3 复用）
-- `xihe-jianmu-ipc/CLAUDE.md` "飞书AI控制台" 段（7 命令 · ADR-009 SOP-4 加第 8 命令）
-- Anthropic API Rate Limit 文档（待 codex 实施时核 X-RateLimit-* / Anthropic-RateLimit-* headers 真名）
-
-## 历史 anti-pattern 记录
-
-1. **rate limit 与 ECONNRESET 混治**：ADR-006 Plan A 全部 stale session wake · 不区分 retry-exhausted / rate-limited · rate-limited session wake 后立即再 429 浪费 token。ADR-009 SOP-2 三态分类是 ADR-006 之外的补集
-2. **API probe 仅看连接性**：watchdog 8 项 probe 全是连接性（cliProxy/hub/anthropic/dns/committed_pct/available_ram_mb/phys_ram_used_pct/harness）· 不读 rate limit headers · 周限额预警空白。SOP-1 第 9 probe 补
-3. **portfolio 无 token 用量视图**：老板靠 npx 手查 / 切账号才发现 · 没有飞书一键查询路径。SOP-4 飞书"用量"命令补
-
-## NextSteps
-
-- [x] 立 ADR-009 v0.1 design 落档（本文）
-- [ ] 老板 review 拍板综合策略（4 SOP / 拆分 / 其他）
-- [ ] 切账号后实施 SOP-1（watchdog 第 9 probe）· 可与 ADR-006 Plan C 共派 codex（同改 network-watchdog.mjs）
-- [ ] 切账号后实施 SOP-2（stderr hook 扩 grep 429 + Hub stuck-reason 字段）· 可与 ADR-006 Plan B 共派
-- [ ] SOP-3 wakeRateLimited 路径（lib/network-events.mjs 扩 · 与 Plan A 同源）
-- [ ] SOP-4 /usage endpoint + 飞书"用量"命令（独立 PR · ETA 2026-04-30）
-- [ ] 30 天观察期 advisory event log（与 ADR-006 / ADR-004 / ADR-005 共享 jianmu-ipc Hub advisory_hit 路径）
-- [ ] 30 天 audit · 周限额 80% 预警准时率 ≥ 90% 转 Accepted
+> **版本**：v0.2（按《人类可读决策文档规范》v1.0 重写）
+> **状态**：设计待拍板（v0.1 已落档于 SHA `cb38bc3`，本版按新规范九段式重写，等老板拍板进入实施）
+> **重写日期**：2026-04-26T15:10+08:00
+> **历史**：v0.1（建木项目经理 14:18 起草，中英文混杂、缺消耗与角色分工，老板 14:58 反馈不可读）
+> **正式编号**：xihe-jianmu-ipc 仓 `docs/adr/009-mcp-initialize-race-fix.md` 已占用 ADR-009 编号；本文档作为 design 路径落档于 `handover/`，老板拍板后转 ADR-007（xihe-tianshu-harness 仓 portfolio 级编号）正式编号。
 
 ---
 
-立项时间：2026-04-26T14:18+08:00 · jianmu-pm 起草 v0.1（响应 boss 21:34 P0 派单 + 02:02 88% 周限额 critique）
-作者：jianmu-pm
-Reviewers：harness · 老板
+## 一、问题陈述
+
+### 1.1 当前遇到的具体问题
+
+老板的 Anthropic 账号有周限额（按 7 天滚动窗口算的 token 总量配额）。但 portfolio 没有任何主动预警机制：
+
+- 看门狗只看连接性，不读响应头里的 `X-RateLimit-*` 字段
+- 周限额到 80% 阈值无人广播，老板靠手动看 npx 命令或切账号时才发现
+- 单 session 触发 HTTP 429 速率限制时，被当成普通断连处理，唤醒后立刻再次 429，浪费 token
+- portfolio 没有 token 用量的实时面板，老板看不到当前周已用百分比
+
+### 1.2 触发事件
+
+事件一：2026-04-25T21:34+08:00 老板派 P0 任务：
+
+> "API 限额管理 4 SOP 缺失。周限额到 88% 才被发现。session 卡待机时无自动唤醒。portfolio 无面板实时显示 token 用量。"
+
+事件二：2026-04-26T02:02+08:00 老板再次警告：
+
+> "周限额 88%。明天 token 用尽风险。session 可能突然停止。todo 落档频次必须升级。"
+
+### 1.3 不解决会有什么后果
+
+| 影响维度 | 量化描述 |
+|---|---|
+| 老板手动介入次数 | 每周至少 2–3 次（80% 警戒线 + 90% 红线 + 用尽前应急切账号）|
+| 切账号缓冲窗口 | 当前 88% 才发现，切账号准备时间被压缩到 2 小时内 |
+| 单次 HTTP 429 浪费 | 误唤醒一次约浪费 200–500 token（429 立刻再次 429 占用主对话）|
+| portfolio 整体停摆风险 | token 用尽前 24 小时无预警，可能突发集体停工 |
+
+### 1.4 现有规范的覆盖盲区
+
+| 现有规范 | 覆盖的范围 | 漏掉的范围 |
+|---|---|---|
+| 看门狗 8 项探针 | 连接性（网络、Hub、Anthropic 端点、DNS、内存、CPU 等）| 速率限制使用率、周限额累计 |
+| ADR-006 自动唤醒 | 网络断连后唤醒 | HTTP 429 速率限制场景（误唤醒会立刻再 429）|
+| 飞书控制台 7 命令 | 状态、帮助、派发、广播、重启、历史、日报 | 用量查询 |
+| 网络容错规范 §3 / §4 | 连接性容错 | 速率限制容错 |
+
+= **速率限制治理是 ADR-006 之外的独立空隙**。ADR-006 处理网络断连（重试耗尽、连接关闭），本 ADR 处理速率限制（429、周限额预警）。
+
+### 1.5 portfolio 实证数据
+
+- 2026-04-25T22:00 老板看到周限额约 70%，启动自我交接准备
+- 2026-04-26T00:25 老板看到 80%，全 portfolio 广播切账号准备
+- 2026-04-26T02:02 老板看到 88%，警告明天可能用尽
+- = **24 小时内涨 18 个百分点**，没有任何自动预警，全靠老板手动发现
+
+---
+
+## 二、目标
+
+| 目标项 | 量化标准 |
+|---|---|
+| 周限额预警准时率 | 30 天观察期内，80% 阈值由系统主动广播的占比 ≥ 90%（vs 老板手动发现）|
+| HTTP 429 误唤醒率 | 30 天内，rate-limited session 在 reset 时间到达前被误唤醒的次数 ≤ 1 次 |
+| 老板手动查询次数 | 30 天内，老板主动跑 npx 查 token 用量的次数 ≤ 5 次（飞书面板替代）|
+| 切账号缓冲窗口 | 80% 触发预警到周限额用尽，至少留 24 小时缓冲 |
+
+判断已达成：30 天后跑审计脚本统计预警命中次数 / 误唤醒次数 / 老板查询次数。
+
+---
+
+## 三、工作路径
+
+四个 SOP（标准操作流程）模块互补，覆盖从探测到预警到唤醒到查看的完整链路：
+
+```
+[第 1 模块] 看门狗加第 9 项探针：读 X-RateLimit-* 响应头
+    ↓
+    使用率 ≥ 80% → 广播 WARN 主题
+    使用率 ≥ 90% → 广播 CRIT 主题
+    ↓
+[第 2 模块] Hub 挂起态分类：retry-exhausted / rate-limited / network-down
+    ↓
+    rate-limited 类型不走 ADR-006 唤醒路径
+    ↓
+[第 3 模块] 速率限制感知唤醒：按 X-RateLimit-Reset 时间触发
+    ↓
+    reset 时间已过才唤醒 rate-limited session
+    ↓
+[第 4 模块] 飞书面板：用量查询命令
+    ↓
+    老板飞书发"用量"看到 3 段进度条 + 卡住 session 列表
+```
+
+四个模块可独立实施、独立验收，互不阻塞。
+
+---
+
+## 四、步骤拆分
+
+| 步骤 | 内容 | 负责人 | 参与人 | 产出物 | 预计耗时 | 预计 token | 前置依赖 |
+|---|---|---|---|---|---|---|---|
+| 1 | 起草 ADR-009 v0.1 设计 | 建木项目经理 | harness 评审 | SHA `cb38bc3` | 30 分钟 | 10 000 | 无 |
+| 2 | 老板拍板综合策略（4 SOP / 拆分 / 其他）| 老板 | harness、建木项目经理 | 决策记录 | 5–30 分钟 | 1 000 | 步骤 1 + v0.2 重写 |
+| 3 | 第 1 模块实施：看门狗加第 9 项探针 | 建木项目经理派 Codex | 建木项目经理评审 | 红绿双 SHA + CLAUDE.md 同步 | 30–45 分钟 | 6 000 | 步骤 2 + 切账号后 |
+| 4 | 第 2 模块实施：挂起态分类 | 建木项目经理派 Codex | 建木项目经理评审 | 红绿双 SHA | 45–60 分钟 | 8 000 | 步骤 2 + 切账号后 |
+| 5 | 第 3 模块实施：速率限制感知唤醒 | 建木项目经理派 Codex | 建木项目经理评审 | 红绿双 SHA | 30–45 分钟 | 6 000 | 步骤 4 |
+| 6 | 第 4 模块实施：飞书"用量"命令 + Hub 新端点 `/usage` | 建木项目经理派 Codex | 建木项目经理评审 | 红绿双 SHA + 飞书卡片样式 | 60–90 分钟 | 10 000 | 步骤 3 |
+| 7 | portfolio 重启加载新代码 | 老板手动 | 全 portfolio session | 各 session 重启完成 | 5 分钟 | 0 | 步骤 3/4/5/6 |
+| 8 | 30 天观察期审计 | harness 协调员 | 建木项目经理提供日志 | 审计报告 | 1 小时 | 5 000 | 步骤 7 + 30 天 |
+| 9 | 拍板转 Accepted 或升级 v0.3 | 老板 | 全 portfolio | 决策记录 | 30 分钟 | 2 000 | 步骤 8 |
+
+---
+
+## 五、模块拆分
+
+### 5.1 第 1 模块·看门狗速率限制探针
+
+| 字段 | 内容 |
+|---|---|
+| 模块名 | 看门狗第 9 项探针（rate_limit_pct）|
+| 边界 | 负责：读 Anthropic API 响应头里的 `X-RateLimit-Limit-*` / `X-RateLimit-Remaining-*` 字段，计算使用率，按 80% / 90% 阈值广播主题。不负责：判断是否唤醒 session |
+| 负责人 | 建木项目经理 |
+| 对外接口 | 看门狗周期 60 秒；广播 `critique` 主题（WARN 80% / CRIT 90% / 5 分钟去重）；CLAUDE.md "Watchdog" 段同步加第 9 项 |
+| 实施位置 | `bin/network-watchdog.mjs` |
+| 代码量 | 约 60 行 |
+| 兼容性 | 字段缺失时降级为现有连接性探针，不破坏现有逻辑 |
+
+### 5.2 第 2 模块·挂起态分类
+
+| 字段 | 内容 |
+|---|---|
+| 模块名 | session 挂起态分类（retry-exhausted / rate-limited / network-down）|
+| 边界 | 负责：把进入挂起态的 session 按原因分三类，写入 `db.suspendSession({reason: <类型>})`。不负责：判断 session 何时该挂起 |
+| 负责人 | 建木项目经理 |
+| 对外接口 | `POST /suspend` 加 `reason` 字段（已支持，新增枚举值 `rate-limited`）；HTTP 429 / 响应头 `Remaining=0` 触发 |
+| 实施位置 | `lib/network-events.mjs` 扩判定逻辑（与 ADR-006 第 5.2 模块同源）|
+| 代码量 | 约 80 行 |
+| 依赖 | 第 1 模块（速率限制探针提供 reset 时间数据）|
+
+### 5.3 第 3 模块·速率限制感知唤醒
+
+| 字段 | 内容 |
+|---|---|
+| 模块名 | wakeRateLimited 路径 |
+| 边界 | 负责：当 `Anthropic-RateLimit-Reset-*` 头显示 reset 时间已过时，才唤醒 `reason: 'rate-limited'` 类挂起 session。不负责：唤醒其他类型挂起 session（走 ADR-006 路径）|
+| 负责人 | 建木项目经理 |
+| 对外接口 | `POST /wake-suspended` 加 `reason` 过滤参数（已支持广播，新增分类唤醒）；唤醒 IPC 内容固定模板 |
+| 实施位置 | `lib/network-events.mjs` 加 `wakeRateLimited({resetAt})` 函数 |
+| 代码量 | 约 100 行 |
+| 依赖 | 第 1 模块 + 第 2 模块 |
+
+### 5.4 第 4 模块·飞书用量面板
+
+| 字段 | 内容 |
+|---|---|
+| 模块名 | 飞书"用量"命令 + Hub `/usage` 端点 |
+| 边界 | 负责：飞书发"用量"返回卡片含 3 段进度条（周限额 / 请求 / token）+ 卡住 session 列表。不负责：触发任何唤醒动作（仅查询）|
+| 负责人 | 建木项目经理 |
+| 对外接口 | 飞书卡片模板新增「用量看板」；`GET /usage` 端点从看门狗内存 + db.suspended_sessions 聚合 |
+| 实施位置 | `lib/feishu-bridge.mjs`（命令解析）+ `lib/console-cards.mjs`（卡片模板）+ `hub.mjs`（新端点）|
+| 代码量 | 约 200 行 |
+| 依赖 | 第 1 模块（数据源）+ 第 2 模块（挂起分类数据）|
+
+### 5.5 模块协作关系
+
+```
+第 1 模块（探针）─→ 数据 ─→ 第 4 模块（飞书面板）
+       ↓                            ↑
+     广播阈值                      数据源
+       ↓
+全 portfolio session 收到 WARN/CRIT 主题广播
+       ↓
+第 2 模块（分类）─→ 第 3 模块（感知唤醒）
+       ↑                  ↑
+   响应头 429            reset 时间
+```
+
+---
+
+## 六、消耗估算
+
+### 6.1 总消耗
+
+| 维度 | 总量 |
+|---|---|
+| token（含起草 + 4 模块 Codex 派单 + 审计）| 约 48 000 token |
+| 时间（设计到实施完成）| 约 4–6 小时（4 模块串行）或 2–3 小时（部分并行）|
+| 时间（30 天观察期）| 30 天 |
+| 老板时间 | 拍板 5–30 分钟 + 30 天后审阅 30 分钟 |
+
+### 6.2 分项明细
+
+| 步骤 | token | 时间 |
+|---|---|---|
+| 步骤 1：起草 ADR v0.1（已完成）| 10 000 | 30 分钟 |
+| 步骤 2：拍板 | 1 000 | 5–30 分钟 |
+| 步骤 3：第 1 模块 Codex 派单 | 6 000 | 30–45 分钟 |
+| 步骤 4：第 2 模块 Codex 派单 | 8 000 | 45–60 分钟 |
+| 步骤 5：第 3 模块 Codex 派单 | 6 000 | 30–45 分钟 |
+| 步骤 6：第 4 模块 Codex 派单 | 10 000 | 60–90 分钟 |
+| 步骤 7：portfolio 重启 | 0 | 5 分钟 |
+| 步骤 8：30 天审计 | 5 000 | 1 小时 |
+| 步骤 9：拍板归档 | 2 000 | 30 分钟 |
+
+### 6.3 运行期消耗（每次预警 / 唤醒）
+
+| 项 | token | 时间 |
+|---|---|---|
+| 看门狗后台探针 | 0（不在主对话）| 持续 |
+| 80% / 90% 主题广播一次 | < 100 token | < 1 秒 |
+| 速率限制感知唤醒 IPC | < 80 token | < 1 秒 |
+| session 处理唤醒 IPC 回复 | 100–200 token | < 30 秒 |
+| 飞书"用量"查询一次 | 0 portfolio token（飞书命令不进 IPC）| < 2 秒 |
+
+### 6.4 节省的消耗（vs 不实施）
+
+| 节省项 | 估算节省 |
+|---|---|
+| 减少误唤醒（HTTP 429 立刻再 429）| 约 200–500 token / 次，按每周 2 次估算 = 800–2000 token / 周 |
+| 减少老板手动查询切账号准备 | 节省老板 1–2 小时 / 周 |
+| 减少 portfolio 集体停工风险 | 不可量化，但属于关键收益 |
+
+---
+
+## 七、多方案对比
+
+| 方案 | 原理 | 优势 | 劣势 | token 消耗 | 时间消耗 | 风险 | 推荐度 |
+|---|---|---|---|---|---|---|---|
+| 本方案（4 SOP 综合）| 看门狗探针 + 挂起分类 + 感知唤醒 + 飞书面板 | 完整覆盖、共享现有基础设施、可拆分增量交付 | 实施工作量大（4 模块约 440 行）| 单次预警 ≤ 100 / 单次唤醒 ≤ 280 | 实施 4–6 小时 | Anthropic 响应头字段名变化（保留兼容降级）| ⭐⭐⭐⭐⭐ |
+| 方案 D：周限额到了切账号（当前路径）| 老板手动发现并切账号 | 实施成本 0 | 老板每次手动、缓冲窗口被压缩、是末端方案 | 0 | 0 | 累积 token 用尽风险 | ⭐ |
+| 方案 E：限流式 token 预算分配 | 给每 session 分配配额 | 防单 session 失控 | 实施复杂、与"AI 自驱"理念冲突 | 不可估算 | 数天 | session 间转账复杂 | ⭐⭐ |
+| 方案 F：Anthropic + OpenAI 双链路 | 周限额触发后切到 OpenAI 等其他后端 | 不消耗 Anthropic 周限额 | 模型能力差异（其他模型 ≠ Claude Opus）、可能影响 session 表现 | 0 | 数天 | session 表现退化 | ⭐⭐⭐（v0.3 候选）|
+
+**推荐方案**：本方案（4 SOP 综合）。理由：
+
+1. 完整覆盖从探测到预警到唤醒到查看的闭环
+2. 4 模块可独立交付，不需大单整合，降低实施风险
+3. 共享现有 Hub + 看门狗 + 飞书桥接基础设施，实施成本可控
+4. 与 ADR-006 互补不冲突
+
+方案 F 留作 v0.3 升级候选，30 天观察期内若周限额仍频繁触发可升级。
+
+---
+
+## 八、验收方案
+
+### 8.1 验收标准
+
+- [ ] 第 1 模块代码已在 origin/master，含红绿双 commit
+- [ ] 第 2 模块代码已在 origin/master，含红绿双 commit
+- [ ] 第 3 模块代码已在 origin/master，含红绿双 commit
+- [ ] 第 4 模块代码已在 origin/master，含红绿双 commit
+- [ ] 4 模块单元测试 100% 通过
+- [ ] portfolio 重启后看门狗 `GET /health` 返回 `rate_limit_pct` 字段
+- [ ] 飞书发"用量"返回卡片含 3 段进度条
+- [ ] 30 天观察期内 80% 预警准时率 ≥ 90%
+- [ ] 30 天内误唤醒次数 ≤ 1 次
+- [ ] 30 天内老板手动查询次数 ≤ 5 次
+
+### 8.2 验收步骤
+
+| 阶段 | 谁 | 何时 | 在哪里 | 跑什么命令 |
+|---|---|---|---|---|
+| 代码验收 | 建木项目经理 | 模块落档时 | xihe-jianmu-ipc 仓 | `git log origin/master --grep "AC-ADR-009-M<n>"` |
+| 单元测试 | 建木项目经理 | 模块落档时 | xihe-jianmu-ipc 仓 | `node --test tests/rate-limit-*.test.mjs` 等 4 组测试 |
+| 端点验收 | harness 协调员 | portfolio 重启后 | 本机 | `curl http://127.0.0.1:3179/health` 看 `rate_limit_pct`；`curl http://127.0.0.1:3179/usage` 看聚合数据 |
+| 飞书面板验收 | 老板 | portfolio 重启后 | 飞书机器人 | 发"用量"，看卡片 |
+| 30 天审计 | harness 协调员 | 2026-05-26 | 建木项目经理日志 | 审计脚本统计 `rate_limit_warn_hit` / `rate_limit_crit_hit` / `rate_limited_wake_hit` / `rate_limited_wake_miss` |
+
+### 8.3 验收路径
+
+- 代码与测试结果：xihe-jianmu-ipc 仓 git log 与本地 `node --test` 输出
+- 运行时端点：`http://127.0.0.1:3179/health` 与 `http://127.0.0.1:3179/usage`
+- 飞书面板：老板飞书机器人对话窗口
+- 30 天审计报告：建木项目经理生成 PDF 给老板
+
+### 8.4 不通过时的回滚方案
+
+- 任一模块单元测试失败：通过 git revert 回滚到模块落档前 SHA
+- 30 天预警准时率 < 90%：调整阈值（80% → 75%）或升级方案 F
+- 飞书"用量"卡片误读：手动校对 Anthropic 控制台真值 + 修响应头解析逻辑
+
+---
+
+## 九、角色分工
+
+| 角色 | 人 / session | 职责 |
+|---|---|---|
+| 立项负责人 | 建木项目经理 | 起草 v0.1 设计 |
+| 文档重写负责人 | harness 协调员 | 按《人类可读决策文档规范》v1.0 重写 v0.2 |
+| 实施负责人 | 建木项目经理 | own 4 模块实施，派 Codex、评审、落档 |
+| Codex 派单实施 | Codex（建木项目经理派）| 写代码、跑测试、推送 origin |
+| 评审人 | 建木项目经理 | 评审 4 模块代码与测试 |
+| 评审人 | tester-leader | 评审是否需要补单元测试覆盖率 |
+| 拍板人 | 老板 | 拍板综合策略、30 天后转 Accepted |
+
+---
+
+## 十、待办事项
+
+- [x] v0.1 立项落档（2026-04-26T14:18 SHA `cb38bc3`）
+- [x] v0.2 按新规范重写（2026-04-26T15:10）
+- [ ] 老板拍板综合策略
+- [ ] 第 1 模块实施（切账号后）
+- [ ] 第 2 模块实施
+- [ ] 第 3 模块实施
+- [ ] 第 4 模块实施
+- [ ] portfolio 重启加载新代码
+- [ ] 30 天观察期审计（2026-05-26 完成）
+- [ ] 转 ADR-007 portfolio 级正式编号
+
+---
+
+## 十一、与现有 ADR 的关系
+
+| ADR | 关系 | 说明 |
+|---|---|---|
+| ADR-006（网络断连自动接续）| 互补 | ADR-006 处理重试耗尽 / 网络断开；本 ADR 处理 HTTP 429 / 周限额。两者都用 Hub 挂起态机制 |
+| ADR-003（建议性钩子）| 共享钩子加载路径 | 第 2 模块的 stderr 关键字过滤可与 ADR-003 的 checkpoint-refresh.ps1 共享 portfolio 重启窗口加载 |
+| ADR-005（commit-msg-validate.ps1）| 共享 PowerShell 钩子加载路径 | install-hooks.mjs v2 模板复用 |
+| ADR-004（portfolio 自动交接）| 互补 | 速率限制 reset 后续命可解，不需立即切账号；本 ADR 是切账号前置缓冲 |
+
+---
+
+## 十二、参考
+
+- 仓库内规范：`xihe-tianshu-harness/domains/software/knowledge/network-resilience.md` v1.0
+- 仓库内规范：`xihe-tianshu-harness/domains/software/knowledge/人类可读决策文档规范.md` v1.0（本 ADR 重写依据）
+- 仓库内 ADR：`xihe-tianshu-harness/handover/adr/ADR-006-PORTFOLIO-ECONNRESET-AUTO-RECOVERY.md` v0.2
+- 仓库 CLAUDE.md："Watchdog" 段（8 项探针 + 本 ADR 加第 9 项 `rate_limit_pct`）
+- 仓库 CLAUDE.md："HTTP API" 段（`/suspend` + `/wake-suspended` 端点 + 本 ADR 第 4 模块加 `/usage` 端点）
+- 仓库 CLAUDE.md："飞书 AI 控制台" 段（7 命令 + 本 ADR 第 4 模块加第 8 命令"用量"）
+- Anthropic API 速率限制文档（实施时核对 `X-RateLimit-*` / `Anthropic-RateLimit-*` 字段真名）
+
+---
+
+## 十三、版本
+
+| 版本 | 日期 | 变更 |
+|---|---|---|
+| v0.1 | 2026-04-26T14:18+08:00 | 建木项目经理起草，4 SOP 设计 |
+| v0.2 | 2026-04-26T15:10+08:00 | 按《人类可读决策文档规范》v1.0 重写，九段式结构、消耗估算、角色分工补全 |

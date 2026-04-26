@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -231,17 +231,14 @@ test('createNetworkWatchdog: handover tick 60s 内重复调用返回 tick-interv
   assert.equal(capture.requests.filter((request) => request.url.endsWith('/sessions')).length, 2);
 });
 
-test('createNetworkWatchdog: handover tick reads transcript independent of Hub contextUsagePct', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'watchdog-transcript-'));
+test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-runs spawn', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-hub-pct-'));
   try {
-    const cwd = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc';
-    const transcriptPath = join(dir, 'session.jsonl');
-    writeFileSync(transcriptPath, 'x'.repeat(408_000));
     const logs = [];
     const spawned = [];
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'jianmu-pm', pid: 1777, cwd },
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 51 },
       ],
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
         messages: [{ from: 'jianmu-pm', topic: 'status', content: 'drained ipc' }],
@@ -258,7 +255,6 @@ test('createNetworkWatchdog: handover tick reads transcript independent of Hub c
       handoverEnabled: true,
       handoverTickIntervalMs: 0,
       handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
-      findLatestTranscriptByCwdImpl: (value) => (value === cwd ? transcriptPath : null),
       probes: {
         cliProxy: async () => ok(),
         hub: async () => ok(),
@@ -273,11 +269,52 @@ test('createNetworkWatchdog: handover tick reads transcript independent of Hub c
     assert.equal(result.detected.length, 1);
     assert.equal(result.detected[0].name, 'jianmu-pm');
     assert.equal(result.detected[0].pct, 51);
-    assert.equal(spawned.length, 1);
-    assert.match(spawned[0].task, /Self-handover doc:/);
-    assert.match(spawned[0].task, /Recent IPC drain summary:/);
-    assert.ok(logs.some((line) => line.includes('estimateContextPct transcript session=jianmu-pm pid=1777')));
-    assert.ok(logs.some((line) => line.includes(`cwd=${cwd}`) && line.includes(`transcript=${transcriptPath}`) && line.includes('pct=51')));
+    assert.equal(result.detected[0].dryRun, true);
+    assert.equal(spawned.length, 0);
+    assert.ok(logs.some((line) => line.includes('estimateContextPct hub session=jianmu-pm pid=1777 pct=51')));
+    assert.ok(logs.some((line) => line.includes('pre-spawn-review dry-run')));
+    assert.ok(capture.requests.some((request) => request.url.endsWith('/send') && request.body?.topic === 'pre-spawn-review'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('createNetworkWatchdog: handover tick sorts by contextUsagePct and limits one trigger per tick', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-serial-handoff-'));
+  try {
+    const capture = createFetchCapture({
+      [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+        { name: 'low-pct', pid: 1001, contextUsagePct: 70 },
+        { name: 'high-pct', pid: 1002, contextUsagePct: 95 },
+        { name: 'same-cwd', pid: 1003, contextUsagePct: 95 },
+      ],
+      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=high-pct&since=3600000&limit=50`]: {
+        messages: [],
+      },
+    });
+    const watchdog = createIsolatedWatchdog({
+      fetchImpl: capture.fetchImpl,
+      now: () => 1_000_000,
+      ipcSpawn: async () => ({ spawned: true }),
+      handoverEnabled: true,
+      handoverTickIntervalMs: 0,
+      handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
+      probes: {
+        cliProxy: async () => ok(),
+        hub: async () => ok(),
+        anthropic: async () => ok(),
+        dns: async () => ok(),
+      },
+    });
+
+    await watchdog.runTick();
+    const result = watchdog.getLastHandoverTickResult();
+
+    assert.equal(result.detected.length, 1);
+    assert.equal(result.detected[0].name, 'high-pct');
+    assert.equal(result.detected[0].pct, 95);
+    assert.equal(result.skipped.filter((item) => item.skipped === 'global-rate-limit').length, 2);
+    assert.equal(capture.requests.filter((request) => request.url.endsWith('/send') && request.body?.topic === 'pre-spawn-review').length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

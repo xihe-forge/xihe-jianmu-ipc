@@ -519,7 +519,7 @@ test('ipc_spawn: host=external dryRun 返回修正后的 spawn-fallback IPC cont
 });
 
 test(
-  'ipc_spawn: host=wt dryRun 返回 cmd /c start 包装后的 command_hint',
+  'ipc_spawn: host=wt dryRun returns wt command_hint with inner cwd switch',
   { skip: process.platform !== 'win32' },
   async () => {
     const sandbox = mkdtempSync(join(os.tmpdir(), 'ipc-spawn-wt-'));
@@ -542,21 +542,17 @@ test(
       });
       const payload = getJson(result);
       const normalizedSandbox = sandbox.replace(/\\/g, '/');
+      const escapedWindowsCwd = escapeRegex(sandbox.replace(/\//g, '\\'));
 
       assert.equal(payload.host, 'wt');
       assert.equal(payload.dryRun, true);
       assert.equal(payload.cwd, normalizedSandbox);
+      assert.match(payload.command_hint, /^wt\.exe new-tab --title worker-b -- cmd \/k /);
+      assert.doesNotMatch(payload.command_hint, /--starting-directory/);
+      assert.match(payload.command_hint, new RegExp(`cd /d "${escapedWindowsCwd}" && set IPC_NAME=worker-b`));
       assert.match(
         payload.command_hint,
-        /^wt\.exe new-tab --title worker-b --starting-directory /,
-      );
-      assert.match(
-        payload.command_hint,
-        new RegExp(`--starting-directory ${escapeRegex(sandbox)}`),
-      );
-      assert.match(
-        payload.command_hint,
-        / -- cmd \/k set IPC_NAME=worker-b && "C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus$/,
+        /"C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus$/,
       );
     } finally {
       rmSync(sandbox, { recursive: true, force: true });

@@ -16,7 +16,9 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { createChannelNotifier } from './lib/channel-notification.mjs';
 import { createMcpTools } from './lib/mcp-tools.mjs';
 import { estimateContextPctFromTranscript } from './lib/context-usage-auto-handover.mjs';
+import { getClaudeDir } from './lib/claude-paths.mjs';
 import { createRegisterMessage } from './lib/protocol.mjs';
+import { findLatestTranscriptByCwd } from './lib/session-state-reader.mjs';
 import {
   DEFAULT_PORT,
   HUB_AUTOSTART_TIMEOUT,
@@ -74,15 +76,70 @@ if (!process.env.IPC_NAME && !process.env.IPC_DEFAULT_NAME) {
 let IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || '';
 let lastContextUsagePct = null;
+let contextUsagePctTimer = null;
 
 function getTranscriptPath() {
   return process.env.CLAUDE_TRANSCRIPT_PATH || process.env.TRANSCRIPT_PATH || '';
 }
 
+function getPidSessionJsonPath({ pid = process.pid, homeDir = null, env = process.env } = {}) {
+  return join(getClaudeDir({ homeDir, env }), 'sessions', `${pid}.json`);
+}
+
+function encodeClaudeProjectPath(cwd) {
+  if (typeof cwd !== 'string' || cwd.trim() === '') return null;
+  return cwd.replace(/\\/g, '-').replace(/\//g, '-').replace(/:/g, '-');
+}
+
+export function findSelfTranscriptPath({ pid = process.pid, cwd = process.cwd(), homeDir = null, env = process.env } = {}) {
+  const pidSessionPath = getPidSessionJsonPath({ pid, homeDir, env });
+  try {
+    if (existsSync(pidSessionPath)) {
+      const state = JSON.parse(readFileSync(pidSessionPath, 'utf8'));
+      if (typeof state?.transcriptPath === 'string' && state.transcriptPath.trim() !== '') {
+        return state.transcriptPath;
+      }
+      const projectDir = encodeClaudeProjectPath(state?.cwd || cwd);
+      if (projectDir && typeof state?.sessionId === 'string' && state.sessionId.trim() !== '') {
+        return join(getClaudeDir({ homeDir, env }), 'projects', projectDir, `${state.sessionId}.jsonl`);
+      }
+    }
+  } catch {}
+  return findLatestTranscriptByCwd(cwd, { homeDir, env }) || getTranscriptPath();
+}
+
 function estimateCurrentContextPct(args = {}) {
-  const pct = estimateContextPctFromTranscript(args.transcriptPath || getTranscriptPath(), args);
+  const pct = estimateContextPctFromTranscript(args.transcriptPath || findSelfTranscriptPath(args), args);
   lastContextUsagePct = pct;
   return pct;
+}
+
+export function createContextUsageUpdateMessage({ name = IPC_NAME, contextUsagePct = lastContextUsagePct } = {}) {
+  return {
+    type: 'update',
+    name,
+    contextUsagePct,
+  };
+}
+
+export function pushContextUsagePctUpdate({ send = wsSend, stderrLog = (message) => process.stderr.write(message), args = {} } = {}) {
+  try {
+    const contextUsagePct = estimateCurrentContextPct(args);
+    send(createContextUsageUpdateMessage({ contextUsagePct }));
+    return { ok: true, contextUsagePct };
+  } catch (error) {
+    stderrLog(`[ipc] context usage update failed: ${error?.message ?? error}\n`);
+    return { ok: false, error: error?.message ?? String(error) };
+  }
+}
+
+function startContextUsagePctTimer() {
+  if (contextUsagePctTimer) return contextUsagePctTimer;
+  contextUsagePctTimer = setInterval(() => {
+    pushContextUsagePctUpdate();
+  }, 60_000);
+  contextUsagePctTimer.unref?.();
+  return contextUsagePctTimer;
 }
 
 function createCurrentRegisterMessage() {
@@ -1151,8 +1208,10 @@ async function main() {
   // Connect to hub in background (non-blocking)
   initialConnect().then(() => {
     process.stderr.write(`[ipc] hub connection established (session="${IPC_NAME}", hub=${HOST}:${IPC_PORT})\n`);
+    startContextUsagePctTimer();
   }).catch((err) => {
     process.stderr.write(`[ipc] hub connection failed: ${err?.message ?? err}\n`);
+    startContextUsagePctTimer();
   });
 }
 

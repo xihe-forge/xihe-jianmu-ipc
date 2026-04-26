@@ -30,9 +30,8 @@ import { createStuckSessionDetector } from '../lib/stuck-session-detector.mjs';
 import {
   createAtomicHandoverTrigger,
   createContextUsageAutoHandover,
-  estimateContextPctFromTranscript,
 } from '../lib/context-usage-auto-handover.mjs';
-import { findLatestTranscriptByCwd, getSessionState } from '../lib/session-state-reader.mjs';
+import { getSessionState } from '../lib/session-state-reader.mjs';
 import {
   getWakeRecord,
   listSuspendedSessions,
@@ -829,8 +828,8 @@ export function createNetworkWatchdog({
   handoverEnabled = false,
   handoverTickIntervalMs = 60 * 1000,
   handoverThreshold = 50,
+  handoverDryRun = true,
   getSessionStateImpl = getSessionState,
-  findLatestTranscriptByCwdImpl = findLatestTranscriptByCwd,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -973,7 +972,13 @@ export function createNetworkWatchdog({
 
         const detected = [];
         const skipped = [];
-        for (const session of onlineSessions) {
+        const candidateSessions = [...onlineSessions].sort((a, b) => {
+          const pctA = Number.isFinite(Number(a?.contextUsagePct)) ? Number(a.contextUsagePct) : 0;
+          const pctB = Number.isFinite(Number(b?.contextUsagePct)) ? Number(b.contextUsagePct) : 0;
+          return pctB - pctA;
+        });
+        let triggeredThisTick = false;
+        for (const session of candidateSessions) {
           const sessionName = typeof session?.name === 'string' ? session.name.trim() : '';
           if (!sessionName) {
             skipped.push({ name: null, reason: 'missing-session-name' });
@@ -990,10 +995,8 @@ export function createNetworkWatchdog({
             entry.detector = createContextUsageAutoHandover({
               threshold: handoverThreshold,
               estimateContextPct: async (sessionRecord = entry.sessionRecord) => {
-                const transcriptPath = findLatestTranscriptByCwdImpl(sessionRecord?.cwd);
-                if (!transcriptPath) return 0;
-                const pct = estimateContextPctFromTranscript(transcriptPath);
-                stderr(`[network-watchdog] estimateContextPct transcript session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} cwd=${sessionRecord?.cwd ?? 'unknown'} transcript=${transcriptPath} pct=${pct}`);
+                const pct = Number.isFinite(Number(sessionRecord?.contextUsagePct)) ? Number(sessionRecord.contextUsagePct) : 0;
+                stderr(`[network-watchdog] estimateContextPct hub session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} pct=${pct}`);
                 return pct;
               },
               isMinimalTaskUnitComplete: () => true,
@@ -1001,6 +1004,21 @@ export function createNetworkWatchdog({
                 name: sessionName,
                 cwd: handoverConfig?.handoverRepoPath ?? process.cwd(),
                 handoverDir: handoverConfig?.handoverDir,
+                dryRun: handoverDryRun,
+                stderr,
+                notifyPreSpawnReview: async (review) => {
+                  const content = `[pre-spawn-review] ${JSON.stringify(review)}`;
+                  await fetchImpl(`${buildHubUrl(ipcPort)}/send`, {
+                    method: 'POST',
+                    headers: buildAuthJsonHeaders(hubAuthToken),
+                    body: JSON.stringify({
+                      from: watchdogSessionName,
+                      to: 'harness',
+                      topic: 'pre-spawn-review',
+                      content,
+                    }),
+                  });
+                },
                 now,
                 renameSession: async () => fetchImpl(`${buildHubUrl(ipcPort)}/prepare-rebind`, {
                   method: 'POST',
@@ -1032,8 +1050,20 @@ export function createNetworkWatchdog({
           if (result?.triggered) {
             detected.push({ name: sessionName, ...result });
             stderr(`[network-watchdog] context usage handover triggered: ${sessionName} pct=${result.pct}`);
+            triggeredThisTick = true;
+          } else if (triggeredThisTick) {
+            skipped.push({ name: sessionName, skipped: 'global-rate-limit' });
           } else {
             skipped.push({ name: sessionName, ...(result && typeof result === 'object' ? result : { skipped: result }) });
+          }
+          if (triggeredThisTick) {
+            for (const rest of candidateSessions.slice(candidateSessions.indexOf(session) + 1)) {
+              const restName = typeof rest?.name === 'string' ? rest.name.trim() : '';
+              if (restName && restName !== watchdogSessionName && !restName.endsWith('-old')) {
+                skipped.push({ name: restName, skipped: 'global-rate-limit' });
+              }
+            }
+            break;
           }
         }
         return { detected, skipped };

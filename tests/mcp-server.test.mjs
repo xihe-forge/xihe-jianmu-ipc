@@ -31,3 +31,32 @@ test('mcp-server: import 时不会自动启动 MCP server', async () => {
     }
   }
 });
+
+test('mcp-server: client context usage push sends update message', async () => {
+  const originalName = process.env.IPC_NAME;
+  process.env.IPC_NAME = 'usage-push-test';
+  try {
+    const url = pathToFileURL(resolve('mcp-server.mjs'));
+    const mod = await import(`${url.href}?usagePush=${Date.now()}`);
+    const sent = [];
+
+    const result = mod.pushContextUsagePctUpdate({
+      send: (payload) => sent.push(payload),
+      args: { transcriptPath: resolve('tests', 'missing-transcript-for-usage-push.jsonl') },
+      stderrLog: () => {},
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].type, 'update');
+    assert.equal(sent[0].name, 'usage-push-test');
+    assert.equal(typeof sent[0].contextUsagePct, 'number');
+  } finally {
+    if (originalName === undefined) {
+      delete process.env.IPC_NAME;
+    } else {
+      process.env.IPC_NAME = originalName;
+    }
+  }
+});
+

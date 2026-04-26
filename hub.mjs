@@ -443,6 +443,12 @@ wss.on('connection', (ws, req) => {
         session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
         send(ws, { type: 'registered', name: session.name });
         break;
+      case 'update':
+        if (Object.hasOwn(msg, 'contextUsagePct')) {
+          session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
+        }
+        send(ws, { type: 'updated', name: session.name, contextUsagePct: session.contextUsagePct });
+        break;
       case 'subscribe':
         session.topics.add(msg.topic);
         send(ws, { type: 'subscribed', topic: msg.topic });

@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  createAtomicHandoverTrigger,
   createContextUsageAutoHandover,
   createMinimalTaskUnitCompleteChecker,
   estimateContextPctFromTranscript,
@@ -221,3 +222,42 @@ test('codex task signal treats empty reports directory as idle', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('atomic handover dryRun logs pre-spawn-review and does not rename or spawn', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'handover-dry-run-'));
+  try {
+    const calls = { rename: 0, spawn: 0, notify: [] };
+    const logs = [];
+    const trigger = createAtomicHandoverTrigger({
+      name: 'jianmu-pm',
+      cwd: dir,
+      handoverDir: dir,
+      now: () => 1_777_232_746_089,
+      dryRun: true,
+      stderr: (line) => logs.push(line),
+      notifyPreSpawnReview: async (review) => calls.notify.push(review),
+      renameSession: async () => {
+        calls.rename += 1;
+        return { ok: true };
+      },
+      spawnSession: async () => {
+        calls.spawn += 1;
+        return { spawned: true };
+      },
+    });
+
+    const result = await trigger();
+
+    assert.equal(result.dryRun, true);
+    assert.equal(calls.rename, 0);
+    assert.equal(calls.spawn, 0);
+    assert.equal(calls.notify.length, 1);
+    assert.equal(calls.notify[0].session, 'jianmu-pm');
+    assert.equal(calls.notify[0].primarySpawn.host, 'vscode-terminal');
+    assert.equal(calls.notify[0].fallbackSpawn.host, 'wt');
+    assert.ok(logs.some((line) => line.includes('pre-spawn-review dry-run')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+

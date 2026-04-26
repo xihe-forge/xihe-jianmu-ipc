@@ -464,6 +464,58 @@ export function handleAvailableRamMb(result, {
   return false;
 }
 
+function buildAuthJsonHeaders(hubAuthToken) {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (typeof hubAuthToken === 'string' && hubAuthToken.trim() !== '') {
+    headers.Authorization = `Bearer ${hubAuthToken}`;
+  }
+  return headers;
+}
+
+export function createWakeReaper({
+  fetchHealth,
+  recentAnthropicProbes,
+  postWakeSuspended,
+  now = Date.now,
+  cooldownMs = 5 * 60 * 1000,
+  requiredConsecutiveOk = 3,
+  tickIntervalMs = 0,
+  initialLastTickAt = null,
+}) {
+  let lastTriggerAt = null;
+  let lastTickAt = Number.isFinite(initialLastTickAt) ? initialLastTickAt : null;
+
+  return {
+    async tick() {
+      if (lastTickAt !== null && now() - lastTickAt < tickIntervalMs) {
+        return { triggered: false, reason: 'not-due' };
+      }
+      lastTickAt = now();
+
+      if (lastTriggerAt !== null && now() - lastTriggerAt < cooldownMs) {
+        return { triggered: false, reason: 'cooldown' };
+      }
+
+      const recent = (recentAnthropicProbes() || []).slice(-requiredConsecutiveOk);
+      if (recent.length < requiredConsecutiveOk || recent.some((probe) => !probe?.ok)) {
+        return { triggered: false, reason: 'anthropic-not-stable' };
+      }
+
+      const health = await fetchHealth().catch(() => null);
+      const suspended = Array.isArray(health?.suspended_sessions) ? health.suspended_sessions : [];
+      if (suspended.length === 0) {
+        return { triggered: false, reason: 'no-suspended' };
+      }
+
+      await postWakeSuspended({ triggeredBy: 'watchdog-reaper' }).catch(() => {});
+      lastTriggerAt = now();
+      return { triggered: true, suspendedCount: suspended.length };
+    },
+  };
+}
+
 export function handleAvailableRamPct(check, {
   ipcSend = null,
   now = Date.now,
@@ -756,6 +808,8 @@ export function createNetworkWatchdog({
   let lastCommittedPctCheck = null;
   let lastAvailableRamCheck = null;
   let lastPhysRamPctCheck = null;
+  const anthropicProbeHistory = [];
+  let wakeReaperNow = 0;
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
     harnessProbeConfig: {
@@ -806,6 +860,25 @@ export function createNetworkWatchdog({
       wait,
     }));
   }
+
+  const wakeReaper = createWakeReaper({
+    fetchHealth: async () => {
+      const response = await fetchImpl(`${buildHubUrl(ipcPort)}/health`);
+      if (!isSuccessfulResponse(response)) {
+        return null;
+      }
+      return response.json();
+    },
+    recentAnthropicProbes: () => anthropicProbeHistory,
+    postWakeSuspended: async (body) => fetchImpl(`${buildHubUrl(ipcPort)}/wake-suspended`, {
+      method: 'POST',
+      headers: buildAuthJsonHeaders(hubAuthToken),
+      body: JSON.stringify(body),
+    }),
+    now: () => wakeReaperNow,
+    tickIntervalMs: 60 * 1000,
+    initialLastTickAt: 0,
+  });
 
   const networkStateMachine = createStateMachineImpl({
     probes: networkProbes,
@@ -1056,6 +1129,17 @@ export function createNetworkWatchdog({
     return lastHarnessProbe;
   }
 
+  async function runWakeReaperTick(lastChecks) {
+    if (lastChecks?.anthropic) {
+      anthropicProbeHistory.push(lastChecks.anthropic);
+      while (anthropicProbeHistory.length > 3) {
+        anthropicProbeHistory.shift();
+      }
+    }
+    wakeReaperNow = Number.isFinite(lastChecks?.anthropic?.ts) ? lastChecks.anthropic.ts : Date.now();
+    return wakeReaper.tick();
+  }
+
   function ingestHarnessHeartbeat(heartbeat) {
     if (!heartbeat || typeof heartbeat !== 'object') {
       return false;
@@ -1097,6 +1181,7 @@ export function createNetworkWatchdog({
         ...(availableRamCheck ? { available_ram_mb: availableRamCheck } : {}),
         ...(physRamPctCheck ? { phys_ram_used_pct: physRamPctCheck } : {}),
       };
+      await runWakeReaperTick(lastChecks);
       return {
         ...networkState,
         lastChecks,

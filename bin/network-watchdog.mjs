@@ -1,4 +1,5 @@
-import http from 'node:http';
+﻿import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +24,8 @@ import {
   probeDns,
   probeHub,
 } from '../lib/network-probes.mjs';
-import { createStaleSuspendDetector } from '../lib/stale-suspend-detector.mjs';
+import { createStuckSessionDetector } from '../lib/stuck-session-detector.mjs';
+import { getSessionState } from '../lib/session-state-reader.mjs';
 import {
   listSuspendedSessions,
   suspendSession,
@@ -204,6 +206,14 @@ function buildHubWsUrl({ ipcPort, sessionName, hubAuthToken }) {
     url.searchParams.set('token', hubAuthToken);
   }
   return url.toString();
+}
+
+function readTranscriptTail(path, lines = 20) {
+  try {
+    return readFileSync(path, 'utf8').split('\n').slice(-lines).join('\n');
+  } catch {
+    return '';
+  }
 }
 
 function mapHarnessTransitionToHandoverReason(reason) {
@@ -789,8 +799,8 @@ export function createNetworkWatchdog({
   handoverConfig = null,
   lineage = null,
   ipcSpawn = null,
-  staleDetectorEnabled = false,
-  staleDetectorTickIntervalMs = 60 * 1000,
+  stuckDetectorEnabled = false,
+  stuckDetectorTickIntervalMs = 60 * 1000,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -817,7 +827,7 @@ export function createNetworkWatchdog({
   let lastPhysRamPctCheck = null;
   const anthropicProbeHistory = [];
   let wakeReaperNow = 0;
-  let lastStaleDetectorTickAt = 0;
+  let lastStuckDetectorTickAt = 0;
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
     harnessProbeConfig: {
@@ -887,8 +897,8 @@ export function createNetworkWatchdog({
     tickIntervalMs: 60 * 1000,
     initialLastTickAt: 0,
   });
-  const staleDetector = staleDetectorEnabled
-    ? createStaleSuspendDetector({
+  const stuckDetector = stuckDetectorEnabled
+    ? createStuckSessionDetector({
       db: {
         listSuspendedSessions,
         suspendSession,
@@ -907,6 +917,8 @@ export function createNetworkWatchdog({
           },
         ]));
       },
+      getSessionState,
+      readTranscriptTail,
       now,
     })
     : null;
@@ -1171,19 +1183,19 @@ export function createNetworkWatchdog({
     return wakeReaper.tick();
   }
 
-  async function runStaleDetectorTick() {
-    if (!staleDetector) {
+  async function runStuckDetectorTick() {
+    if (!stuckDetector) {
       return { detected: [], skipped: [] };
     }
     const ts = now();
-    if (ts - lastStaleDetectorTickAt < staleDetectorTickIntervalMs) {
+    if (ts - lastStuckDetectorTickAt < stuckDetectorTickIntervalMs) {
       return { detected: [], skipped: [{ reason: 'tick-interval' }] };
     }
-    lastStaleDetectorTickAt = ts;
+    lastStuckDetectorTickAt = ts;
     try {
-      return await staleDetector.tick();
+      return await stuckDetector.tick();
     } catch (error) {
-      stderr(`[network-watchdog] stale detector tick failed: ${error?.message ?? error}`);
+      stderr(`[network-watchdog] stuck detector tick failed: ${error?.message ?? error}`);
       return { detected: [], skipped: [] };
     }
   }
@@ -1231,7 +1243,7 @@ export function createNetworkWatchdog({
       };
       await Promise.all([
         runWakeReaperTick(lastChecks),
-        runStaleDetectorTick(),
+        runStuckDetectorTick(),
       ]);
       return {
         ...networkState,
@@ -1386,7 +1398,7 @@ export async function startWatchdog(options = {}) {
     ipcSpawn,
     lineage,
     triggerHarnessSelfHandoverImpl: options.triggerHarnessSelfHandoverImpl ?? triggerHarnessSelfHandover,
-    staleDetectorEnabled: options.staleDetectorEnabled ?? true,
+    stuckDetectorEnabled: options.stuckDetectorEnabled ?? true,
     handoverConfig: {
       checkpointPath: baseHandoverConfig.checkpointPath ?? DEFAULT_CHECKPOINT_PATH,
       lastBreathPath: baseHandoverConfig.lastBreathPath ?? DEFAULT_LAST_BREATH_PATH,
@@ -1433,3 +1445,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exit(1);
   }
 }
+
+

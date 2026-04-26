@@ -244,11 +244,12 @@ const {
   scheduleInboxCleanup,
 } = createRouter(ctx);
 const { broadcastNetworkDown, broadcastNetworkUp } = createNetworkEventBroadcaster({
-  router: { broadcastToTopic },
+  router: { broadcastToTopic, routeMessage },
   db: {
     listSuspendedSessions,
     clearSuspendedSessions,
   },
+  getSessions: () => sessions,
 });
 ctx.routeMessage = routeMessage;
 ctx.broadcastToTopic = broadcastToTopic;

@@ -2,7 +2,7 @@
 
 > IPC 基础设施 repo 的活清单。按优先级分段。所有条目有明确"现状 / 目标 / 验收 / Owner / ETA"。
 
-**最后刷新**：2026-04-26T02:14+08:00（jianmu-pm）
+**最后刷新**：2026-04-26T14:21+08:00（jianmu-pm）
 **刷新节奏**：每次重要产出 + 每周一 portfolio-sync · 老板 88% 周限额硬规矩：每完成任务立即落盘 + commit + push（不批量积压）
 
 ---
@@ -57,12 +57,28 @@
 - **Owner**：boss trigger · successor 执行 · harness 验
 - **ETA**：boss 切账号当时
 
-### ADR-009 / API rate limit 治理 gap · 4 SOP
+### ADR-009 v0.1 design 已 ship · 等老板 review 拍板
 
-- **现状**：2026-04-25T21:34 boss 派 P0 · 4 SOP 待立：API health probe / session stuck detection / wake 自动 IPC / portfolio level dashboard。当前 89% 周限额预警（02:02 boss 升 88%）证明此 gap 实存
-- **目标**：4 SOP 起草 + 落 ADR-009 / handover/ design 文档 · 阻塞自动 IPC wake successor 路径
-- **Owner**：jianmu-pm 主驱（successor 接班后）· harness 审
-- **ETA**：2026-04-28
+- **现状**：2026-04-26T14:18 ship `handover/ADR-009-RATE-LIMIT-AUTO-WAKE-DESIGN.md` v0.1 · `cb38bc3` push origin。4 SOP design 完整（SOP-1 watchdog 第 9 probe rate_limit_pct / SOP-2 stuck 三态分类 retry-exhausted/rate-limited/network-down / SOP-3 wakeRateLimited 路径 / SOP-4 飞书"用量"命令 + Hub /usage endpoint）。与 ADR-006 互补 · 共享 watchdog/Hub/PS hook/飞书基建
+- **目标**：老板 review 拍板综合策略 → 切账号后派 codex 实施 4 SOP（SOP-1+Plan C 共派 / SOP-2+Plan B 共派 / SOP-3 与 Plan A 同源扩 / SOP-4 独立 PR）
+- **验收**：design v0.1 落档 ✅ · 老板 LGTM 转正式 ADR 编号 · 4 SOP 实施 PR 切账号后 1-2 周内 ship
+- **Owner**：jianmu-pm 主驱实施 · harness 审 · 老板拍板
+- **ETA**：review 2026-04-27 / 实施 2026-05-08
+
+### ADR-006 v0.1 Plan A · Hub auto-wake hook 实施
+
+- **现状**：2026-04-26T14:14 派 codex `bwoknxtsk` TDD RED→GREEN · brief `temp/codex-briefs/adr-006-plan-a-hub-auto-wake-brief.md`。改 `lib/network-events.mjs` broadcastNetworkUp 加 stale session wake 逻辑（lastAliveProbe > 5min + ws OPEN → router.routeMessage wake IPC · payload 加 autoWokenSessions[]）+ hub.mjs wire getSessions
+- **目标**：5/5 RED → 5/5 GREEN + npm test 587/587 不掉 + push origin
+- **验收**：codex IPC done sha · 三层校验（git origin push + 独立 node --test + npm test 全绿）
+- **Owner**：jianmu-pm 派 codex · 切账号后真生效（runtime cache）
+- **ETA**：14:50 codex done · 切账号后 acceptance verify
+
+### ADR-006 v0.1 Plan C · watchdog per-session retry 计数
+
+- **现状**：未派 · 等 Plan A codex done 后接力（与 SOP-1 watchdog 第 9 probe 同改 `bin/network-watchdog.mjs` · 可共派一份 brief）。改 watchdog 加 per-session retry 计数（从 Hub /suspend 上报采集）+ retry-exhausted + anthropic API probe OK → POST /wake-suspended {target}
+- **目标**：TDD RED→GREEN + push origin
+- **Owner**：jianmu-pm 派 codex
+- **ETA**：Plan A done 后 30min（评估 Plan C + SOP-1 共派 / 拆分两 codex）
 
 ---
 
@@ -216,3 +232,4 @@
 | 2026-04-25T05:34+08:00 | jianmu-pm | P1 phys_ram_used_pct 第 8 probe 闭环（提前 3 天）：origin/master RED e0d3baa + GREEN f46b7b6 + docs bd073ea 三 commit push · 558 pass · AC-WATCHDOG-008 grep 5 命中。Q9 鲁棒性压测战绩一晚派 4 次挂 3 次（bash quote 5h1m / capacity 34min / stream disconnect 3min）work state 零污染，bosnf4y8s 最终闭环。条目移至已完成段。hub-daemon vbs 时间盒因 btfq3nm92 死讯排期 2026-04-26 窗口 |
 | 2026-04-25T14:25+08:00 | jianmu-pm | 三 P1 同日闭环（自驱模式）：(1) hub-daemon.vbs 时间盒 TDD origin/master e694790/2f375ed/43d6f97 587 pass schtasks 10min repetition fix，提前 3 天；(2) ADR-003 hook 失效 install-hooks TDD（xihe-tianshu-harness 仓 dec1535/46722fd）+ 实际 install merge user settings.json，老板派单 ~1.5h 闭环；(3) v0.5.0 CHANGELOG+version bump local commit 158eaf1 prep · 待 SSH push tag。Q9 mode #3 stream disconnect 第 4 例（bbrj22chz）+ feedback_codex_dispatch.md "heredoc + codex exec 同 Bash call 禁止"段（xuanji 踩坑同步沉淀）。两条目同步：hub-daemon 时间盒删 P1 移已完成段；v0.5.0 release cut 现状改为"local commit 待 SSH push tag" |
 | 2026-04-26T02:14+08:00 | jianmu-pm | P0 全面重置（响应 boss 88% 周限额 + harness 02:10 todo 频次升级硬规矩）：(1) ADR-008 Phase 2 P0 标 done（harness 已 ship session-cold-start.md v1.3 切换 · 移已完成）；(2) 新 P0 = 切账号窗口待 trigger · spawn fix v2 keystone 已解锁（5b9a6b9+0967749+df9de3a · 7/7 PASS）· runtime cache 是 reload trigger 不是 prerequisite；(3) 新 P0 = ADR-009 / API rate limit 治理 gap 4 SOP（boss 21:34 派 · successor 接班后做）；(4) 已完成段加 2026-04-26 spawn fix v2 + 2026-04-25 晚 P0 spawn 链 11 条目（fix v1 / portfolio acceptance e2e ship gate / hook PS native v2 / hub-uptime baseline v0.2 / handover schema v2 / dependabot fix / ADR-003-gap-eval / cold-start-drill design）；(5) 双 user memory 沉淀 feedback_codex_log_dir_mkdir + feedback_mcp_server_no_hot_reload（mcp-server 改 ship ≠ portfolio runtime 生效 · 必须切账号 reload · 与 settings.json hot-reload 同源） |
+| 2026-04-26T14:21+08:00 | jianmu-pm | 自驱抓 backlog（response harness 14:07 信号 + boss 13:57 "活都干完了吗" critique）：(1) ADR-009 v0.1 design ship `cb38bc3` 4 SOP 完整（boss 21:34 派 P0 ack）；(2) ADR-006 Plan A codex `bwoknxtsk` 14:14 dispatched · TDD RED→GREEN broadcastNetworkUp 扩 stale session auto-wake；(3) ADR-006 Plan C 待 Plan A done 后接力 + 评估与 SOP-1 共派；P0 段重排：ADR-009 v0.1 design 已 ship 等 review / ADR-006 Plan A 实施中 / Plan C 待派 |

@@ -109,3 +109,56 @@
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1835 | 2026-04-26T18:35+08:00 | jianmu-pm lineage 9 切账号前最后落档 · in-flight 总览 + 在线状态 + 关键文件 + watchdog anomaly |
+| 1900 update | 2026-04-26T19:00+08:00 | lineage 9 实质工作收尾 update（提前通用·切账号信号未到但工作基本结束）|
+
+---
+
+## 八、lineage 9 实质工作 final 总览（19:00 update）
+
+### 8.1 已 ship（push xihe-forge）
+
+| SHA | 仓 | 内容 |
+|---|---|---|
+| 2e235a5 | tianshu | case-study 4a §十 + 4b §3.1 IPC Hub 视角 patch |
+| 20afbac | jianmu | self-handover + VSCode R&D（17:54 报告）|
+| 9f6d2d4 | jianmu | ADR-006 v0.3 codex brief draft |
+| 9c331a9 | jianmu | cliProxy 502 anomaly 根因 + 修复方案 |
+| e614e47 | jianmu | VSCode URI 4 项验证报告 |
+| **d78b339** | jianmu | **cliProxy probe 修复 GET /healthz**（E.2 ship · 14/14 测试）|
+| **20ca6b7** | jianmu | **ADR-006 v0.3 STEP6 session-state-reader**（E.1 ship · 5/5 测试）|
+| **3580f6b** | jianmu | **ADR-006 v0.3 STEP7 stuck-session-detector 5-signal AND**（12/12 测试）|
+| **d7c5c1d** | jianmu | **revert v0.2 stale-suspend-detector** |
+| **b1d396c** | jianmu | **watchdog 接 stuck-session-detector** |
+| ⏳ 跑中 | jianmu | **B vscode-uri 一键 spawn 实施**（codex `bg6lccz4s` 18:55 起·预计 19:15 ship）|
+
+### 8.2 lineage 9 元自纠总结（lineage 10 警示）
+
+lineage 9 同日内**累计 5 个反 idle / 反漂移 memory**：
+- feedback_codex_sandbox.md §3 场景接力 + §preflight 5 项（jianmu-pm 立·flag 误用 3 次复刻）
+- feedback_timestamp_format.md §lineage 9 二次复刻（auditor-portfolio 18:14 catch +38min 偏差）
+- feedback_ai_pace_not_human_pace.md（harness 立·portfolio 硬规矩·3 个感叹号 critique）
+- feedback_treat_decided_as_pending.md（harness 立·拍板当待拍板 anti-pattern）
+- 各 session 高密度元失职 = critique 触发新 memory + 缺 dispatch 前 own / peer 刚立 memory 自检
+
+### 8.3 lineage 10 必读警示（接 §五 watchdog anomaly）
+
+**flag dispatch 反例避坑**：
+- 派 codex 命令模板（v0.124+）：`codex exec -s danger-full-access "<prompt>" < /dev/null > logs/...log 2>&1`
+- **不要**：`--full-auto` 与 `-s danger-full-access` 并用（line 21）
+- **不要**：`--ask-for-approval`（v0.124+ 已移除）
+- **必跑**：dispatch 前 §preflight 5 项（含 codex --help 自验 flag）
+
+**memory↔memory 漂移检测**（harness 18:57 立项）：
+- dispatch / IPC peer / 给老板汇报前必 grep 自己 + peer 最近 1 小时立的 memory 自检
+- 与 SOP §preflight 第 5 项 codex --help 自验同源
+- 防 lineage 9 同日 memory 引用过时 memory 的 3 次复刻
+
+### 8.4 双 codex AI 节奏数据点（case-study 4a §十 后续 patch 用）
+
+| 任务 | codex 跑 | 接力 commit | 总 cycle | token |
+|---|---|---|---|---|
+| cliProxy probe | 17min（含 stdin 重派）| 3min | 17min | 67.6k |
+| ADR-006 v0.3 第一波 | 10min | 3min | 13min | 161.9k |
+| B vscode-uri | ⏳ 跑中（v2 第二派） | - | - | - |
+
+= AI 节奏比 brief 原估（~2h）快 4-9×。flag 误用 3 次复刻成本：cliProxy 17min + ADR-006 10min + vscode-uri v1 <1min = 总 ~28min 浪费（可下 lineage 完全避免，SOP §preflight 5 项立后归 0 是 KPI）。

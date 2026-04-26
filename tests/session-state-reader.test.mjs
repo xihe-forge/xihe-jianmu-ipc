@@ -101,7 +101,7 @@ describe('T-ADR-006-V03-STEP6 路 session-state-reader', () => {
   test('T-ADR-010-MOD6-WIRING-V3 findLatestTranscriptByCwd: picks newest .jsonl by mtime', async () => {
     const homeDir = await makeTempDir();
     const cwd = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc';
-    const projectDir = 'D-workspace-ai-research-xiheAi-xihe-jianmu-ipc';
+    const projectDir = 'D--workspace-ai-research-xiheAi-xihe-jianmu-ipc';
     const transcriptsDir = join(homeDir, '.claude', 'projects', projectDir);
     try {
       await mkdir(transcriptsDir, { recursive: true });
@@ -121,7 +121,7 @@ describe('T-ADR-006-V03-STEP6 路 session-state-reader', () => {
   test('T-ADR-010-MOD6-WIRING-V3 findLatestTranscriptByCwd: no .jsonl returns null', async () => {
     const homeDir = await makeTempDir();
     const cwd = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc';
-    const projectDir = 'D-workspace-ai-research-xiheAi-xihe-jianmu-ipc';
+    const projectDir = 'D--workspace-ai-research-xiheAi-xihe-jianmu-ipc';
     const transcriptsDir = join(homeDir, '.claude', 'projects', projectDir);
     try {
       await mkdir(transcriptsDir, { recursive: true });

@@ -23,6 +23,11 @@ import {
   probeDns,
   probeHub,
 } from '../lib/network-probes.mjs';
+import { createStaleSuspendDetector } from '../lib/stale-suspend-detector.mjs';
+import {
+  listSuspendedSessions,
+  suspendSession,
+} from '../lib/db.mjs';
 
 export const DEFAULT_IPC_PORT = 3179;
 export const DEFAULT_WATCHDOG_PORT = 3180;
@@ -784,6 +789,8 @@ export function createNetworkWatchdog({
   handoverConfig = null,
   lineage = null,
   ipcSpawn = null,
+  staleDetectorEnabled = false,
+  staleDetectorTickIntervalMs = 60 * 1000,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -810,6 +817,7 @@ export function createNetworkWatchdog({
   let lastPhysRamPctCheck = null;
   const anthropicProbeHistory = [];
   let wakeReaperNow = 0;
+  let lastStaleDetectorTickAt = 0;
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
     harnessProbeConfig: {
@@ -879,6 +887,29 @@ export function createNetworkWatchdog({
     tickIntervalMs: 60 * 1000,
     initialLastTickAt: 0,
   });
+  const staleDetector = staleDetectorEnabled
+    ? createStaleSuspendDetector({
+      db: {
+        listSuspendedSessions,
+        suspendSession,
+      },
+      getSessions: async () => {
+        const response = await fetchImpl(`${buildHubUrl(ipcPort)}/sessions`);
+        if (!isSuccessfulResponse(response)) {
+          return new Map();
+        }
+        const sessions = await response.json();
+        return new Map((Array.isArray(sessions) ? sessions : []).map((session) => [
+          session.name,
+          {
+            ...session,
+            ws: { readyState: 1 },
+          },
+        ]));
+      },
+      now,
+    })
+    : null;
 
   const networkStateMachine = createStateMachineImpl({
     probes: networkProbes,
@@ -1140,6 +1171,23 @@ export function createNetworkWatchdog({
     return wakeReaper.tick();
   }
 
+  async function runStaleDetectorTick() {
+    if (!staleDetector) {
+      return { detected: [], skipped: [] };
+    }
+    const ts = now();
+    if (ts - lastStaleDetectorTickAt < staleDetectorTickIntervalMs) {
+      return { detected: [], skipped: [{ reason: 'tick-interval' }] };
+    }
+    lastStaleDetectorTickAt = ts;
+    try {
+      return await staleDetector.tick();
+    } catch (error) {
+      stderr(`[network-watchdog] stale detector tick failed: ${error?.message ?? error}`);
+      return { detected: [], skipped: [] };
+    }
+  }
+
   function ingestHarnessHeartbeat(heartbeat) {
     if (!heartbeat || typeof heartbeat !== 'object') {
       return false;
@@ -1181,7 +1229,10 @@ export function createNetworkWatchdog({
         ...(availableRamCheck ? { available_ram_mb: availableRamCheck } : {}),
         ...(physRamPctCheck ? { phys_ram_used_pct: physRamPctCheck } : {}),
       };
-      await runWakeReaperTick(lastChecks);
+      await Promise.all([
+        runWakeReaperTick(lastChecks),
+        runStaleDetectorTick(),
+      ]);
       return {
         ...networkState,
         lastChecks,
@@ -1335,6 +1386,7 @@ export async function startWatchdog(options = {}) {
     ipcSpawn,
     lineage,
     triggerHarnessSelfHandoverImpl: options.triggerHarnessSelfHandoverImpl ?? triggerHarnessSelfHandover,
+    staleDetectorEnabled: options.staleDetectorEnabled ?? true,
     handoverConfig: {
       checkpointPath: baseHandoverConfig.checkpointPath ?? DEFAULT_CHECKPOINT_PATH,
       lastBreathPath: baseHandoverConfig.lastBreathPath ?? DEFAULT_LAST_BREATH_PATH,

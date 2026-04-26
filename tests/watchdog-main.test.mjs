@@ -234,13 +234,14 @@ test('createNetworkWatchdog: handover tick 60s 内重复调用返回 tick-interv
 test('createNetworkWatchdog: handover tick reads transcript independent of Hub contextUsagePct', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-transcript-'));
   try {
+    const cwd = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc';
     const transcriptPath = join(dir, 'session.jsonl');
     writeFileSync(transcriptPath, 'x'.repeat(408_000));
     const logs = [];
     const spawned = [];
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'jianmu-pm', pid: 1777 },
+        { name: 'jianmu-pm', pid: 1777, cwd },
       ],
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
         messages: [{ from: 'jianmu-pm', topic: 'status', content: 'drained ipc' }],
@@ -257,7 +258,7 @@ test('createNetworkWatchdog: handover tick reads transcript independent of Hub c
       handoverEnabled: true,
       handoverTickIntervalMs: 0,
       handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
-      getSessionStateImpl: (pid) => (pid === 1777 ? { pid, transcriptPath } : null),
+      findLatestTranscriptByCwdImpl: (value) => (value === cwd ? transcriptPath : null),
       probes: {
         cliProxy: async () => ok(),
         hub: async () => ok(),
@@ -275,7 +276,8 @@ test('createNetworkWatchdog: handover tick reads transcript independent of Hub c
     assert.equal(spawned.length, 1);
     assert.match(spawned[0].task, /Self-handover doc:/);
     assert.match(spawned[0].task, /Recent IPC drain summary:/);
-    assert.ok(logs.some((line) => line.includes('estimateContextPct transcript session=jianmu-pm pid=1777 pct=51')));
+    assert.ok(logs.some((line) => line.includes('estimateContextPct transcript session=jianmu-pm pid=1777')));
+    assert.ok(logs.some((line) => line.includes(`cwd=${cwd}`) && line.includes(`transcript=${transcriptPath}`) && line.includes('pct=51')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

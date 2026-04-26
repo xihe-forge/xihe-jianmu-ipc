@@ -32,7 +32,7 @@ import {
   createContextUsageAutoHandover,
   estimateContextPctFromTranscript,
 } from '../lib/context-usage-auto-handover.mjs';
-import { getSessionState } from '../lib/session-state-reader.mjs';
+import { findLatestTranscriptByCwd, getSessionState } from '../lib/session-state-reader.mjs';
 import {
   getWakeRecord,
   listSuspendedSessions,
@@ -830,6 +830,7 @@ export function createNetworkWatchdog({
   handoverTickIntervalMs = 60 * 1000,
   handoverThreshold = 50,
   getSessionStateImpl = getSessionState,
+  findLatestTranscriptByCwdImpl = findLatestTranscriptByCwd,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -989,10 +990,10 @@ export function createNetworkWatchdog({
             entry.detector = createContextUsageAutoHandover({
               threshold: handoverThreshold,
               estimateContextPct: async (sessionRecord = entry.sessionRecord) => {
-                const state = getSessionStateImpl(sessionRecord?.pid);
-                if (!state?.transcriptPath) return 0;
-                const pct = estimateContextPctFromTranscript(state.transcriptPath);
-                stderr(`[network-watchdog] estimateContextPct transcript session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} pct=${pct}`);
+                const transcriptPath = findLatestTranscriptByCwdImpl(sessionRecord?.cwd);
+                if (!transcriptPath) return 0;
+                const pct = estimateContextPctFromTranscript(transcriptPath);
+                stderr(`[network-watchdog] estimateContextPct transcript session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} cwd=${sessionRecord?.cwd ?? 'unknown'} transcript=${transcriptPath} pct=${pct}`);
                 return pct;
               },
               isMinimalTaskUnitComplete: () => true,

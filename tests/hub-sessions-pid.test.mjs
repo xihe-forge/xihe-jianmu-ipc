@@ -56,6 +56,34 @@ test('T-ADR-010-MOD6 /sessions persists contextUsagePct from register', { timeou
   }
 });
 
+test('T-ADR-010-MOD6-WIRING-V3 /sessions persists cwd from register', { timeout: TEST_TIMEOUT }, async () => {
+  const hub = await startHub({ prefix: 'hub-sessions-cwd-value' });
+  const ws = await connectSession(hub.port, 'cwd-value', {
+    register: { pid: 12345, cwd: 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc' },
+  });
+  try {
+    const sessions = await getSessions(hub.port);
+    const session = sessions.find((item) => item.name === 'cwd-value');
+    assert.equal(session?.pid, 12345);
+    assert.equal(session?.cwd, 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc');
+  } finally {
+    await closeWebSocket(ws);
+    await stopHub(hub);
+  }
+});
+
+test('T-ADR-010-MOD6-WIRING-V3 /sessions cwd null when not provided', { timeout: TEST_TIMEOUT }, async () => {
+  const hub = await startHub({ prefix: 'hub-sessions-cwd-null' });
+  const ws = await connectSession(hub.port, 'cwd-null', { register: { pid: 12345 } });
+  try {
+    const sessions = await getSessions(hub.port);
+    assert.equal(sessions.find((session) => session.name === 'cwd-null')?.cwd, null);
+  } finally {
+    await closeWebSocket(ws);
+    await stopHub(hub);
+  }
+});
+
 test('T-ADR-006-V03-WIRING-FIX /sessions keeps pid isolated per session', { timeout: TEST_TIMEOUT }, async () => {
   const hub = await startHub({ prefix: 'hub-sessions-pid-isolated' });
   const first = await connectSession(hub.port, 'pid-a', { register: { pid: 111 } });

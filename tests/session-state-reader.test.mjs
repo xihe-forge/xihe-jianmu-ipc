@@ -1,9 +1,9 @@
-import { describe, test } from 'node:test';
+﻿import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { getAllSessionStates, getSessionState } from '../lib/session-state-reader.mjs';
+import { findLatestTranscriptByCwd, getAllSessionStates, getSessionState } from '../lib/session-state-reader.mjs';
 
 async function makeTempDir() {
   return await mkdtemp(join(tmpdir(), 'session-state-reader-'));
@@ -13,13 +13,13 @@ async function writeSession(dir, filename, body) {
   await writeFile(join(dir, filename), JSON.stringify(body), 'utf8');
 }
 
-describe('T-ADR-006-V03-STEP6 · session-state-reader', () => {
-  test('目录不存在 → 返回 []', () => {
+describe('T-ADR-006-V03-STEP6 路 session-state-reader', () => {
+  test('鐩綍涓嶅瓨鍦?鈫?杩斿洖 []', () => {
     const states = getAllSessionStates({ dir: join(tmpdir(), `missing-${Date.now()}`) });
     assert.deepEqual(states, []);
   });
 
-  test('单条 valid session.json → 返回完整 schema', async () => {
+  test('鍗曟潯 valid session.json 鈫?杩斿洖瀹屾暣 schema', async () => {
     const dir = await makeTempDir();
     try {
       await writeSession(dir, 'one.json', {
@@ -43,7 +43,7 @@ describe('T-ADR-006-V03-STEP6 · session-state-reader', () => {
     }
   });
 
-  test('多条混合 → 静默跳过损坏、无 pid、非法 status', async () => {
+  test('澶氭潯娣峰悎 鈫?闈欓粯璺宠繃鎹熷潖銆佹棤 pid銆侀潪娉?status', async () => {
     const dir = await makeTempDir();
     try {
       await writeSession(dir, 'valid.json', {
@@ -65,7 +65,7 @@ describe('T-ADR-006-V03-STEP6 · session-state-reader', () => {
     }
   });
 
-  test('status=idle 时 idleMs 计算正确，busyMs=0', async () => {
+  test('status=idle 鏃?idleMs 璁＄畻姝ｇ‘锛宐usyMs=0', async () => {
     const dir = await makeTempDir();
     try {
       await writeSession(dir, 'idle.json', { pid: 4444, sessionId: 'idle-s', status: 'idle', updatedAt: 10_000 });
@@ -77,7 +77,7 @@ describe('T-ADR-006-V03-STEP6 · session-state-reader', () => {
     }
   });
 
-  test('status=busy 时 busyMs 计算正确，idleMs=0', async () => {
+  test('status=busy 鏃?busyMs 璁＄畻姝ｇ‘锛宨dleMs=0', async () => {
     const dir = await makeTempDir();
     try {
       await writeSession(dir, 'busy.json', { pid: 5555, sessionId: 'busy-s', status: 'busy', updatedAt: 20_000 });
@@ -86,6 +86,50 @@ describe('T-ADR-006-V03-STEP6 · session-state-reader', () => {
       assert.equal(state.idleMs, 0);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-ADR-010-MOD6-WIRING-V3 findLatestTranscriptByCwd: cwd missing returns null', async () => {
+    const homeDir = await makeTempDir();
+    try {
+      assert.equal(findLatestTranscriptByCwd('D:\\missing\\project', { homeDir }), null);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-ADR-010-MOD6-WIRING-V3 findLatestTranscriptByCwd: picks newest .jsonl by mtime', async () => {
+    const homeDir = await makeTempDir();
+    const cwd = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc';
+    const projectDir = 'D-workspace-ai-research-xiheAi-xihe-jianmu-ipc';
+    const transcriptsDir = join(homeDir, '.claude', 'projects', projectDir);
+    try {
+      await mkdir(transcriptsDir, { recursive: true });
+      const older = join(transcriptsDir, 'older.jsonl');
+      const newer = join(transcriptsDir, 'newer.jsonl');
+      await writeFile(older, 'older', 'utf8');
+      await writeFile(newer, 'newer', 'utf8');
+      await utimes(older, new Date('2026-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'));
+      await utimes(newer, new Date('2026-01-02T00:00:00Z'), new Date('2026-01-02T00:00:00Z'));
+
+      assert.equal(findLatestTranscriptByCwd(cwd, { homeDir }), newer);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('T-ADR-010-MOD6-WIRING-V3 findLatestTranscriptByCwd: no .jsonl returns null', async () => {
+    const homeDir = await makeTempDir();
+    const cwd = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc';
+    const projectDir = 'D-workspace-ai-research-xiheAi-xihe-jianmu-ipc';
+    const transcriptsDir = join(homeDir, '.claude', 'projects', projectDir);
+    try {
+      await mkdir(transcriptsDir, { recursive: true });
+      await writeFile(join(transcriptsDir, 'session.json'), '{}', 'utf8');
+
+      assert.equal(findLatestTranscriptByCwd(cwd, { homeDir }), null);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
     }
   });
 });

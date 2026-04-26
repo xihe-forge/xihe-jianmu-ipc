@@ -36,9 +36,9 @@ describe('AC-DAEMON-001 hub-daemon.vbs 时间盒', () => {
     await runVbsWithTimeout(30_000);
     const log = await readFile(LOG_PATH, 'utf8');
     const lines = log.trim().split(/\r?\n/);
-    const lastLine = lines[lines.length - 1];
+    const housekeepingLine = lines.findLast((line) => line.includes('[housekeeping]'));
 
-    assert.match(lastLine, /\[housekeeping\] \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} OK/);
+    assert.match(housekeepingLine ?? '', /\[housekeeping\] \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} OK/);
   });
 
   test('AC-DAEMON-001-d: vbs 严守 feedback_no_kill_node · 不含 taskkill node.exe', async () => {

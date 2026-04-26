@@ -89,6 +89,7 @@ function createCurrentRegisterMessage() {
   return createRegisterMessage({
     name: IPC_NAME,
     pid: process.pid,
+    cwd: process.cwd(),
     contextUsagePct: lastContextUsagePct ?? estimateCurrentContextPct(),
   });
 }

@@ -64,7 +64,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `POST /registry/register` — `{name, role?, projects?, access_scope?, cold_start_strategy?, note?, requested_by?}` 创建或更新 `sessions-registry.json` 条目
 - `POST /registry/update` — `{name, projects, requested_by?}` 仅更新 `sessions-registry.json` 中某 session 的 `projects`
 - `GET /health` — Hub状态 + session列表 + messageCount
-- `GET /sessions` — 仅session列表；每项包含 `contextUsagePct`（同 `pid` 模式，register 可选上报）
+- `GET /sessions` — 仅session列表；每项包含 `pid`、`cwd`、`contextUsagePct`（register 可选上报）
 - `GET /session-alive?name=` — 返回 `{ok, name, alive, connectedAt, lastAliveProbe}`；`alive` 仅表示 `session.ws.readyState === OPEN`
 - `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
 - `GET /recent-messages?name=&since=&limit=` — 查询发给某个session（含广播）的近期持久化消息，默认6h/50条
@@ -98,7 +98,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover
 - ADR-010 模块 6 `context-usage-auto-handover` 使用单一阈值 `>50%`：超过阈值后，在 IPC 队列空、git 树洁、codex task 无 in-flight 三个最小任务单元信号中任两项为 true 时，触发 atomic handoff（rename old name → spawn original name → cold start brief 接管）；5 分钟 cooldown 防抖。
-- watchdog 默认每 60s 拉 Hub `/sessions`，遍历各 session 后用 `pid` 经 `session-state-reader` 定位 `transcriptPath`，独立读取 transcript 估算 `contextUsagePct`（usage JSON 优先，fallback bytes/4 ÷ 200000），不依赖 Hub `/sessions` 推送该字段；60s 内重复 tick 返回 `tick-interval` skip，不影响 wake-reaper / stuck-detector 并行 tick。
+- watchdog 默认每 60s 拉 Hub `/sessions`，遍历各 session 后用 register 上报的 `cwd` 直接扫描 `~/.claude/projects/<encoded-cwd>/` 下 mtime 最新 `.jsonl`，独立读取 transcript 估算 `contextUsagePct`（usage JSON 优先，fallback bytes/4 ÷ 200000），不依赖 Hub `/sessions` 推送该字段或 `~/.claude/sessions/<pid>.json`；60s 内重复 tick 返回 `tick-interval` skip，不影响 wake-reaper / stuck-detector 并行 tick。
 - watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定（包括 `ws-down-grace-exceeded`）都会被压成 `degraded` 并标记 `held-by-grace`
 - `ingestHeartbeat()` 会校验 heartbeat `ts` 鲜度：早于 watchdog `startedAt - 60s` 的历史消息，或解析失败的非法 `ts`，一律忽略，不得驱动 transition / handover
 - `WATCHDOG_COLD_START_GRACE_MS` 可覆盖该冷启保护时长；测试或回归对比可传 `0`

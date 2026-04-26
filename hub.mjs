@@ -79,6 +79,7 @@ import {
   createTask,
   validateMessage,
   normalizePid,
+  normalizeCwd,
   normalizeContextUsagePct,
   TASK_STATUSES,
 } from './lib/protocol.mjs';
@@ -386,6 +387,7 @@ wss.on('connection', (ws, req) => {
     inboxExpiry: null,
     gracefulReleasing: false,
     pid: null,
+    cwd: null,
     contextUsagePct: null,
   };
   session.ws = ws;
@@ -437,6 +439,7 @@ wss.on('connection', (ws, req) => {
       case 'register':
         session.channelPort = msg.channelPort ?? null;
         session.pid = normalizePid(msg.pid);
+        session.cwd = normalizeCwd(msg.cwd);
         session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
         send(ws, { type: 'registered', name: session.name });
         break;

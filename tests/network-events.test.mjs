@@ -101,3 +101,33 @@ test('broadcastNetworkUp: 只广播 suspended session 名单并在广播后清�
   assert.deepEqual(result.subscribers, ['wake-a']);
   assert.deepEqual(result.clearedSessions, ['houtu_builder', 'taiwei_builder']);
 });
+
+test('T-ADR-006-V03-STEP9 broadcastNetworkUp filters suspended sessions by reason', async () => {
+  const broadcaster = createNetworkEventBroadcaster({
+    router: {
+      broadcastToTopic() {
+        return ['wake-a'];
+      },
+    },
+    db: {
+      listSuspendedSessions() {
+        return [
+          { name: 'network-a', reason: 'stuck-network' },
+          { name: 'rate-a', reason: 'stuck-rate-limited' },
+          { name: 'manual-a', reason: 'manual' },
+        ];
+      },
+      clearSuspendedSessions(reason) {
+        assert.equal(reason, 'stuck-rate-limited');
+        return ['rate-a'];
+      },
+    },
+    now: () => 1776516690000,
+  });
+
+  const result = await broadcaster.broadcastNetworkUp({ reason: 'stuck-rate-limited' });
+
+  assert.deepEqual(result.payload.reason, 'stuck-rate-limited');
+  assert.deepEqual(result.payload.suspendedSessions, ['rate-a']);
+  assert.deepEqual(result.clearedSessions, ['rate-a']);
+});

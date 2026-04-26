@@ -2,7 +2,7 @@
 
 > IPC 基础设施 repo 的活清单。按优先级分段。所有条目有明确"现状 / 目标 / 验收 / Owner / ETA"。
 
-**最后刷新**：2026-04-26T14:25+08:00（jianmu-pm）
+**最后刷新**：2026-04-26T14:56+08:00（jianmu-pm）
 **刷新节奏**：每次重要产出 + 每周一 portfolio-sync · 老板 88% 周限额硬规矩：每完成任务立即落盘 + commit + push（不批量积压）
 
 ---
@@ -65,12 +65,12 @@
 - **Owner**：jianmu-pm 主驱实施 · harness 审 · 老板拍板
 - **ETA**：review 2026-04-27 / 实施 2026-05-08
 
-### ADR-006 v0.1 Plan C · watchdog per-session retry 计数（in-flight）
+### ADR-006 v0.1.1 Plan B 路径 C · Hub stale-detect-suspend 实施
 
-- **现状**：等派 codex · 改 `bin/network-watchdog.mjs` 加 per-session retry 计数（从 Hub /suspend 上报采集）+ retry-exhausted + anthropic API probe OK → POST /wake-suspended {target}。SOP-1 watchdog 第 9 probe rate_limit_pct 暂留等 ADR-009 review · 不共派
-- **目标**：TDD RED→GREEN + push origin
-- **Owner**：jianmu-pm 派 codex
-- **ETA**：14:50 派 · 15:30 codex done
+- **现状**：harness 14:48 cross-check Plan B 原 PowerShell stderr daemon 路径技术不可行（Claude Code hook events 无 stderr-watch）→ 改路径 C 与 Plan A 同源 lib/network-events.mjs/hub.mjs · ADR-006 v0.1.1 patch ship `2e29650` push origin/main · 我 jianmu-pm 接 brief + codex 实施。Hub 加 lastAliveProbe stale > 10min → POST /suspend {reason:'stuck-stale'} 自动触发 Plan A wake 路径
+- **目标**：TDD RED→GREEN + push origin · 与 Plan A/C 形成 portfolio session 自动接续完整链
+- **Owner**：jianmu-pm 派 codex（按 SOP v1.0 模板起 brief）
+- **ETA**：15:00 brief ship · 15:55 codex done
 
 ---
 
@@ -167,6 +167,7 @@
 
 ### 2026-04-26
 
+- [x] **AC-ADR-006-PLAN-C watchdog wake-suspended reaper** TDD Red→Green（origin/master 二 commit：RED `1093eee` + GREEN `7ae0271` · 5/5 PASS · npm test PASS · push OK · codex 三派两停（baseline-mismatch / line-1174 CRLF mixed）后 v3 grep-only 一次过）。改 `bin/network-watchdog.mjs` 加 `createWakeReaper` 工厂 export + 周期 60s 检查 suspended.length>0 + 最近 3 次 anthropic ok → POST /wake-suspended + 5min cooldown 防风暴。`lib/http-handlers.mjs` `/health` 端点扩 `suspended_sessions` 字段。配合 Plan A stale wake 形成双层（reaper 触发 broadcastNetworkUp → Plan A 自动 wake stale）。**沉淀**：feedback_codex_brief_preflight_relax.md v0.2（CRLF/LF mixed 文件 wc -l 不可信 · 必走 grep -cE 模式 + test -f 文件存在 · dispatch 前自验前置）+ MEMORY.md index 同步
 - [x] **AC-ADR-006-PLAN-A Hub auto-wake hook** TDD Red→Green（origin/master 二 commit：RED `e49be13` + GREEN `2c47c60` · 5/5 PASS · npm test 605/605 PASS · push OK · codex `bwoknxtsk` 4min 闭环）。改 `lib/network-events.mjs` broadcastNetworkUp 扩 stale session wake 逻辑（lastAliveProbe > 5min + ws.readyState=OPEN → router.routeMessage wake IPC · payload 加 autoWokenSessions[] 字段 · /wake-suspended 返回扩展不破坏现有）+ hub.mjs wire getSessions。三层校验全过：git log origin/master --grep ✅ + 独立 node --test 5/5 ✅ + bash task exit 0 ✅（mkdir 前置生效后 tee 不再 fail · feedback_codex_log_dir_mkdir 教训生效）。**注意**：runtime cache 不 hot-reload · 切账号后 portfolio fresh load 才真生效（feedback_mcp_server_no_hot_reload）
 - [x] **ADR-009 v0.1 design 4 SOP**（origin/master `cb38bc3` 178 lines · `handover/ADR-009-RATE-LIMIT-AUTO-WAKE-DESIGN.md`）。响应 boss 21:34 P0 派 + 02:02 88% 周限额 critique。SOP-1 watchdog 第 9 probe rate_limit_pct / SOP-2 stuck 三态分类 / SOP-3 wakeRateLimited 路径 / SOP-4 飞书"用量"命令 + Hub /usage endpoint。与 ADR-006 互补 · 共享 watchdog/Hub/PS hook/飞书基建。走 handover/ design 路径（docs/adr/009 已用 mcp-initialize-race-fix）· review 后转正式编号。harness 14:20 ack LGTM 等老板拍板
 - [x] **AC-IPC-SPAWN-WT-002 ipc_spawn host=wt fix v2 真起 acceptance** TDD Red→Green（origin/master 三 commit：RED `0967749` + GREEN `5b9a6b9` + sync `df9de3a`，7/7 tests PASS，npm test 全绿，push origin OK）。**真 root cause**：fix v1 (ba0ccef+2ad7d1a+fa526ff) 5/5 unit case PASS 但 harness 23:42 manual verify 暴露 partial — wt cmdline 构造对但 claude.exe 0 process · trace log 不存在 · ipc_sessions 5min 后空。第三层根因：mcp-server.mjs L439 `spawn('cmd', ['/c', startCommand], shell:false)` Node Windows 自动用 `\"` escape vs cmd.exe 期待 `""` doubled-quote · cmd 看 `\"` 当引号结束 inner path 截断。fix v2 方案 A：直接 `spawn('wt.exe', [args 数组])` 跳 outer cmd · Node 对 wt.exe 用 C runtime escape 兼容。新增 `buildWtSpawnArgs` + 保留 `buildWtStartCommand` v1 5 case 维持 PASS。**Q9 第 6 例 + dispatch lessons**：bash task notification exit 1 因 tee 写不存在目录 silent fail · 真值 fallback `git log origin/master --grep` + 独立 `node --test` 三层校验全过 · 立 `feedback_codex_log_dir_mkdir.md` + `feedback_mcp_server_no_hot_reload.md` 双 user memory（mcp-server 改 ship ≠ portfolio runtime 生效 · 必须切账号或重启 session 才 fresh load · 与 settings.json hot-reload 同源 · ADR-004 v0.1.1 §背景已点）

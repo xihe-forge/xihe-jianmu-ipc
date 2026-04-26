@@ -183,6 +183,7 @@ function buildInteractiveCommand({ sessionName, model }) {
 
 const DEFAULT_CLAUDE_BIN = 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
 const DEFAULT_SPAWN_FALLBACK_CWD = 'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness';
+const VSCODE_URI_BRIEF_LIMIT_BYTES = 5 * 1024;
 
 function getClaudeBinPath() {
   return process.env.CLAUDE_CLI_PATH || DEFAULT_CLAUDE_BIN;
@@ -471,6 +472,76 @@ export async function spawnSession({
       host: 'vscode-terminal',
       error: 'not implemented, use external',
     };
+  }
+
+  if (requestedHost === 'vscode-uri') {
+    if (process.platform !== 'win32') {
+      const content = buildSpawnFallbackContent({
+        sessionName,
+        task,
+        cwd: spawnCwd,
+        taskHint: task,
+        model,
+      });
+      if (dryRun) {
+        return {
+          spawned: false,
+          host: 'external',
+          fallbackIpcSent: false,
+          dryRun: true,
+          warning: 'vscode-uri is Windows-only, downgraded to external',
+          ipc_content: content,
+        };
+      }
+      await sendSpawnFallbackIpc({
+        sessionName,
+        task,
+        cwd: spawnCwd,
+        taskHint: task,
+        model,
+      });
+      return {
+        spawned: false,
+        host: 'external',
+        fallbackIpcSent: true,
+        warning: 'vscode-uri is Windows-only, downgraded to external',
+      };
+    }
+
+    const briefByteLength = Buffer.byteLength(task, 'utf8');
+    if (briefByteLength > VSCODE_URI_BRIEF_LIMIT_BYTES) {
+      return {
+        spawned: false,
+        host: 'vscode-uri',
+        error: `brief exceeds 5KB limit for vscode-uri (${briefByteLength} bytes)`,
+      };
+    }
+
+    const uri = `vscode://anthropic.claude-code/open?prompt=${encodeURIComponent(fullPrompt)}`;
+    const commandHint = `cmd.exe /c start "" "${uri}"`;
+    const uriByteLength = Buffer.byteLength(uri, 'utf8');
+    if (dryRun) {
+      return {
+        spawned: false,
+        host: 'vscode-uri',
+        dryRun: true,
+        command_hint: commandHint,
+        uri,
+        uri_byte_length: uriByteLength,
+      };
+    }
+
+    const child = spawn('cmd.exe', ['/c', 'start', '', uri], {
+      detached: true,
+      stdio: 'ignore',
+      env: ipcEnv,
+    });
+    child.once('error', (error) => {
+      process.stderr.write(`[ipc] vscode-uri spawn launch failed: ${error?.message ?? error}\n`);
+    });
+    child.unref();
+    process.stderr.write(`[ipc] spawned vscode-uri session "${sessionName}"\n`);
+    return { name: sessionName, host: 'vscode-uri', spawned: true, status: 'spawned', pid: child.pid };
   }
 
   if (requestedHost === 'external' && !interactive) {

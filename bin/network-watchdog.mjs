@@ -1002,7 +1002,8 @@ export function createNetworkWatchdog({
               isMinimalTaskUnitComplete: () => true,
               triggerHandover: createAtomicHandoverTrigger({
                 name: sessionName,
-                cwd: handoverConfig?.handoverRepoPath ?? process.cwd(),
+                // ADR-010 mod 6 wiring v6 fix·cwd 取原 session 自身 cwd（Hub /sessions[].cwd）·不取 watchdog 自身 / handoverRepoPath / process.cwd·防新 spawn 进错仓
+                cwd: session?.cwd ?? handoverConfig?.handoverRepoPath ?? process.cwd(),
                 handoverDir: handoverConfig?.handoverDir,
                 dryRun: handoverDryRun,
                 stderr,

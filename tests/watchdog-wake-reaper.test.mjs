@@ -101,4 +101,44 @@ describe('watchdog wake-suspended reaper', () => {
       { triggeredBy: 'watchdog-reaper' },
     ]);
   });
+
+  test('T-ADR-006-V03-STEP10 skips sessions inside per-session wake cooldown', async () => {
+    const posted = [];
+    const reaper = watchdog.createWakeReaper({
+      fetchHealth: async () => ({ suspended_sessions: [{ name: 'a', reason: 'stuck-rate-limited' }] }),
+      recentAnthropicProbes: () => [{ ok: true }, { ok: true }, { ok: true }],
+      postWakeSuspended: async (body) => posted.push(body),
+      cooldown: {
+        canWake: () => false,
+        recordWake: () => assert.fail('recordWake should not be called'),
+      },
+      now: () => 1_000_000,
+    });
+
+    assert.deepEqual(await reaper.tick(), { triggered: false, reason: 'cooldown', skippedCount: 1 });
+    assert.deepEqual(posted, []);
+  });
+
+  test('T-ADR-006-V03-STEP10 records wake and posts reason for eligible session', async () => {
+    const posted = [];
+    const recorded = [];
+    const reaper = watchdog.createWakeReaper({
+      fetchHealth: async () => ({ suspended_sessions: [{ name: 'a', reason: 'stuck-rate-limited' }] }),
+      recentAnthropicProbes: () => [{ ok: true }, { ok: true }, { ok: true }],
+      postWakeSuspended: async (body) => posted.push(body),
+      cooldown: {
+        canWake: () => true,
+        recordWake: (name) => recorded.push(name),
+      },
+      now: () => 1_000_000,
+    });
+
+    const result = await reaper.tick();
+
+    assert.equal(result.triggered, true);
+    assert.equal(result.suspendedCount, 1);
+    assert.deepEqual(posted, [{ triggeredBy: 'watchdog-reaper', reason: 'stuck-rate-limited' }]);
+    assert.deepEqual(recorded, ['a']);
+  });
+
 });

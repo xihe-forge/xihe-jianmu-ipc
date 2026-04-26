@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   createWatchdogIpcClient,
   createNetworkWatchdog,
@@ -226,6 +229,56 @@ test('createNetworkWatchdog: handover tick 60s 内重复调用返回 tick-interv
   await watchdog.runTick();
 
   assert.equal(capture.requests.filter((request) => request.url.endsWith('/sessions')).length, 2);
+});
+
+test('createNetworkWatchdog: handover tick reads transcript independent of Hub contextUsagePct', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-transcript-'));
+  try {
+    const transcriptPath = join(dir, 'session.jsonl');
+    writeFileSync(transcriptPath, 'x'.repeat(408_000));
+    const logs = [];
+    const spawned = [];
+    const capture = createFetchCapture({
+      [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+        { name: 'jianmu-pm', pid: 1777 },
+      ],
+      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
+        messages: [{ from: 'jianmu-pm', topic: 'status', content: 'drained ipc' }],
+      },
+    });
+    const watchdog = createIsolatedWatchdog({
+      fetchImpl: capture.fetchImpl,
+      stderr: (line) => logs.push(line),
+      now: () => 1_000_000,
+      ipcSpawn: async (args) => {
+        spawned.push(args);
+        return { spawned: true };
+      },
+      handoverEnabled: true,
+      handoverTickIntervalMs: 0,
+      handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
+      getSessionStateImpl: (pid) => (pid === 1777 ? { pid, transcriptPath } : null),
+      probes: {
+        cliProxy: async () => ok(),
+        hub: async () => ok(),
+        anthropic: async () => ok(),
+        dns: async () => ok(),
+      },
+    });
+
+    await watchdog.runTick();
+    const result = watchdog.getLastHandoverTickResult();
+
+    assert.equal(result.detected.length, 1);
+    assert.equal(result.detected[0].name, 'jianmu-pm');
+    assert.equal(result.detected[0].pct, 51);
+    assert.equal(spawned.length, 1);
+    assert.match(spawned[0].task, /Self-handover doc:/);
+    assert.match(spawned[0].task, /Recent IPC drain summary:/);
+    assert.ok(logs.some((line) => line.includes('estimateContextPct transcript session=jianmu-pm pid=1777 pct=51')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function createManualNow(start = 0) {

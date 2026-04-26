@@ -30,6 +30,7 @@ import { createStuckSessionDetector } from '../lib/stuck-session-detector.mjs';
 import {
   createAtomicHandoverTrigger,
   createContextUsageAutoHandover,
+  estimateContextPctFromTranscript,
 } from '../lib/context-usage-auto-handover.mjs';
 import { getSessionState } from '../lib/session-state-reader.mjs';
 import {
@@ -828,6 +829,7 @@ export function createNetworkWatchdog({
   handoverEnabled = false,
   handoverTickIntervalMs = 60 * 1000,
   handoverThreshold = 50,
+  getSessionStateImpl = getSessionState,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -949,7 +951,7 @@ export function createNetworkWatchdog({
           },
         ]));
       },
-      getSessionState,
+      getSessionState: getSessionStateImpl,
       readTranscriptTail,
       now,
     })
@@ -972,9 +974,8 @@ export function createNetworkWatchdog({
         const skipped = [];
         for (const session of onlineSessions) {
           const sessionName = typeof session?.name === 'string' ? session.name.trim() : '';
-          const contextUsagePct = Number(session?.contextUsagePct);
-          if (!sessionName || !Number.isFinite(contextUsagePct)) {
-            skipped.push({ name: sessionName || null, reason: 'missing-context-usage' });
+          if (!sessionName) {
+            skipped.push({ name: null, reason: 'missing-session-name' });
             continue;
           }
           if (sessionName === watchdogSessionName || sessionName.endsWith('-old')) {
@@ -984,10 +985,16 @@ export function createNetworkWatchdog({
 
           let entry = contextUsageHandoverDetectors.get(sessionName);
           if (!entry) {
-            entry = { contextUsagePct };
+            entry = { sessionRecord: session };
             entry.detector = createContextUsageAutoHandover({
               threshold: handoverThreshold,
-              estimateContextPct: async () => entry.contextUsagePct,
+              estimateContextPct: async (sessionRecord = entry.sessionRecord) => {
+                const state = getSessionStateImpl(sessionRecord?.pid);
+                if (!state?.transcriptPath) return 0;
+                const pct = estimateContextPctFromTranscript(state.transcriptPath);
+                stderr(`[network-watchdog] estimateContextPct transcript session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} pct=${pct}`);
+                return pct;
+              },
               isMinimalTaskUnitComplete: () => true,
               triggerHandover: createAtomicHandoverTrigger({
                 name: sessionName,
@@ -1018,9 +1025,9 @@ export function createNetworkWatchdog({
             });
             contextUsageHandoverDetectors.set(sessionName, entry);
           }
-          entry.contextUsagePct = contextUsagePct;
+          entry.sessionRecord = session;
 
-          const result = await entry.detector.tick();
+          const result = await entry.detector.tick(session);
           if (result?.triggered) {
             detected.push({ name: sessionName, ...result });
             stderr(`[network-watchdog] context usage handover triggered: ${sessionName} pct=${result.pct}`);

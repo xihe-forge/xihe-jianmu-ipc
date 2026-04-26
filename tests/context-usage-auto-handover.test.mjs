@@ -84,6 +84,24 @@ test('estimateContextPct throw is swallowed by tick', async () => {
   assert.equal(calls.trigger, 0);
 });
 
+test('tick passes sessionRecord into estimateContextPct', async () => {
+  const sessionRecord = { name: 'jianmu-pm', pid: 1777 };
+  let estimatedSessionRecord = null;
+  const auto = createContextUsageAutoHandover({
+    threshold: 50,
+    estimateContextPct: async (record) => {
+      estimatedSessionRecord = record;
+      return 51;
+    },
+    isMinimalTaskUnitComplete: () => true,
+    triggerHandover: async () => ({ handover: 'ok' }),
+    now: () => 1_000_000,
+  });
+
+  assert.equal((await auto.tick(sessionRecord)).triggered, true);
+  assert.equal(estimatedSessionRecord, sessionRecord);
+});
+
 test('triggerHandover throw does not update cooldown timestamp', async () => {
   const { auto, calls } = makeAuto({ triggerThrows: true });
 
@@ -147,6 +165,48 @@ test('transcript estimator uses last usage and clamps percent', () => {
     );
 
     assert.equal(estimateContextPctFromTranscript(transcriptPath, { contextWindow: 200_000 }), 100);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('transcript estimator safely returns 0 for missing transcript', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'transcript-missing-'));
+  try {
+    assert.equal(estimateContextPctFromTranscript(join(dir, 'missing.jsonl')), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('transcript estimator safely returns 0 for unreadable transcript path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'transcript-unreadable-'));
+  try {
+    assert.equal(estimateContextPctFromTranscript(dir), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('transcript estimator falls back to bytes/4 and clamps at 100%', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'transcript-byte-100-'));
+  try {
+    const transcriptPath = join(dir, 'session.jsonl');
+    writeFileSync(transcriptPath, 'x'.repeat(800_000));
+
+    assert.equal(estimateContextPctFromTranscript(transcriptPath, { contextWindow: 200_000 }), 100);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('transcript estimator falls back to bytes/4 at 50% threshold', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'transcript-byte-50-'));
+  try {
+    const transcriptPath = join(dir, 'session.jsonl');
+    writeFileSync(transcriptPath, 'x'.repeat(400_000));
+
+    assert.equal(estimateContextPctFromTranscript(transcriptPath, { contextWindow: 200_000 }), 50);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

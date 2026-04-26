@@ -43,13 +43,12 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
     assert.equal(argv[0], 'new-tab');
     assert.ok(argv.includes('--title'));
     assert.ok(argv.includes('test-f'));
-    assert.ok(argv.includes('--starting-directory'));
-    assert.ok(argv.includes('D:\\workspace\\test'));  // wiring v4·cwd normalize forward → backslash for wt --starting-directory
-    assert.ok(argv.includes('--'));
+    assert.ok(argv.includes('--'));  // wiring v5·removed --starting-directory·cwd 嵌入 cmd /k cd /d 内（避开 wt parser 0x80070005 BUG）
 
     const dashIdx = argv.indexOf('--');
     assert.equal(argv[dashIdx + 1], 'cmd');
     assert.equal(argv[dashIdx + 2], '/k');
+    assert.match(argv[dashIdx + 3], /cd \/d "D:\\workspace\\test"/);  // cd /d normalize backslash + quoted
     assert.match(argv[dashIdx + 3], /set IPC_NAME=test-f/);
     assert.match(argv[dashIdx + 3], /claude\.exe/);
   });

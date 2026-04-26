@@ -240,15 +240,13 @@ export function buildWtStartCommand({ sessionName, model, cwd }) {
 export function buildWtSpawnArgs({ sessionName, model, cwd }) {
   const claudeBin = getClaudeBinPath();
   const args = buildClaudeLaunchArgs({ model });
-  // wt.exe 直接 spawn · 跳过 outer cmd /c · Node 用 C runtime escape (\") · wt parser 兼容
-  // inner cmd /k 子串只剩单层引号 cmd 能正确 strip
-  const innerCmd = `set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}`;
-  // ADR-010 mod 6 wiring v4 fix·atomic handoff 触发的 cwd 可能是 forward-slash 格式（process.cwd 在某些 Node 配置下）·wt --starting-directory 在 Windows 接 backslash 更稳·normalize 防 ACCESS_DENIED 0x80070005
+  // ADR-010 mod 6 wiring v5 fix·atomic handoff 触发 wt 报 0x80070005·v4 cwd backslash normalize 不够·改用 cmd /k "cd /d <cwd> && ..." 嵌入 cwd 切换到 inner cmd·避开 wt --starting-directory + -- 分隔符 parser 问题（wt 把 cwd 与后续 arg 拼成单个 program path）
   const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
+  const cdSegment = normalizedCwd ? `cd /d ${quoteForCmd(normalizedCwd)} && ` : '';
+  const innerCmd = `${cdSegment}set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}`;
   return [
     'new-tab',
     '--title', sessionName,
-    '--starting-directory', normalizedCwd,
     '--', 'cmd', '/k', innerCmd,
   ];
 }

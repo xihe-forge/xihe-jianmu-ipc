@@ -40,6 +40,22 @@ test('T-ADR-006-V03-WIRING-FIX /sessions persists pid from register', { timeout:
   }
 });
 
+test('T-ADR-010-MOD6 /sessions persists contextUsagePct from register', { timeout: TEST_TIMEOUT }, async () => {
+  const hub = await startHub({ prefix: 'hub-sessions-context-usage' });
+  const ws = await connectSession(hub.port, 'context-usage-value', {
+    register: { pid: 12345, contextUsagePct: 61.5 },
+  });
+  try {
+    const sessions = await getSessions(hub.port);
+    const session = sessions.find((item) => item.name === 'context-usage-value');
+    assert.equal(session?.pid, 12345);
+    assert.equal(session?.contextUsagePct, 61.5);
+  } finally {
+    await closeWebSocket(ws);
+    await stopHub(hub);
+  }
+});
+
 test('T-ADR-006-V03-WIRING-FIX /sessions keeps pid isolated per session', { timeout: TEST_TIMEOUT }, async () => {
   const hub = await startHub({ prefix: 'hub-sessions-pid-isolated' });
   const first = await connectSession(hub.port, 'pid-a', { register: { pid: 111 } });

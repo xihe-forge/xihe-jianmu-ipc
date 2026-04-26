@@ -96,6 +96,10 @@ function createHarness(options = {}) {
         status: 'spawned',
       };
     },
+    estimateContextPct: async (args) => {
+      if (impl.estimateContextPct) return impl.estimateContextPct(args, { state, calls });
+      return 0;
+    },
     stderrLog: (message) => {
       calls.stderr.push(message);
       if (impl.stderrLog) impl.stderrLog(message, { state, calls });
@@ -126,11 +130,11 @@ async function importMcpServerModule() {
   return import(`${moduleUrl.href}?test=${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
-test('listTools: 暴露 14 个 MCP 工具', () => {
+test('listTools: 暴露 15 个 MCP 工具', () => {
   const { tools } = createHarness();
   const result = tools.listTools();
 
-  assert.equal(result.tools.length, 14);
+  assert.equal(result.tools.length, 15);
   assert.deepEqual(
     result.tools.map((tool) => tool.name),
     [
@@ -148,6 +152,7 @@ test('listTools: 暴露 14 个 MCP 工具', () => {
       'ipc_observation_detail',
       'ipc_register_session',
       'ipc_update_session',
+      'estimateContextPct',
     ],
   );
 });
@@ -823,6 +828,17 @@ test('ipc_recent_messages: HTTP 失败时返回 error result', async () => {
 
   assert.equal(result.isError, true);
   assert.equal(getText(result), 'Failed to fetch recent messages: hub unavailable');
+});
+
+test('estimateContextPct: returns contextUsagePct', async () => {
+  const { tools } = createHarness({
+    impl: {
+      estimateContextPct: async () => 63,
+    },
+  });
+  const result = await tools.handleToolCall('estimateContextPct', {});
+
+  assert.deepEqual(getJson(result), { contextUsagePct: 63 });
 });
 
 test('handleToolCall: 未知工具返回错误', async () => {

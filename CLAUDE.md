@@ -50,6 +50,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_observation_detail(project, id)` — 拉取单条 observation 的完整字段，不截断 `tool_input` / `tool_output`；若 tags 里有 `jsonl:` 元数据则一并返回
 - `ipc_register_session(name, role?, projects?, access_scope?, cold_start_strategy?, note?)` — 通过 Hub 维护 `~/.claude/sessions-registry.json`，不存在则创建，已存在则 merge 更新
 - `ipc_update_session(name, projects)` — 通过 Hub 仅更新 `sessions-registry.json` 里某 session 的 `projects` 列表
+- `estimateContextPct(transcriptPath?, contextWindow?)` — ADR-010 模块 6 context-usage-auto-handover 估算当前 transcript context 使用率（0-100），register 消息会携带 `contextUsagePct`
 
 ## HTTP API
 
@@ -63,7 +64,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `POST /registry/register` — `{name, role?, projects?, access_scope?, cold_start_strategy?, note?, requested_by?}` 创建或更新 `sessions-registry.json` 条目
 - `POST /registry/update` — `{name, projects, requested_by?}` 仅更新 `sessions-registry.json` 中某 session 的 `projects`
 - `GET /health` — Hub状态 + session列表 + messageCount
-- `GET /sessions` — 仅session列表
+- `GET /sessions` — 仅session列表；每项包含 `contextUsagePct`（同 `pid` 模式，register 可选上报）
 - `GET /session-alive?name=` — 返回 `{ok, name, alive, connectedAt, lastAliveProbe}`；`alive` 仅表示 `session.ws.readyState === OPEN`
 - `GET /messages?peer=&from=&to=&limit=` — 查询持久化消息历史
 - `GET /recent-messages?name=&since=&limit=` — 查询发给某个session（含广播）的近期持久化消息，默认6h/50条
@@ -96,6 +97,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - stuck session 自动挂起采用 ADR-006 v0.3 五信号 AND：Hub session WS OPEN、Claude session-state `status=busy`、`updatedAt` 超过阈值、transcript mtime 超过阈值、尾部命中 `ECONNRESET` / `429` / `rate limit` 等错误关键字，并在冷却期外才由 watchdog `suspendSession`。
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover
+- ADR-010 模块 6 `context-usage-auto-handover` 使用单一阈值 `>50%`：超过阈值后，在 IPC 队列空、git 树洁、codex task 无 in-flight 三个最小任务单元信号中任两项为 true 时，触发 atomic handoff（rename old name → spawn original name → cold start brief 接管）；5 分钟 cooldown 防抖。
 - watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定（包括 `ws-down-grace-exceeded`）都会被压成 `degraded` 并标记 `held-by-grace`
 - `ingestHeartbeat()` 会校验 heartbeat `ts` 鲜度：早于 watchdog `startedAt - 60s` 的历史消息，或解析失败的非法 `ts`，一律忽略，不得驱动 transition / handover
 - `WATCHDOG_COLD_START_GRACE_MS` 可覆盖该冷启保护时长；测试或回归对比可传 `0`

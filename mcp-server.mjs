@@ -15,6 +15,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createChannelNotifier } from './lib/channel-notification.mjs';
 import { createMcpTools } from './lib/mcp-tools.mjs';
+import { estimateContextPctFromTranscript } from './lib/context-usage-auto-handover.mjs';
 import { createRegisterMessage } from './lib/protocol.mjs';
 import {
   DEFAULT_PORT,
@@ -72,6 +73,25 @@ if (!process.env.IPC_NAME && !process.env.IPC_DEFAULT_NAME) {
 
 let IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || '';
+let lastContextUsagePct = null;
+
+function getTranscriptPath() {
+  return process.env.CLAUDE_TRANSCRIPT_PATH || process.env.TRANSCRIPT_PATH || '';
+}
+
+function estimateCurrentContextPct(args = {}) {
+  const pct = estimateContextPctFromTranscript(args.transcriptPath || getTranscriptPath(), args);
+  lastContextUsagePct = pct;
+  return pct;
+}
+
+function createCurrentRegisterMessage() {
+  return createRegisterMessage({
+    name: IPC_NAME,
+    pid: process.pid,
+    contextUsagePct: lastContextUsagePct ?? estimateCurrentContextPct(),
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Host auto-detection (WSL2 support)
@@ -166,6 +186,7 @@ const mcpTools = createMcpTools({
   httpPost,
   httpPatch,
   spawnSession,
+  estimateContextPct: estimateCurrentContextPct,
   stderrLog: (message) => process.stderr.write(message),
 });
 
@@ -918,7 +939,7 @@ function connect() {
     process.stderr.write('[ipc] connected to hub\n');
     reconnectAttempts = 0;
     ws = socket;
-    socket.send(JSON.stringify(createRegisterMessage({ name: IPC_NAME, pid: process.pid })));
+    socket.send(JSON.stringify(createCurrentRegisterMessage()));
     flushOutgoingQueue();
   });
 
@@ -969,7 +990,7 @@ async function initialConnect() {
         reconnectAttempts = 0;
         ws = socket;
 
-        socket.send(JSON.stringify(createRegisterMessage({ name: IPC_NAME, pid: process.pid })));
+        socket.send(JSON.stringify(createCurrentRegisterMessage()));
         flushOutgoingQueue();
 
         socket.addEventListener('message', handleWsMessage);

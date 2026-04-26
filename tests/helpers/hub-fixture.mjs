@@ -308,7 +308,7 @@ export function connectSession(port, name, options = {}) {
     };
 
     ws.once('open', () => {
-      ws.send(JSON.stringify({ type: 'register', name }));
+      ws.send(JSON.stringify({ type: 'register', name, ...options.register }));
     });
     ws.on('message', onMessage);
     ws.once('error', onError);

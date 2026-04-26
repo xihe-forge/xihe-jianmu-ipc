@@ -27,6 +27,10 @@ import {
   probeHub,
 } from '../lib/network-probes.mjs';
 import { createStuckSessionDetector } from '../lib/stuck-session-detector.mjs';
+import {
+  createAtomicHandoverTrigger,
+  createContextUsageAutoHandover,
+} from '../lib/context-usage-auto-handover.mjs';
 import { getSessionState } from '../lib/session-state-reader.mjs';
 import {
   getWakeRecord,
@@ -821,6 +825,9 @@ export function createNetworkWatchdog({
   ipcSpawn = null,
   stuckDetectorEnabled = false,
   stuckDetectorTickIntervalMs = 60 * 1000,
+  handoverEnabled = false,
+  handoverTickIntervalMs = 60 * 1000,
+  handoverThreshold = 50,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -848,6 +855,9 @@ export function createNetworkWatchdog({
   const anthropicProbeHistory = [];
   let wakeReaperNow = 0;
   let lastStuckDetectorTickAt = 0;
+  let lastHandoverTickAt = 0;
+  let lastHandoverTickResult = { detected: [], skipped: [] };
+  const contextUsageHandoverDetectors = new Map();
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
     harnessProbeConfig: {
@@ -943,6 +953,84 @@ export function createNetworkWatchdog({
       readTranscriptTail,
       now,
     })
+    : null;
+  const handoverDetector = handoverEnabled && typeof ipcSpawn === 'function'
+    ? {
+      async tick() {
+        const response = await fetchImpl(`${buildHubUrl(ipcPort)}/sessions`);
+        if (!isSuccessfulResponse(response)) {
+          return { detected: [], skipped: [{ reason: 'sessions-unavailable' }] };
+        }
+        const sessions = await response.json();
+        const onlineSessions = Array.isArray(sessions) ? sessions : [];
+        const onlineNames = new Set(onlineSessions.map((session) => session?.name).filter(Boolean));
+        for (const name of contextUsageHandoverDetectors.keys()) {
+          if (!onlineNames.has(name)) contextUsageHandoverDetectors.delete(name);
+        }
+
+        const detected = [];
+        const skipped = [];
+        for (const session of onlineSessions) {
+          const sessionName = typeof session?.name === 'string' ? session.name.trim() : '';
+          const contextUsagePct = Number(session?.contextUsagePct);
+          if (!sessionName || !Number.isFinite(contextUsagePct)) {
+            skipped.push({ name: sessionName || null, reason: 'missing-context-usage' });
+            continue;
+          }
+          if (sessionName === watchdogSessionName || sessionName.endsWith('-old')) {
+            skipped.push({ name: sessionName, reason: 'watchdog-or-retired-session' });
+            continue;
+          }
+
+          let entry = contextUsageHandoverDetectors.get(sessionName);
+          if (!entry) {
+            entry = { contextUsagePct };
+            entry.detector = createContextUsageAutoHandover({
+              threshold: handoverThreshold,
+              estimateContextPct: async () => entry.contextUsagePct,
+              isMinimalTaskUnitComplete: () => true,
+              triggerHandover: createAtomicHandoverTrigger({
+                name: sessionName,
+                cwd: handoverConfig?.handoverRepoPath ?? process.cwd(),
+                handoverDir: handoverConfig?.handoverDir,
+                now,
+                renameSession: async () => fetchImpl(`${buildHubUrl(ipcPort)}/prepare-rebind`, {
+                  method: 'POST',
+                  headers: {
+                    ...buildAuthJsonHeaders(hubAuthToken),
+                    'X-IPC-Session': sessionName,
+                  },
+                  body: JSON.stringify({ name: sessionName, ttl_seconds: 5 }),
+                }).then(async (prepareResponse) => ({
+                  ok: isSuccessfulResponse(prepareResponse),
+                  status: prepareResponse.status,
+                  ...(typeof prepareResponse.json === 'function' ? await prepareResponse.json() : {}),
+                })),
+                spawnSession: ipcSpawn,
+                getRecentMessages: async ({ since, limit }) => {
+                  const params = new URLSearchParams({ name: sessionName, since: String(since), limit: String(limit) });
+                  const recentResponse = await fetchImpl(`${buildHubUrl(ipcPort)}/recent-messages?${params.toString()}`);
+                  if (!isSuccessfulResponse(recentResponse)) return [];
+                  const body = await recentResponse.json();
+                  return Array.isArray(body?.messages) ? body.messages : [];
+                },
+              }),
+            });
+            contextUsageHandoverDetectors.set(sessionName, entry);
+          }
+          entry.contextUsagePct = contextUsagePct;
+
+          const result = await entry.detector.tick();
+          if (result?.triggered) {
+            detected.push({ name: sessionName, ...result });
+            stderr(`[network-watchdog] context usage handover triggered: ${sessionName} pct=${result.pct}`);
+          } else {
+            skipped.push({ name: sessionName, ...(result && typeof result === 'object' ? result : { skipped: result }) });
+          }
+        }
+        return { detected, skipped };
+      },
+    }
     : null;
 
   const networkStateMachine = createStateMachineImpl({
@@ -1222,6 +1310,26 @@ export function createNetworkWatchdog({
     }
   }
 
+  async function runHandoverTick() {
+    if (!handoverDetector) {
+      return { detected: [], skipped: [] };
+    }
+    const ts = now();
+    if (ts - lastHandoverTickAt < handoverTickIntervalMs) {
+      lastHandoverTickResult = { detected: [], skipped: [{ reason: 'tick-interval' }] };
+      return lastHandoverTickResult;
+    }
+    lastHandoverTickAt = ts;
+    try {
+      lastHandoverTickResult = await handoverDetector.tick();
+      return lastHandoverTickResult;
+    } catch (error) {
+      stderr(`[network-watchdog] handover detector tick failed: ${error?.message ?? error}`);
+      lastHandoverTickResult = { detected: [], skipped: [] };
+      return lastHandoverTickResult;
+    }
+  }
+
   function ingestHarnessHeartbeat(heartbeat) {
     if (!heartbeat || typeof heartbeat !== 'object') {
       return false;
@@ -1266,6 +1374,7 @@ export function createNetworkWatchdog({
       await Promise.all([
         runWakeReaperTick(lastChecks),
         runStuckDetectorTick(),
+        runHandoverTick(),
       ]);
       return {
         ...networkState,
@@ -1372,6 +1481,7 @@ export function createNetworkWatchdog({
     getState: buildCompositeState,
     getHarnessState: buildHarnessSnapshot,
     getLastHandoverResult: () => lastHandoverResult,
+    getLastHandoverTickResult: () => lastHandoverTickResult,
     getConfig: () => ({
       ipcPort,
       watchdogPort: currentWatchdogPort,
@@ -1421,6 +1531,7 @@ export async function startWatchdog(options = {}) {
     lineage,
     triggerHarnessSelfHandoverImpl: options.triggerHarnessSelfHandoverImpl ?? triggerHarnessSelfHandover,
     stuckDetectorEnabled: options.stuckDetectorEnabled ?? true,
+    handoverEnabled: options.handoverEnabled ?? true,
     handoverConfig: {
       checkpointPath: baseHandoverConfig.checkpointPath ?? DEFAULT_CHECKPOINT_PATH,
       lastBreathPath: baseHandoverConfig.lastBreathPath ?? DEFAULT_LAST_BREATH_PATH,

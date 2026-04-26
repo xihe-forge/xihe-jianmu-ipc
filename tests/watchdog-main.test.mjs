@@ -192,19 +192,70 @@ test('createWatchdogIpcClient: sendMessage 走 POST /send 并带上 from/topic',
   });
 });
 
-function createFetchCapture() {
+test('createNetworkWatchdog: handover tick 60s 内重复调用返回 tick-interval skip', async () => {
+  const capture = createFetchCapture({
+    [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+      { name: 'jianmu-pm', contextUsagePct: 10 },
+    ],
+  });
+  const clock = createManualNow(60_000);
+  const watchdog = createIsolatedWatchdog({
+    fetchImpl: capture.fetchImpl,
+    now: clock.now,
+    ipcSpawn: async () => ({ spawned: true }),
+    handoverEnabled: true,
+    handoverTickIntervalMs: 60_000,
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+    },
+  });
+
+  await watchdog.runTick();
+  await watchdog.runTick();
+
+  assert.equal(capture.requests.filter((request) => request.url.endsWith('/sessions')).length, 1);
+  assert.deepEqual(watchdog.getLastHandoverTickResult(), {
+    detected: [],
+    skipped: [{ reason: 'tick-interval' }],
+  });
+
+  clock.advance(60_000);
+  await watchdog.runTick();
+
+  assert.equal(capture.requests.filter((request) => request.url.endsWith('/sessions')).length, 2);
+});
+
+function createManualNow(start = 0) {
+  let current = start;
+  return {
+    now: () => current,
+    advance: (deltaMs) => {
+      current += deltaMs;
+      return current;
+    },
+  };
+}
+
+function createFetchCapture(routes = {}) {
   const requests = [];
 
   return {
     requests,
     fetchImpl: async (url, init = {}) => {
+      const stringUrl = String(url);
       requests.push({
         method: init.method ?? 'GET',
-        url: String(url),
+        url: stringUrl,
         headers: normalizeHeaders(init.headers),
         body: typeof init.body === 'string' ? JSON.parse(init.body) : init.body,
       });
-      return { status: 200 };
+      return {
+        status: 200,
+        json: async () => routes[stringUrl] ?? {},
+      };
     },
   };
 }

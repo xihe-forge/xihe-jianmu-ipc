@@ -32,24 +32,58 @@ function createNetworkError(code, message) {
   return error;
 }
 
-test('probeCliProxy: 4xx 响应视为可达并记录耗时', async () => {
+test('probeCliProxy: healthz 200 响应视为可达并记录耗时', async () => {
   const clock = createClock(100);
   const calls = [];
   const result = await probeCliProxy({
     fetchImpl: async (url, options) => {
       calls.push({ url, options });
       clock.advance(25);
-      return { status: 400 };
+      return { status: 200 };
     },
     now: clock.now,
   });
 
   assert.deepEqual(result, { ok: true, latencyMs: 25 });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'http://127.0.0.1:8317/v1/responses');
-  assert.equal(calls[0].options.method, 'POST');
-  assert.equal(calls[0].options.headers['content-type'], 'application/json');
-  assert.equal(calls[0].options.body, '{}');
+  assert.equal(calls[0].url, 'http://127.0.0.1:8317/healthz');
+  assert.equal(calls[0].options.method, 'GET');
+  assert.equal(calls[0].options.headers, undefined);
+  assert.equal(calls[0].options.body, undefined);
+});
+
+test('probeCliProxy: healthz 503 返回失败', async () => {
+  const clock = createClock(20);
+  const result = await probeCliProxy({
+    fetchImpl: async () => {
+      clock.advance(8);
+      return { status: 503 };
+    },
+    now: clock.now,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    latencyMs: 8,
+    error: 'HTTP 503',
+  });
+});
+
+test('probeCliProxy: fetch 抛错返回失败', async () => {
+  const clock = createClock(30);
+  const result = await probeCliProxy({
+    fetchImpl: async () => {
+      clock.advance(5);
+      throw new Error('fetch failed');
+    },
+    now: clock.now,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    latencyMs: 5,
+    error: 'fetch failed',
+  });
 });
 
 test('probeCliProxy: 超时返回失败且记录耗时', async () => {

@@ -110,6 +110,8 @@
 |---|---|---|
 | 1835 | 2026-04-26T18:35+08:00 | jianmu-pm lineage 9 切账号前最后落档 · in-flight 总览 + 在线状态 + 关键文件 + watchdog anomaly |
 | 1900 update | 2026-04-26T19:00+08:00 | lineage 9 实质工作收尾 update（提前通用·切账号信号未到但工作基本结束）|
+| 1925 update | 2026-04-26T19:25+08:00 | c8080b0 vscode-uri v1 ship + a9894b2 VSCode terminal 调查报告·c8080b0 方向被老板 critique 修正 |
+| 1930 5h-pause | 2026-04-26T19:30+08:00 | 5h 额度到期 broadcast（harness 19:25）·22:25 恢复·写 self-handover 收尾 + 第一动作清单 |
 
 ---
 
@@ -162,3 +164,68 @@ lineage 9 同日内**累计 5 个反 idle / 反漂移 memory**：
 | B vscode-uri | ⏳ 跑中（v2 第二派） | - | - | - |
 
 = AI 节奏比 brief 原估（~2h）快 4-9×。flag 误用 3 次复刻成本：cliProxy 17min + ADR-006 10min + vscode-uri v1 <1min = 总 ~28min 浪费（可下 lineage 完全避免，SOP §preflight 5 项立后归 0 是 KPI）。
+
+---
+
+## 九、5h 额度到期前 final 状态（19:30 收尾·22:25 恢复点）
+
+### 9.1 19:25 后追加 ship
+
+| SHA | 内容 |
+|---|---|
+| c8080b0 | B vscode-uri 一键 spawn 实施（首次 0-violation 派单成功·6min cycle）|
+| 5b64a9a | self-handover lineage 9 final update 19:00 |
+| 3123c6f（tianshu）| case-study 4a §10.7 双 codex AI 节奏实证 + 0-violation 里程碑 |
+| **a9894b2** | **VSCode 内置 terminal 调查报告**（接老板 19:11 critique·c8080b0 方向被指出·扩展 webview 与 portfolio 不兼容）|
+
+### 9.2 c8080b0 vscode-uri 方向 critique 后状态
+
+老板 19:11 critique（经 harness 转）：**c8080b0 触发 Anthropic 扩展聊天面板 webview·不是 VSCode 内置 terminal 跑 claude CLI**·与 portfolio 12 session 不兼容（不挂 hooks / 不连 IPC Hub / 不写 session-state）。
+
+c8080b0 **不 revert**·保留作 vscode-uri host（chat panel UI 单次会话入口）·新增 vscode-terminal host 走调查报告 §四 路径 D（自研 xihe-portfolio-spawn VSCode 扩展）。
+
+### 9.3 22:25 恢复后 lineage 10 第一动作清单（按优先级）
+
+#### 立刻必做（cold start 7 步后）
+1. drain `ipc_recent_messages since=10800000`（3 小时）拉 22:25 前老板 / harness / director 等留言
+2. 重点查老板对调查报告 a9894b2 §五 3 决策点的回复：
+   - Q1·手工先用 vs 完整自动化（路径 D 扩展）vs 双版并存？
+   - Q2·xihe-portfolio-spawn .vsix 部署：portfolio 子仓 build vs VSCode marketplace 发布？
+   - Q3·host 命名：vscode-terminal（覆盖现 stub）vs vscode-terminal-cli（明确区分）？
+
+#### 等老板回 Q1 决策后
+- 若选「完整自动化」：起 codex brief（参考 `xihe-jianmu-ipc/docs/research/ADR-006-V03-CODEX-BRIEF-DRAFT.md` 模板）·派 codex 实施 xihe-portfolio-spawn 扩展 + ipc_spawn host=vscode-terminal 集成（~40min AI 节奏·按 SOP §preflight 5 项自检·已实证 0-violation 派单可行）
+- 若选「手工先用」：等 Phase 1 推进过程中老板用感反馈再决策完整自动化时机
+- 若选「双版并存」：先手工·并行起 codex brief·老板手工试用反馈期间 codex 跑·两线并进
+
+#### 不依赖老板回答的 backlog（idle 期可做）
+- task #6·harness state 机 stale 深挖（lastTransition 4 天前但 lastProbe ok）·建议并入 ADR-006 v0.3 第二波 brief 范围
+- ADR-006 v0.3 第二波 brief 起草（步骤 8 唤醒冷却 + 步骤 9/10 A/C 模块微调·参考已 ship brief draft 模板）
+- case-study 4a §10.7 后续数据点持续观察（第二波 5 session 切账号后接入 spawn 时刻 / cold-start 完成时刻）
+
+### 9.4 IPC Hub 维护责任（jianmu-pm own·5h 期间）
+
+按 harness 19:25 broadcast：
+- IPC Hub WebSocket（127.0.0.1:3179）保持运行·不 kill
+- network-watchdog（127.0.0.1:3180）保持运行
+- 22:25 恢复时全 portfolio session 自动重连（hooks + ipc_register_session）·不丢路径
+
+### 9.5 in-flight codex 任务
+
+5h 期间**无 in-flight codex**：
+- E.2 cliProxy probe d78b339 ✅ ship
+- E.1 ADR-006 v0.3 第一波 4 commit ✅ ship
+- B vscode-uri c8080b0 ✅ ship（方向被 critique 后保留作 v1）
+- xihe-portfolio-spawn 扩展实施·**未派单**·等老板 22:25 后回 3 决策点
+
+= 5h 期间无 codex 执行风险·无浪费 token。
+
+### 9.6 lineage 10 不必担心
+
+- 双 codex AI 节奏实证完整闭环（cliProxy 17min + ADR-006 13min + vscode-uri 6min = 36min）
+- SOP §preflight 5 项立项·KPI 归 0 已实证（vscode-uri v2 首次 0-violation）
+- 接力 commit SOP 已熟（cliProxy 1 commit + ADR-006 4 commit 序列两次实证）
+- VSCode terminal 调查报告 ship·设计就绪·派 codex brief 模板可立即起
+- self-handover 8 段完整（含元自纠 + watchdog anomaly + 关键文件 + git 规范 + 0-violation 里程碑）
+
+= **lineage 10 cold start → 老板回决策 → 派 codex 实施**一气呵成·无需重新调研。

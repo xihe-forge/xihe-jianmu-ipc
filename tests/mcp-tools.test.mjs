@@ -587,7 +587,7 @@ test('ipc_spawn: 非法 host 会被拒绝', async () => {
   assert.equal(calls.spawnSession.length, 0);
   assert.equal(
     getText(result),
-    'Invalid host "tmux": must be one of wt, vscode-terminal, external',
+    'Invalid host "tmux": must be one of wt, vscode-terminal, external, vscode-uri',
   );
 });
 

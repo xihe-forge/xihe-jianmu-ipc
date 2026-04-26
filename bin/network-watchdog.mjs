@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { createRegisterMessage } from '../lib/protocol.mjs';
 import { createStateMachine } from '../lib/network-state.mjs';
 import { createHarnessStateMachine } from '../lib/harness-state.mjs';
 import { probeHarnessHeartbeat } from '../lib/harness-heartbeat.mjs';
@@ -682,7 +683,7 @@ export function createWatchdogIpcClient({
 
     socket.on('open', () => {
       try {
-        socket.send(JSON.stringify({ type: 'register', name: sessionName }));
+        socket.send(JSON.stringify(createRegisterMessage({ name: sessionName, pid: process.pid })));
         socket.send(JSON.stringify({ type: 'subscribe', topic: harnessHeartbeatTopic }));
       } catch (error) {
         stderr(`[network-watchdog] watchdog WS subscribe failed: ${toErrorMessage(error)}`);

@@ -78,6 +78,7 @@ import {
   createSystemEvent,
   createTask,
   validateMessage,
+  normalizePid,
   TASK_STATUSES,
 } from './lib/protocol.mjs';
 import {
@@ -383,6 +384,7 @@ wss.on('connection', (ws, req) => {
     inbox: [],
     inboxExpiry: null,
     gracefulReleasing: false,
+    pid: null,
   };
   session.ws = ws;
   session.connectedAt = Date.now();
@@ -432,6 +434,7 @@ wss.on('connection', (ws, req) => {
         break;
       case 'register':
         session.channelPort = msg.channelPort ?? null;
+        session.pid = normalizePid(msg.pid);
         send(ws, { type: 'registered', name: session.name });
         break;
       case 'subscribe':

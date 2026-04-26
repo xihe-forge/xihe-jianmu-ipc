@@ -15,6 +15,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createChannelNotifier } from './lib/channel-notification.mjs';
 import { createMcpTools } from './lib/mcp-tools.mjs';
+import { createRegisterMessage } from './lib/protocol.mjs';
 import {
   DEFAULT_PORT,
   HUB_AUTOSTART_TIMEOUT,
@@ -917,7 +918,7 @@ function connect() {
     process.stderr.write('[ipc] connected to hub\n');
     reconnectAttempts = 0;
     ws = socket;
-    socket.send(JSON.stringify({ type: 'register', name: IPC_NAME }));
+    socket.send(JSON.stringify(createRegisterMessage({ name: IPC_NAME, pid: process.pid })));
     flushOutgoingQueue();
   });
 
@@ -968,7 +969,7 @@ async function initialConnect() {
         reconnectAttempts = 0;
         ws = socket;
 
-        socket.send(JSON.stringify({ type: 'register', name: IPC_NAME }));
+        socket.send(JSON.stringify(createRegisterMessage({ name: IPC_NAME, pid: process.pid })));
         flushOutgoingQueue();
 
         socket.addEventListener('message', handleWsMessage);

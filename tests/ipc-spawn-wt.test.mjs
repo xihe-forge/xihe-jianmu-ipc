@@ -44,7 +44,7 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
     assert.ok(argv.includes('--title'));
     assert.ok(argv.includes('test-f'));
     assert.ok(argv.includes('--starting-directory'));
-    assert.ok(argv.includes('D:/workspace/test'));
+    assert.ok(argv.includes('D:\\workspace\\test'));  // wiring v4·cwd normalize forward → backslash for wt --starting-directory
     assert.ok(argv.includes('--'));
 
     const dashIdx = argv.indexOf('--');

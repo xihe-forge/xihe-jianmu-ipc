@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { createRegisterMessage } from '../lib/protocol.mjs';
+import { createWakeCooldown } from '../lib/wake-cooldown.mjs';
 import { createStateMachine } from '../lib/network-state.mjs';
 import { createHarnessStateMachine } from '../lib/harness-state.mjs';
 import { probeHarnessHeartbeat } from '../lib/harness-heartbeat.mjs';
@@ -28,8 +29,10 @@ import {
 import { createStuckSessionDetector } from '../lib/stuck-session-detector.mjs';
 import { getSessionState } from '../lib/session-state-reader.mjs';
 import {
+  getWakeRecord,
   listSuspendedSessions,
   suspendSession,
+  upsertWakeRecord,
 } from '../lib/db.mjs';
 
 export const DEFAULT_IPC_PORT = 3179;
@@ -499,6 +502,7 @@ export function createWakeReaper({
   requiredConsecutiveOk = 3,
   tickIntervalMs = 0,
   initialLastTickAt = null,
+  cooldown = null,
 }) {
   let lastTriggerAt = null;
   let lastTickAt = Number.isFinite(initialLastTickAt) ? initialLastTickAt : null;
@@ -525,9 +529,24 @@ export function createWakeReaper({
         return { triggered: false, reason: 'no-suspended' };
       }
 
-      await postWakeSuspended({ triggeredBy: 'watchdog-reaper' }).catch(() => {});
+      const records = suspended.map((session) => (typeof session === 'string' ? { name: session, reason: null } : session));
+      const eligible = records.filter((session) => cooldown?.canWake ? cooldown.canWake(session.name) : true);
+      if (eligible.length === 0) {
+        return { triggered: false, reason: 'cooldown', skippedCount: records.length };
+      }
+
+      const reasons = [...new Set(eligible.map((session) => session.reason).filter(Boolean))];
+      for (const reason of reasons.length > 0 ? reasons : [null]) {
+        await postWakeSuspended({
+          triggeredBy: 'watchdog-reaper',
+          ...(reason ? { reason } : {}),
+        }).catch(() => {});
+      }
+      for (const session of eligible) {
+        cooldown?.recordWake?.(session.name);
+      }
       lastTriggerAt = now();
-      return { triggered: true, suspendedCount: suspended.length };
+      return { triggered: true, suspendedCount: eligible.length };
     },
   };
 }
@@ -880,6 +899,7 @@ export function createNetworkWatchdog({
     }));
   }
 
+  const wakeCooldown = createWakeCooldown({ db: { getWakeRecord, upsertWakeRecord } });
   const wakeReaper = createWakeReaper({
     fetchHealth: async () => {
       const response = await fetchImpl(`${buildHubUrl(ipcPort)}/health`);
@@ -897,6 +917,7 @@ export function createNetworkWatchdog({
     now: () => wakeReaperNow,
     tickIntervalMs: 60 * 1000,
     initialLastTickAt: 0,
+    cooldown: wakeCooldown,
   });
   const stuckDetector = stuckDetectorEnabled
     ? createStuckSessionDetector({

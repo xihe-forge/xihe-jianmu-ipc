@@ -1,4 +1,4 @@
-[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+﻿[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [English](README.md) | [中文](README.zh-CN.md)
 
 # xihe-jianmu-ipc
@@ -185,7 +185,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `ipc_sessions()`：查看当前在线 session
 - `ipc_whoami()`：查看当前 session 名称、Hub 地址和连接状态
 - `ipc_subscribe(topic, action)`：订阅 / 退订 topic
-- `ipc_spawn(name, task, interactive?, model?, host?, cwd?)`：拉起新的 Claude Code session；`host=wt|vscode-terminal|external`，默认 `external`；`cwd` 未传时回退到调用方 `process.cwd()`
+- `ipc_spawn(name, task, interactive?, model?, runtime?, host?, cwd?)`：拉起新的 Claude Code 或 Codex session；`runtime=claude|codex`，默认 `claude`；`host=wt|vscode-terminal|external`，默认 `external`；`cwd` 未传时回退到调用方 `process.cwd()`
 - `ipc_rename(name)`：重命名当前 session
 - `ipc_reclaim_my_name(name)`：当冷启动发现自己的目标名被 zombie holder 卡住时，先请求 Hub 主动 ping 探测并回收该占位
 - `ipc_reconnect(host?, port?)`：切换 Hub 地址并重连
@@ -198,7 +198,9 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 
 `host="external"` 保持旧行为，只返回 `command_hint` 或 fallback 信息；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起新会话；`host="vscode-terminal"` 当前返回 not implemented 提示。
 
-`host="wt"` / `spawn-fallback` 的标准启动命令是 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC 认证，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
+`runtime="claude"` + `host="wt"` / `spawn-fallback` 的标准启动命令是 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC 认证，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
+
+`runtime="codex"` + `interactive=true` 使用 `wt.exe ... -- cmd /k "cd /d <cwd> && codex --dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=\"<name>\"'"` 起长存 Codex；`runtime="codex"` + `interactive=false` 使用 `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -c 'mcp_servers.jianmu-ipc.env.IPC_NAME="<name>"' '<task prompt>'` 一次性派单并退出。
 
 `cwd` 属于 spawn 契约：调用方显式传什么目录，新 session 就从什么目录启动；不传则为兼容旧行为，回退到调用方 `process.cwd()`。
 
@@ -248,6 +250,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 ## License
 
 MIT — by [xihe-forge](https://github.com/xihe-forge)
+
 
 
 

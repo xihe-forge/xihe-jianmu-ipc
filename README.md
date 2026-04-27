@@ -1,4 +1,4 @@
-[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+﻿[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [English](README.md) | [中文](README.zh-CN.md)
 
 # xihe-jianmu-ipc
@@ -366,8 +366,8 @@ ipc_send(to="worker", content="build started", topic="build-events")
 
 ### `ipc_spawn`
 
-生成一个新的 Claude Code 会话（后台或交互式）。
-Spawn a new Claude Code session (background or interactive).
+生成一个新的 Claude Code 或 Codex 会话（后台或交互式）。
+Spawn a new Claude Code or Codex session (background or interactive).
 
 | Param         | Type    | Required | Description                                                                   |
 | ------------- | ------- | -------- | ----------------------------------------------------------------------------- |
@@ -375,6 +375,7 @@ Spawn a new Claude Code session (background or interactive).
 | `task`        | string  | yes      | Task description / initial prompt                                             |
 | `interactive` | boolean | no       | `true` opens a new terminal window; `false` (default) runs headless           |
 | `model`       | string  | no       | Model override, e.g. `claude-sonnet-4-6`                                      |
+| `runtime`     | string  | no       | Runtime: `claude` (default) or `codex`                                        |
 | `host`        | string  | no       | Spawn host: `wt`, `vscode-terminal`, or `external` (default)                  |
 | `cwd`         | string  | no       | Working directory for the spawned session; defaults to caller `process.cwd()` |
 
@@ -382,6 +383,7 @@ Spawn a new Claude Code session (background or interactive).
 ipc_spawn(name="reviewer", task="Review the PR diff and report back via ipc_send")
 ipc_spawn(name="ui-dev", task="Build the dashboard component", interactive=true)
 ipc_spawn(name="harness", task="Resume from HANDOVER-HARNESS-20260419-2330.md", host="wt", model="opus")
+ipc_spawn(name="codex-1", task="Run TDD and report back", runtime="codex", host="wt", interactive=true)
 ```
 
 生成的 session 会自动获知自己的 IPC 名称，并被指示在完成后向生成方 session 汇报。
@@ -389,7 +391,9 @@ Spawned sessions automatically know their IPC name and are instructed to report 
 
 `host="external"` 保持兼容旧行为，只返回 `command_hint` / fallback 信息而不真正起进程；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起进程；`host="vscode-terminal"` 当前返回 not implemented 提示。
 
-`host="wt"` / `spawn-fallback` 的 canonical 启动命令为 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC auth，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
+`runtime="claude"` + `host="wt"` / `spawn-fallback` 的 canonical 启动命令为 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC auth，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
+
+`runtime="codex"` + `interactive=true` 使用 `wt.exe ... -- cmd /k "cd /d <cwd> && codex --dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=\"<name>\"'"` 起长存 Codex；`runtime="codex"` + `interactive=false` 使用 `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -c 'mcp_servers.jianmu-ipc.env.IPC_NAME="<name>"' '<task prompt>'` 一次性派单并退出。
 
 `cwd` 是 spawn 契约的一部分。调用方若显式传入，则新 session 从该目录启动；未传时保持兼容，回退到调用方 `process.cwd()`。
 
@@ -1078,6 +1082,7 @@ More products for AI collaboration, search, growth, and digital experiences are 
 ## License
 
 MIT — by [xihe-forge](https://github.com/xihe-forge)
+
 
 
 

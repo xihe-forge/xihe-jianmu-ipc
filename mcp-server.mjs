@@ -352,6 +352,15 @@ function buildClaudeLaunchArgs({ model } = {}) {
   return `--dangerously-skip-permissions --dangerously-load-development-channels server:ipc${model ? ` --model ${model}` : ''}`;
 }
 
+export function buildCodexLaunchArgs({ sessionName, cmdEscaped = false }) {
+  const ipcNameValue = cmdEscaped ? `\\"${sessionName}\\"` : `"${sessionName}"`;
+  return `--dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=${ipcNameValue}'`;
+}
+
+function quoteForShellSingle(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
 function escapeForCmdQuotedArgument(value) {
   return String(value).replace(/"/g, '""');
 }
@@ -386,6 +395,34 @@ export function buildWtSpawnArgs({ sessionName, model, cwd }) {
     '--title', sessionName,
     '--', 'cmd', '/k', innerCmd,
   ];
+}
+
+export function buildCodexWtCommand({ sessionName, cwd }) {
+  const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
+  const cdSegment = normalizedCwd ? `cd /d ${quoteForCmd(normalizedCwd)} && ` : '';
+  const innerCmd = `${cdSegment}codex ${buildCodexLaunchArgs({ sessionName, cmdEscaped: true })}`;
+  return [
+    '--window', 'last',
+    'new-tab',
+    '--title', sessionName,
+    '--', 'cmd', '/k', innerCmd,
+  ];
+}
+
+function buildCodexExecArgs({ sessionName, prompt }) {
+  return [
+    'exec',
+    '--dangerously-bypass-approvals-and-sandbox',
+    '--skip-git-repo-check',
+    '-c',
+    `mcp_servers.jianmu-ipc.env.IPC_NAME="${sessionName}"`,
+    prompt,
+  ];
+}
+
+export function buildCodexExecCommand({ sessionName, prompt }) {
+  const args = buildCodexExecArgs({ sessionName, prompt });
+  return `codex exec ${args.slice(1, -1).map(quoteForShellSingle).join(' ')} ${quoteForShellSingle(args.at(-1))}`;
 }
 
 function countWindowsTerminalProcesses() {
@@ -541,6 +578,7 @@ export async function spawnSession({
   task,
   interactive,
   model,
+  runtime = 'claude',
   host,
   dryRun = false,
   cwd = null,
@@ -563,6 +601,105 @@ export async function spawnSession({
   const fullPrompt = `${ipcInstruction}\n\nTask: ${task}`;
   const requestedHost = host;
   const spawnCwd = cwd || process.cwd();
+
+  if (runtime === 'codex' && requestedHost === 'wt') {
+    if (process.platform !== 'win32') {
+      const commandHint = `wt.exe ${buildCodexWtCommand({ sessionName, cwd: spawnCwd }).join(' ')}`;
+      if (dryRun) {
+        return {
+          spawned: false,
+          host: 'external',
+          runtime: 'codex',
+          fallbackIpcSent: false,
+          dryRun: true,
+          warning: 'wt is only supported on win32, downgraded to external',
+          command_hint: commandHint,
+          cwd: normalizeDisplayPath(spawnCwd),
+        };
+      }
+      return {
+        spawned: false,
+        host: 'external',
+        runtime: 'codex',
+        fallbackIpcSent: false,
+        warning: 'wt is only supported on win32, downgraded to external',
+      };
+    }
+
+    const wtArgs = buildCodexWtCommand({ sessionName, cwd: spawnCwd });
+    const commandHint = `wt.exe ${wtArgs.join(' ')}`;
+    if (dryRun) {
+      return {
+        spawned: false,
+        host: 'wt',
+        runtime: 'codex',
+        mode: 'interactive',
+        dryRun: true,
+        command_hint: commandHint,
+        cwd: normalizeDisplayPath(spawnCwd),
+      };
+    }
+
+    const baselineTerminalCount = await countWindowsTerminalProcesses();
+    const child = spawn('wt.exe', wtArgs, {
+      detached: true,
+      stdio: 'ignore',
+      env: ipcEnv,
+      shell: false,
+    });
+    child.once('error', (error) => {
+      process.stderr.write(`[ipc] codex wt spawn launch failed: ${error?.message ?? error}\n`);
+    });
+    child.unref();
+    scheduleWtSilentFailureProbe({ baselineCount: baselineTerminalCount });
+    process.stderr.write(`[ipc] spawned codex wt session "${sessionName}"\n`);
+    return { name: sessionName, host: 'wt', runtime: 'codex', mode: 'interactive', spawned: true, status: 'spawned', pid: child.pid };
+  }
+
+  if (runtime === 'codex' && !interactive) {
+    const codexArgs = buildCodexExecArgs({ sessionName, prompt: fullPrompt });
+    const commandHint = buildCodexExecCommand({ sessionName, prompt: fullPrompt });
+    if (dryRun) {
+      return {
+        name: sessionName,
+        mode: 'background',
+        host: requestedHost ?? 'legacy',
+        runtime: 'codex',
+        spawned: false,
+        dryRun: true,
+        command_hint: commandHint,
+        cwd: normalizeDisplayPath(spawnCwd),
+        exit_cleanup: 'hub session closes when codex exec exits',
+      };
+    }
+
+    const child = spawn('codex', codexArgs, {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: ipcEnv,
+      cwd: spawnCwd,
+      shell: false,
+    });
+    child.unref();
+
+    child.stderr?.on('data', d => {
+      process.stderr.write(`[ipc:${sessionName}] ${d.toString()}`);
+    });
+    child.on('exit', (code) => {
+      process.stderr.write(`[ipc] codex background session "${sessionName}" exited (code=${code})\n`);
+    });
+
+    process.stderr.write(`[ipc] spawned codex background session "${sessionName}" (pid=${child.pid})\n`);
+    return {
+      name: sessionName,
+      mode: 'background',
+      host: requestedHost ?? 'legacy',
+      runtime: 'codex',
+      status: 'spawned',
+      pid: child.pid,
+      exit_cleanup: 'hub session closes when codex exec exits',
+    };
+  }
 
   if (requestedHost === 'wt') {
     if (process.platform !== 'win32') {

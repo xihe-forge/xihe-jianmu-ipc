@@ -109,7 +109,7 @@ describe('ADR-012 ipc_spawn runtime=codex support', () => {
 
     assert.match(first, /IPC_NAME="codex-1"/);
     assert.match(second, /IPC_NAME="codex-2"/);
-    assert.doesNotEqual(first, second);
+    assert.notEqual(first, second);
   });
 
   test('AC-5 codex wt spawn cwd uses inner cmd cd /d handling', () => {

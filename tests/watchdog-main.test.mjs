@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   createWatchdogIpcClient,
   createNetworkWatchdog,
+  startWatchdog,
   WATCHDOG_RETRY_DELAYS_MS,
 } from '../bin/network-watchdog.mjs';
 
@@ -297,6 +298,128 @@ test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-run
   }
 });
 
+test('startWatchdog: boot default runs atomic handover as real swap', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-boot-real-swap-'));
+  try {
+    const spawned = [];
+    const capture = createFetchCapture({
+      [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 51, cwd: dir },
+      ],
+      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
+        messages: [{ from: 'jianmu-pm', topic: 'status', content: 'drained ipc' }],
+      },
+    });
+    const watchdog = await startWatchdog({
+      ipcPort: TEST_IPC_PORT,
+      watchdogPort: 43180,
+      intervalMs: 60_000,
+      internalToken: 'watchdog-token',
+      fetchImpl: capture.fetchImpl,
+      createWatchdogIpcClientImpl: () => createIpcClientStub(),
+      createServerImpl: createServerStub,
+      setTimeoutImpl: () => null,
+      clearTimeoutImpl: () => {},
+      now: () => 1_000_000,
+      ipcSpawn: async (args) => {
+        spawned.push(args);
+        return { spawned: true };
+      },
+      stuckDetectorEnabled: false,
+      rateLimitCritiqueEnabled: false,
+      handoverEnabled: true,
+      handoverTickIntervalMs: 0,
+      handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
+      probes: {
+        cliProxy: async () => ok(),
+        hub: async () => ok(),
+        anthropic: async () => ok(),
+        dns: async () => ok(),
+      },
+    });
+
+    try {
+      await waitFor(() => spawned.length === 1);
+      const result = watchdog.getLastHandoverTickResult();
+
+      assert.equal(result.detected.length, 1);
+      assert.equal(result.detected[0].name, 'jianmu-pm');
+      assert.equal(result.detected[0].dryRun, undefined);
+      assert.equal(spawned[0].name, 'jianmu-pm');
+      assert.ok(capture.requests.some((request) => request.url.endsWith('/prepare-rebind')));
+      assert.equal(capture.requests.some((request) => request.url.endsWith('/send') && request.body?.topic === 'pre-spawn-review'), false);
+    } finally {
+      await watchdog.stop();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('startWatchdog: WATCHDOG_HANDOVER_DRY_RUN=true keeps boot handover in dry-run', async () => {
+  const previous = process.env.WATCHDOG_HANDOVER_DRY_RUN;
+  process.env.WATCHDOG_HANDOVER_DRY_RUN = 'true';
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-boot-dry-run-'));
+  try {
+    const spawned = [];
+    const capture = createFetchCapture({
+      [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 51, cwd: dir },
+      ],
+      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
+        messages: [{ from: 'jianmu-pm', topic: 'status', content: 'drained ipc' }],
+      },
+    });
+    const watchdog = await startWatchdog({
+      ipcPort: TEST_IPC_PORT,
+      watchdogPort: 43180,
+      intervalMs: 60_000,
+      internalToken: 'watchdog-token',
+      fetchImpl: capture.fetchImpl,
+      createWatchdogIpcClientImpl: () => createIpcClientStub(),
+      createServerImpl: createServerStub,
+      setTimeoutImpl: () => null,
+      clearTimeoutImpl: () => {},
+      now: () => 1_000_000,
+      ipcSpawn: async (args) => {
+        spawned.push(args);
+        return { spawned: true };
+      },
+      stuckDetectorEnabled: false,
+      rateLimitCritiqueEnabled: false,
+      handoverEnabled: true,
+      handoverTickIntervalMs: 0,
+      handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
+      probes: {
+        cliProxy: async () => ok(),
+        hub: async () => ok(),
+        anthropic: async () => ok(),
+        dns: async () => ok(),
+      },
+    });
+
+    try {
+      await waitFor(() => capture.requests.some((request) => request.url.endsWith('/send') && request.body?.topic === 'pre-spawn-review'));
+      const result = watchdog.getLastHandoverTickResult();
+
+      assert.equal(result.detected.length, 1);
+      assert.equal(result.detected[0].name, 'jianmu-pm');
+      assert.equal(result.detected[0].dryRun, true);
+      assert.equal(spawned.length, 0);
+      assert.equal(capture.requests.some((request) => request.url.endsWith('/prepare-rebind')), false);
+    } finally {
+      await watchdog.stop();
+    }
+  } finally {
+    if (previous === undefined) {
+      delete process.env.WATCHDOG_HANDOVER_DRY_RUN;
+    } else {
+      process.env.WATCHDOG_HANDOVER_DRY_RUN = previous;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('createNetworkWatchdog: committed_pct is status-only and never critiques or tree-kills', async () => {
   const sent = [];
   const spawnMock = createSpawnMock();
@@ -511,6 +634,30 @@ function createFetchCapture(routes = {}) {
       };
     },
   };
+}
+
+function createServerStub() {
+  const server = new EventEmitter();
+  server.listen = () => {
+    queueMicrotask(() => server.emit('listening'));
+    return server;
+  };
+  server.address = () => ({ port: 43180 });
+  server.close = (callback) => {
+    callback?.();
+  };
+  return server;
+}
+
+async function waitFor(predicate, timeoutMs = 1000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail('timed out waiting for condition');
 }
 
 function normalizeHeaders(headers) {

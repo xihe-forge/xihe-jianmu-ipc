@@ -107,7 +107,7 @@ describe('AC-WRAPPER-001 mcp-wrapper child exit auto-restart', () => {
     wrapper.startChild();
     for (let index = 0; index < expectedDelays.length; index += 1) {
       harness.children[index].exit(1, null);
-      assert.equal(harness.timers[index].delay, expectedDelays[index]);
+      assert.equal(harness.timers[0].delay, expectedDelays[index]);
       harness.runNextTimer();
     }
 
@@ -125,12 +125,12 @@ describe('AC-WRAPPER-001 mcp-wrapper child exit auto-restart', () => {
     harness.runNextTimer();
 
     harness.children[1].exit(1, null);
-    assert.equal(harness.timers[1].delay, 1000);
+    assert.equal(harness.timers[0].delay, 1000);
     harness.runNextTimer();
 
     harness.advance(60_000);
     harness.children[2].exit(1, null);
-    assert.equal(harness.timers[2].delay, 500);
+    assert.equal(harness.timers[0].delay, 500);
   });
 
   test('AC-WRAPPER-001-d: mtime intentional restart does not increase backoff', async () => {
@@ -145,11 +145,11 @@ describe('AC-WRAPPER-001 mcp-wrapper child exit auto-restart', () => {
 
     wrapper.restartChild();
     harness.children[1].exit(null, 'SIGTERM');
-    assert.equal(harness.timers[1].delay, 500);
+    assert.equal(harness.timers[0].delay, 500);
     harness.runNextTimer();
 
     harness.children[2].exit(1, null);
-    assert.equal(harness.timers[2].delay, 1000);
+    assert.equal(harness.timers[0].delay, 1000);
   });
 
   test('AC-WRAPPER-001-e: only wrapper-owned SIGTERM is intentional', async () => {
@@ -164,10 +164,11 @@ describe('AC-WRAPPER-001 mcp-wrapper child exit auto-restart', () => {
     harness.runNextTimer();
 
     harness.children[1].exit(null, 'SIGKILL');
-    assert.equal(harness.timers[1].delay, 500);
+    assert.equal(harness.timers[0].delay, 500);
     harness.runNextTimer();
 
     harness.children[2].exit(2, null);
-    assert.equal(harness.timers[2].delay, 1000);
+    assert.equal(harness.timers[0].delay, 1000);
   });
 });
+

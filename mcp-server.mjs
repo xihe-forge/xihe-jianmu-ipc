@@ -16,14 +16,14 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { createChannelNotifier } from './lib/channel-notification.mjs';
 import { createMcpTools } from './lib/mcp-tools.mjs';
 import { estimateContextPctFromTranscript } from './lib/context-usage-auto-handover.mjs';
-import { getClaudeDir } from './lib/claude-paths.mjs';
+import { getClaudeDir, getHomeDir } from './lib/claude-paths.mjs';
 import { createRegisterMessage } from './lib/protocol.mjs';
 import {
   DEFAULT_PORT,
   HUB_AUTOSTART_TIMEOUT,
   HUB_AUTOSTART_RETRY_INTERVAL,
 } from './lib/constants.mjs';
-import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync, unlinkSync, rmdirSync } from 'fs';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -369,8 +369,65 @@ function quoteForCmd(value) {
   return `"${escapeForCmdQuotedArgument(value)}"`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getClaudeJsonPath({ homeDir = null, env = process.env } = {}) {
+  return join(getHomeDir({ homeDir, env }), '.claude.json');
+}
+
+export async function patchTrustForCwd(cwd, {
+  homeDir = null,
+  env = process.env,
+  now = Date.now,
+  retryMs = 25,
+  timeoutMs = 5000,
+} = {}) {
+  if (typeof cwd !== 'string' || cwd.trim() === '') return false;
+
+  const configPath = getClaudeJsonPath({ homeDir, env });
+  const lockDir = `${configPath}.lock`;
+  const startedAt = now();
+  let locked = false;
+
+  while (!locked) {
+    try {
+      mkdirSync(lockDir);
+      locked = true;
+    } catch (error) {
+      if (error?.code !== 'EEXIST' || now() - startedAt >= timeoutMs) throw error;
+      await sleep(retryMs);
+    }
+  }
+
+  const tmpPath = `${configPath}.${process.pid}.${now()}.tmp`;
+  try {
+    let config = {};
+    if (existsSync(configPath)) {
+      const raw = readFileSync(configPath, 'utf8').trim();
+      config = raw ? JSON.parse(raw) : {};
+    }
+    if (!config || typeof config !== 'object' || Array.isArray(config)) config = {};
+    if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects)) {
+      config.projects = {};
+    }
+    if (!config.projects[cwd] || typeof config.projects[cwd] !== 'object' || Array.isArray(config.projects[cwd])) {
+      config.projects[cwd] = {};
+    }
+    config.projects[cwd].hasTrustDialogAccepted = true;
+
+    writeFileSync(tmpPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    renameSync(tmpPath, configPath);
+    return true;
+  } finally {
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
+    try { rmdirSync(lockDir); } catch {}
+  }
+}
+
 export function buildWtLaunchCommand({ sessionName, model }) {
-  return `set IPC_NAME=${sessionName} && ${quoteForCmd(getClaudeBinPath())} ${buildClaudeLaunchArgs({ model })}`;
+  return `set "IPC_NAME=${sessionName}"&&${quoteForCmd(getClaudeBinPath())} ${buildClaudeLaunchArgs({ model })}`;
 }
 
 export function buildWtStartCommand({ sessionName, model, cwd }) {
@@ -379,7 +436,7 @@ export function buildWtStartCommand({ sessionName, model, cwd }) {
   // 去 `start ""` 包装（wt.exe 自身 detached）
   // 用 wt `--` 分隔符（wt 文档支持 wt new-tab [-d <dir>] -- <command>）替代 cmd /c 嵌套包装
   // cmd /k （keep open）调试期 console window 留下看错误 · production 后续改 /c
-  return `wt.exe --window last new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} -- cmd /k "set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}"`;
+  return `wt.exe --window last new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} -- cmd /k "set "IPC_NAME=${sessionName}"&&${quoteForCmd(claudeBin)} ${args}"`;
 }
 
 export function buildWtSpawnArgs({ sessionName, model, cwd }) {
@@ -388,7 +445,7 @@ export function buildWtSpawnArgs({ sessionName, model, cwd }) {
   // ADR-010 mod 6 wiring v5 fix·atomic handoff 触发 wt 报 0x80070005·v4 cwd backslash normalize 不够·改用 cmd /k "cd /d <cwd> && ..." 嵌入 cwd 切换到 inner cmd·避开 wt --starting-directory + -- 分隔符 parser 问题（wt 把 cwd 与后续 arg 拼成单个 program path）
   const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
   const cdSegment = normalizedCwd ? `cd /d ${quoteForCmd(normalizedCwd)} && ` : '';
-  const innerCmd = `${cdSegment}set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}`;
+  const innerCmd = `${cdSegment}set "IPC_NAME=${sessionName}"&&${quoteForCmd(claudeBin)} ${args}`;
   return [
     '--window', 'last',
     'new-tab',
@@ -735,6 +792,7 @@ export async function spawnSession({
       };
     }
 
+    await patchTrustForCwd(spawnCwd);
     const wtArgs = buildWtSpawnArgs({ sessionName, model, cwd: spawnCwd });
     const commandHint = `wt.exe ${wtArgs.join(' ')}`;
     if (dryRun) {

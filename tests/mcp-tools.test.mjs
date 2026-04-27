@@ -561,7 +561,7 @@ test(
       assert.equal(payload.cwd, normalizedSandbox);
       assert.match(payload.command_hint, /^wt\.exe --window last new-tab --title worker-b -- cmd \/k /);
       assert.doesNotMatch(payload.command_hint, /--starting-directory/);
-      assert.match(payload.command_hint, new RegExp(`cd /d "${escapedWindowsCwd}" && set IPC_NAME=worker-b`));
+      assert.match(payload.command_hint, new RegExp(`cd /d "${escapedWindowsCwd}" && set "IPC_NAME=worker-b"&&`));
       assert.match(
         payload.command_hint,
         /"C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus$/,

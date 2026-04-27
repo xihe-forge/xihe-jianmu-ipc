@@ -40,7 +40,7 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
   test('AC-IPC-SPAWN-WT-002-f: buildWtSpawnArgs 返回 args 数组形态正确', () => {
     const argv = buildWtSpawnArgs({ sessionName: 'test-f', model: undefined, cwd: 'D:/workspace/test' });
     assert.ok(Array.isArray(argv), `应返回数组: ${typeof argv}`);
-    assert.equal(argv[0], 'new-tab');
+    assert.ok(argv.includes('new-tab'));
     assert.ok(argv.includes('--title'));
     assert.ok(argv.includes('test-f'));
     assert.ok(argv.includes('--'));  // wiring v5·removed --starting-directory·cwd 嵌入 cmd /k cd /d 内（避开 wt parser 0x80070005 BUG）
@@ -58,4 +58,14 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
     const dashIdx = argv.indexOf('--');
     assert.match(argv[dashIdx + 3], /--model claude-opus-4-7/);
   });
+
+  test('AC-IPC-SPAWN-WT-002-h: buildWtSpawnArgs ? --window last ???? wt window??????', () => {
+    const argv = buildWtSpawnArgs({ sessionName: 'test-h', model: undefined, cwd: 'D:/workspace/test' });
+    const windowIdx = argv.indexOf('--window');
+    assert.notEqual(windowIdx, -1, `?? --window: ${JSON.stringify(argv)}`);
+    assert.equal(argv[windowIdx + 1], 'last', `--window ??? last: ${argv[windowIdx + 1]}`);
+    const newTabIdx = argv.indexOf('new-tab');
+    assert.ok(windowIdx < newTabIdx, `--window ??? new-tab ???? windowIdx=${windowIdx} newTabIdx=${newTabIdx}`);
+  });
+
 });

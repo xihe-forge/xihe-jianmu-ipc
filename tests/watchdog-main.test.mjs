@@ -279,18 +279,18 @@ test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-run
   }
 });
 
-test('createNetworkWatchdog: handover tick sorts by contextUsagePct and limits one trigger per tick', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'watchdog-serial-handoff-'));
+test('createNetworkWatchdog: handover tick ?????? detected?spawn pacing ? tickInterval 60s ?????v0.4 ? v0.1 highest-1 + global-rate-limit?', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-handoff-pacing-'));
   try {
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
         { name: 'low-pct', pid: 1001, contextUsagePct: 70 },
         { name: 'high-pct', pid: 1002, contextUsagePct: 95 },
-        { name: 'same-cwd', pid: 1003, contextUsagePct: 95 },
+        { name: 'mid-pct', pid: 1003, contextUsagePct: 85 },
       ],
-      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=high-pct&since=3600000&limit=50`]: {
-        messages: [],
-      },
+      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=high-pct&since=3600000&limit=50`]: { messages: [] },
+      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=mid-pct&since=3600000&limit=50`]: { messages: [] },
+      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=low-pct&since=3600000&limit=50`]: { messages: [] },
     });
     const watchdog = createIsolatedWatchdog({
       fetchImpl: capture.fetchImpl,
@@ -310,11 +310,11 @@ test('createNetworkWatchdog: handover tick sorts by contextUsagePct and limits o
     await watchdog.runTick();
     const result = watchdog.getLastHandoverTickResult();
 
-    assert.equal(result.detected.length, 1);
-    assert.equal(result.detected[0].name, 'high-pct');
+    assert.equal(result.detected.length, 1, '? tick ?? spawn 1 ??pacing limit??detected.length=1');
+    assert.equal(result.detected[0].name, 'high-pct', 'highest pct ??');
     assert.equal(result.detected[0].pct, 95);
-    assert.equal(result.skipped.filter((item) => item.skipped === 'global-rate-limit').length, 2);
-    assert.equal(capture.requests.filter((request) => request.url.endsWith('/send') && request.body?.topic === 'pre-spawn-review').length, 1);
+    assert.equal(result.skipped.filter((item) => item.skipped === 'global-rate-limit').length, 0, "v0.4 ? 'global-rate-limit' ??");
+    assert.equal(result.skipped.filter((item) => item.skipped === 'pacing-deferred-next-tick').length, 2, "v0.4 ? 'pacing-deferred-next-tick' ??");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

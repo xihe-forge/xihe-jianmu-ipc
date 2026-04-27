@@ -127,6 +127,10 @@ cd xihe-jianmu-ipc
 npm install
 ```
 
+安装好 `jianmu-ipc` 后，npm `postinstall` 会自动 detect + 双写 Windows PowerShell 5 和 pwsh 7 的 `$PROFILE`。开新 PowerShell 窗口后可用 `ipc <name>` 起 Claude，或用 `ipcx <name>` 起 Codex。未来如果新装另一个 PowerShell 版本，重跑 `bin/install.ps1` 即可。
+
+After `jianmu-ipc` is installed, npm `postinstall` automatically detects and writes both Windows PowerShell 5 and pwsh 7 `$PROFILE` files. Open a new PowerShell window, then run `ipc <name>` for Claude or `ipcx <name>` for Codex. If you install another PowerShell version later, rerun `bin/install.ps1`.
+
 **2. 在项目 `.mcp.json` 中添加配置 / Add to `.mcp.json` in your project**
 
 Session 1 (main):
@@ -214,12 +218,15 @@ Incoming messages arrive in the `worker` session as `<channel>` notifications th
 **6. Windows PowerShell 快捷方式（可选）/ Windows PowerShell shortcut (optional)**
 
 ```powershell
-# 安装 ipc 函数到 PowerShell profile / Install the `ipc` function into your PowerShell profile:
+# 安装 ipc/ipcx 函数到 PS5 + pwsh 7 profile / Install `ipc`/`ipcx` into PS5 + pwsh 7 profiles:
 .\bin\install.ps1
 
 # 用 ipc 命令打开 Claude Code 会话 / Open Claude Code sessions with:
 ipc main
 ipc worker
+
+# 用 ipcx 命令打开 Codex 会话 / Open Codex sessions with:
+ipcx codex-worker
 ```
 
 **7. Windows Hub 守护进程（推荐）/ Windows Hub daemon (recommended)**

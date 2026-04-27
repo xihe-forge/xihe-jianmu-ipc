@@ -58,6 +58,8 @@ cd xihe-jianmu-ipc
 npm install
 ```
 
+装好 `jianmu-ipc` 后，npm `postinstall` 会自动 detect + 双写 Windows PowerShell 5 和 pwsh 7 的 `$PROFILE`。开新 PowerShell 窗口后跑 `ipc <name>` 起 Claude，或跑 `ipcx <name>` 起 Codex。如未来装新 PowerShell 版本，重跑 `bin/install.ps1`。
+
 2. 在项目 `.mcp.json` 中添加：
 
 ```json

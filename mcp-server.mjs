@@ -377,6 +377,11 @@ function getClaudeJsonPath({ homeDir = null, env = process.env } = {}) {
   return join(getHomeDir({ homeDir, env }), '.claude.json');
 }
 
+function normalizeProjectCwd(cwd) {
+  if (typeof cwd !== 'string') return cwd;
+  return cwd.replace(/\\/g, '/');
+}
+
 export async function patchTrustForCwd(cwd, {
   homeDir = null,
   env = process.env,
@@ -386,6 +391,7 @@ export async function patchTrustForCwd(cwd, {
 } = {}) {
   if (typeof cwd !== 'string' || cwd.trim() === '') return false;
 
+  const normalizedCwd = normalizeProjectCwd(cwd);
   const configPath = getClaudeJsonPath({ homeDir, env });
   const lockDir = `${configPath}.lock`;
   const startedAt = now();
@@ -412,10 +418,10 @@ export async function patchTrustForCwd(cwd, {
     if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects)) {
       config.projects = {};
     }
-    if (!config.projects[cwd] || typeof config.projects[cwd] !== 'object' || Array.isArray(config.projects[cwd])) {
-      config.projects[cwd] = {};
+    if (!config.projects[normalizedCwd] || typeof config.projects[normalizedCwd] !== 'object' || Array.isArray(config.projects[normalizedCwd])) {
+      config.projects[normalizedCwd] = {};
     }
-    config.projects[cwd].hasTrustDialogAccepted = true;
+    config.projects[normalizedCwd].hasTrustDialogAccepted = true;
 
     writeFileSync(tmpPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
     renameSync(tmpPath, configPath);

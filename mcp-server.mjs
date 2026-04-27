@@ -24,7 +24,7 @@ import {
   HUB_AUTOSTART_TIMEOUT,
   HUB_AUTOSTART_RETRY_INTERVAL,
 } from './lib/constants.mjs';
-import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync } from 'fs';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -1217,26 +1217,74 @@ async function main() {
 }
 
 // ---------------------------------------------------------------------------
-// Source file change detection: poll own mtime, reconnect on change
-// (NOT exit — Claude Code may not auto-restart MCP servers)
+// Source file change detection: poll own + lib/*.mjs mtime, exit on change
 // ---------------------------------------------------------------------------
-function startSourceChangeWatcher() {
-  const __mcp_file = fileURLToPath(import.meta.url);
-  let __mcp_mtime = 0;
-  try { __mcp_mtime = statSync(__mcp_file).mtimeMs; } catch {}
-
-  setInterval(() => {
+export function createSourceChangeWatcher({
+  rootDir = PROJECT_DIR,
+  libGlob = ['lib/*.mjs'],
+  intervalMs = 5000,
+  debounceMs = 500,
+  exitFn = (code) => process.exit(code),
+  statFn = statSync,
+  logFn = (msg) => process.stderr.write(msg),
+} = {}) {
+  const watchFiles = new Map();
+  const addWatchFile = (filePath) => {
     try {
-      const mtime = statSync(__mcp_file).mtimeMs;
-      if (__mcp_mtime && mtime !== __mcp_mtime) {
-        __mcp_mtime = mtime;
-        process.stderr.write('[ipc] source file changed, re-detecting host and reconnecting...\n');
-        HOST = detectHost();
-        disconnectWs();
-        reconnectHub();
+      watchFiles.set(filePath, statFn(filePath).mtimeMs);
+    } catch {}
+  };
+
+  addWatchFile(join(rootDir, 'mcp-server.mjs'));
+
+  if (Array.isArray(libGlob) && libGlob.includes('lib/*.mjs')) {
+    const libDir = join(rootDir, 'lib');
+    try {
+      for (const entry of readdirSync(libDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.mjs')) continue;
+        addWatchFile(join(libDir, entry.name));
       }
     } catch {}
-  }, 10000).unref();
+  }
+
+  let stopped = false;
+  let pendingExitTimer = null;
+
+  const tick = () => {
+    if (stopped) return;
+    let detectedChange = null;
+    for (const [filePath, oldMtime] of watchFiles) {
+      try {
+        const mtime = statFn(filePath).mtimeMs;
+        if (oldMtime && mtime !== oldMtime) {
+          detectedChange = filePath;
+          watchFiles.set(filePath, mtime);
+        }
+      } catch {}
+    }
+    if (detectedChange && !pendingExitTimer) {
+      logFn(`[ipc] source file changed: ${detectedChange}, exiting for hot reload (Claude Code MCP child respawn)
+`);
+      pendingExitTimer = setTimeout(() => {
+        if (!stopped) exitFn(0);
+      }, debounceMs);
+      if (typeof pendingExitTimer.unref === 'function') pendingExitTimer.unref();
+    }
+  };
+
+  const intervalHandle = setInterval(tick, intervalMs);
+  if (typeof intervalHandle.unref === 'function') intervalHandle.unref();
+
+  return {
+    stop() {
+      stopped = true;
+      clearInterval(intervalHandle);
+      if (pendingExitTimer) {
+        clearTimeout(pendingExitTimer);
+        pendingExitTimer = null;
+      }
+    },
+  };
 }
 
 if (import.meta.main) {
@@ -1245,5 +1293,5 @@ if (import.meta.main) {
     process.exit(1);
   });
 
-  startSourceChangeWatcher();
+  createSourceChangeWatcher({ rootDir: PROJECT_DIR });
 }

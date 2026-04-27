@@ -547,7 +547,7 @@ test(
       assert.equal(payload.host, 'wt');
       assert.equal(payload.dryRun, true);
       assert.equal(payload.cwd, normalizedSandbox);
-      assert.match(payload.command_hint, /^wt\.exe new-tab --title worker-b -- cmd \/k /);
+      assert.match(payload.command_hint, /^wt\.exe --window last new-tab --title worker-b -- cmd \/k /);
       assert.doesNotMatch(payload.command_hint, /--starting-directory/);
       assert.match(payload.command_hint, new RegExp(`cd /d "${escapedWindowsCwd}" && set IPC_NAME=worker-b`));
       assert.match(

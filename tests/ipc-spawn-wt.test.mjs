@@ -18,7 +18,7 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
 
   test('AC-IPC-SPAWN-WT-001-b: buildWtStartCommand 用 wt -- 分隔符（不嵌套 cmd /c）', () => {
     const cmd = buildWtStartCommand({ sessionName: 'test-spawn', model: undefined, cwd: 'D:/workspace/test' });
-    assert.match(cmd, /wt\.exe\s+--window\s+last\s+new-tab.*\s--\s/, `?? --window last ? -- ???: ${cmd}`);
+    assert.match(cmd, /wt\.exe\s+--window\s+last\s+new-tab.*\s--\s/, `should include --window last and -- separator: ${cmd}`);
   });
 
   test('AC-IPC-SPAWN-WT-001-c: buildWtStartCommand 含 IPC_NAME env injection', () => {
@@ -59,13 +59,13 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
     assert.match(argv[dashIdx + 3], /--model claude-opus-4-7/);
   });
 
-  test('AC-IPC-SPAWN-WT-002-h: buildWtSpawnArgs ? --window last ???? wt window??????', () => {
+  test('AC-IPC-SPAWN-WT-002-h: buildWtSpawnArgs includes --window last', () => {
     const argv = buildWtSpawnArgs({ sessionName: 'test-h', model: undefined, cwd: 'D:/workspace/test' });
     const windowIdx = argv.indexOf('--window');
-    assert.notEqual(windowIdx, -1, `?? --window: ${JSON.stringify(argv)}`);
-    assert.equal(argv[windowIdx + 1], 'last', `--window ??? last: ${argv[windowIdx + 1]}`);
+    assert.notEqual(windowIdx, -1, `should include --window: ${JSON.stringify(argv)}`);
+    assert.equal(argv[windowIdx + 1], 'last', `--window value should be last: ${argv[windowIdx + 1]}`);
     const newTabIdx = argv.indexOf('new-tab');
-    assert.ok(windowIdx < newTabIdx, `--window ??? new-tab ???? windowIdx=${windowIdx} newTabIdx=${newTabIdx}`);
+    assert.ok(windowIdx < newTabIdx, `--window must appear before new-tab: windowIdx=${windowIdx} newTabIdx=${newTabIdx}`);
   });
 
 });

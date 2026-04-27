@@ -279,7 +279,7 @@ test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-run
   }
 });
 
-test('createNetworkWatchdog: handover tick ?????? detected?spawn pacing ? tickInterval 60s ?????v0.4 ? v0.1 highest-1 + global-rate-limit?', async () => {
+test('createNetworkWatchdog: handover tick uses next-tick pacing label', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-handoff-pacing-'));
   try {
     const capture = createFetchCapture({
@@ -310,11 +310,11 @@ test('createNetworkWatchdog: handover tick ?????? detected?spawn pacing ? tickIn
     await watchdog.runTick();
     const result = watchdog.getLastHandoverTickResult();
 
-    assert.equal(result.detected.length, 1, '? tick ?? spawn 1 ??pacing limit??detected.length=1');
-    assert.equal(result.detected[0].name, 'high-pct', 'highest pct ??');
+    assert.equal(result.detected.length, 1, 'this tick still spawns one handoff due to pacing');
+    assert.equal(result.detected[0].name, 'high-pct', 'highest pct first');
     assert.equal(result.detected[0].pct, 95);
-    assert.equal(result.skipped.filter((item) => item.skipped === 'global-rate-limit').length, 0, "v0.4 ? 'global-rate-limit' ??");
-    assert.equal(result.skipped.filter((item) => item.skipped === 'pacing-deferred-next-tick').length, 2, "v0.4 ? 'pacing-deferred-next-tick' ??");
+    assert.equal(result.skipped.filter((item) => item.skipped === 'global-rate-limit').length, 0, "v0.4 removes 'global-rate-limit' label");
+    assert.equal(result.skipped.filter((item) => item.skipped === 'pacing-deferred-next-tick').length, 2, "v0.4 uses 'pacing-deferred-next-tick' label");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

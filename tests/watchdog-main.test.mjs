@@ -320,6 +320,77 @@ test('createNetworkWatchdog: handover tick uses next-tick pacing label', async (
   }
 });
 
+test('createNetworkWatchdog: critiques five_hour at 70% and seven_day at 80%', async () => {
+  const sent = [];
+  const capture = createFetchCapture({
+    [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+      {
+        name: 'harness',
+        rateLimits: {
+          five_hour: { used_percentage: 70, resets_at: 1777300000 },
+          seven_day: { used_percentage: 80, resets_at: 1777900000 },
+        },
+      },
+    ],
+  });
+  const watchdog = createIsolatedWatchdog({
+    fetchImpl: capture.fetchImpl,
+    now: () => 1_000_000,
+    handoverEnabled: false,
+    handoverConfig: { ipcSend: async (message) => { sent.push(message); } },
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+    },
+  });
+
+  await watchdog.runTick();
+
+  assert.deepEqual(sent.map((message) => message.to), ['harness', 'harness']);
+  assert.deepEqual(sent.map((message) => message.topic), ['critique', 'critique']);
+  assert.match(sent[0].content, /harness five_hour 70% >= 70%/);
+  assert.match(sent[1].content, /harness seven_day 80% >= 80%/);
+});
+
+test('createNetworkWatchdog: rate limit critique dedups per session window for 5 minutes', async () => {
+  const sent = [];
+  const clock = createManualNow(1_000_000);
+  const capture = createFetchCapture({
+    [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+      {
+        name: 'auditor-portfolio',
+        rateLimits: {
+          five_hour: { used_percentage: 71, resets_at: 1777300000 },
+          seven_day: { used_percentage: 81, resets_at: 1777900000 },
+        },
+      },
+    ],
+  });
+  const watchdog = createIsolatedWatchdog({
+    fetchImpl: capture.fetchImpl,
+    now: clock.now,
+    handoverEnabled: false,
+    handoverConfig: { ipcSend: async (message) => { sent.push(message); } },
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+    },
+  });
+
+  await watchdog.runTick();
+  await watchdog.runTick();
+  clock.advance(5 * 60 * 1000);
+  await watchdog.runTick();
+
+  assert.equal(sent.length, 4);
+  assert.equal(sent.filter((message) => message.content.includes('five_hour')).length, 2);
+  assert.equal(sent.filter((message) => message.content.includes('seven_day')).length, 2);
+});
+
 function createManualNow(start = 0) {
   let current = start;
   return {

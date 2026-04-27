@@ -244,17 +244,27 @@ test('ipc_send: HTTP fallback 失败时返回 isError', async () => {
 });
 
 test('ipc_sessions: 调用 /health 并解析 sessions', async () => {
+  const sessionTruth = {
+    name: 'alpha',
+    contextUsagePct: 42,
+    contextWindow: { used_percentage: 42 },
+    rateLimits: { five_hour: { used_percentage: 70 }, seven_day: { used_percentage: 80 } },
+    cost: { total_cost_usd: 1.23 },
+    model: { id: 'claude-opus-4-1' },
+    sessionId: 'session-123',
+    lastStatuslinePushAt: 1777283654269,
+  };
   const { tools, calls } = createHarness({
     impl: {
       httpGet: async () => ({
-        sessions: [{ name: 'alpha' }, { name: 'beta' }],
+        sessions: [sessionTruth, { name: 'beta' }],
       }),
     },
   });
   const result = await tools.handleToolCall('ipc_sessions');
 
   assert.deepEqual(calls.httpGet, ['http://127.0.0.1:8765/health']);
-  assert.deepEqual(getJson(result), [{ name: 'alpha' }, { name: 'beta' }]);
+  assert.deepEqual(getJson(result), [sessionTruth, { name: 'beta' }]);
 });
 
 test('ipc_sessions: sessions 缺失时返回空数组', async () => {

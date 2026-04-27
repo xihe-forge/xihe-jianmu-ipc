@@ -91,9 +91,10 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - harness 存活判据改为 Hub `GET /session-alive?name=harness`：只有 `{ alive: true }` 才表示对应 WS 仍然 `OPEN`
 - watchdog 只在 probe 返回 `{ ok: true, connected: true }` 时刷新内存里的 `lastSeenOnlineAt`；其余情况一律不更新基线
 - `/session-alive` 返回 `alive=false` 时，probe 按 `lastSeenOnlineAt -> connectedAt -> null` 回退；超过 `wsDisconnectGraceMs`（默认 60s）后返回 `ws-disconnected-grace-exceeded`
-- `committed_pct` 监测系统 commit ratio，90% 广播 `critique` topic，95% 调 `session-guard.ps1 -Action tree-kill` 自动清 vitest 最大子树（三维验明正身保护）
-- `available_ram_mb` 监测系统可用物理 RAM（MB），< 10GB WARN 广播建议 session 自主降负载，< 5GB CRIT 广播建议立即 kill 重度任务。**不调 tree-kill**——UX 警告 role，vitest 硬 kill 兜底由 `committed_pct` 95% 负责，两条线不重叠。
-- `phys_ram_used_pct` 监测系统物理 RAM 用量百分比 `(1 - avail_mb/total_mb) × 100`，80% 广播 WARN / 90% 广播 CRIT topic critique 5min dedup per-level，**不 tree-kill**（UX 警告 role，与 committed_pct 95% 硬兜底不重叠）。阈值来源 vitest-memory-discipline v1.0.3 §3.4 单 gate。
+- `committed_pct` info-only reporting in status；不再 `critique` broadcast / 不再 `tree-kill`，因含 pagefile committed charge，不是真物理内存。
+- portfolio 治理触发器只看真实物理内存：`phys_ram_used_pct` + `available_ram_mb`；禁用 pagefile `committed_pct` 作为治理触发器。
+- `available_ram_mb` 监测系统可用物理 RAM（MB），< 10GB WARN 广播建议 session 自主降负载，< 5GB CRIT 广播建议立即 kill 重度任务；< 3GB 触发 `session-guard.ps1 -Action tree-kill`，5min dedup。
+- `phys_ram_used_pct` 监测系统物理 RAM 用量百分比 `(1 - avail_mb/total_mb) × 100`，80% 广播 WARN / 90% 广播 CRIT topic critique 5min dedup per-level；>= 90% 触发 `session-guard.ps1 -Action tree-kill`，5min dedup。阈值来源 vitest-memory-discipline v1.0.3 §3.4 单 gate。
 - stuck session 自动挂起采用 ADR-006 v0.3 五信号 AND：Hub session WS OPEN、Claude session-state `status=busy`、`updatedAt` 超过阈值、transcript mtime 超过阈值、尾部命中 `ECONNRESET` / `429` / `rate limit` 等错误关键字，并在冷却期外才由 watchdog `suspendSession`。
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover

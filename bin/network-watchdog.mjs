@@ -56,6 +56,8 @@ export const COMMIT_CRIT_PCT = 95;
 export const COMMIT_DEDUP_MS = 5 * 60 * 1000;
 export const AVAILABLE_RAM_WARN_MB = 10000;
 export const AVAILABLE_RAM_CRIT_MB = 5000;
+export const PHYS_RAM_TREE_KILL_AVAILABLE_MB = 3000;
+export const PHYS_RAM_TREE_KILL_DEDUP_MS = 5 * 60 * 1000;
 export const AVAILABLE_RAM_DEDUP_MS = 5 * 60 * 1000;
 export const PHYS_RAM_WARN_PCT = 80;
 export const PHYS_RAM_CRIT_PCT = 90;
@@ -407,43 +409,34 @@ export function handleCommittedPct(result, {
   stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
   lastCommitAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY },
 } = {}) {
-  if (!result?.ok || !Number.isFinite(result.pct)) {
+  void ipcSend;
+  void spawnImpl;
+  void now;
+  void stderr;
+  void lastCommitAction;
+  return false;
+}
+
+function triggerPhysicalRamTreeKill({ metric, value }, {
+  now = Date.now,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+  spawnImpl = spawn,
+  lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY },
+} = {}) {
+  const nowTs = now();
+  if (nowTs - lastPhysRamTreeKillAction.CRIT < PHYS_RAM_TREE_KILL_DEDUP_MS) {
     return false;
   }
 
-  const pct = result.pct;
-  const nowTs = now();
-  if (pct >= COMMIT_CRIT_PCT) {
-    if (nowTs - lastCommitAction.CRIT < COMMIT_DEDUP_MS) {
-      return false;
-    }
-    lastCommitAction.CRIT = nowTs;
-    void invokeTreeKill({ pct, dryRun: false, spawnImpl })
-      .then((json) => {
-        stderr(`[watchdog] committed_pct CRIT ${pct}% -> tree-kill suspects=${json?.suspects_found ?? '?'} killed=${json?.killed?.length ?? 0} aborted_reason=${json?.aborted_reason ?? 'none'}`);
-      })
-      .catch((error) => {
-        stderr(`[watchdog] committed_pct CRIT ${pct}% -> tree-kill FAILED: ${toErrorMessage(error)}`);
-      });
-    return true;
-  }
-
-  if (pct >= COMMIT_WARN_PCT) {
-    if (nowTs - lastCommitAction.WARN < COMMIT_DEDUP_MS) {
-      return false;
-    }
-    lastCommitAction.WARN = nowTs;
-    void Promise.resolve(ipcSend?.({
-      to: '*',
-      topic: 'critique',
-      content: `[watchdog] system committed_pct ${pct.toFixed(1)}% 破 90% WARN（阈值 95% 将自动 tree-kill）`,
-    })).catch((error) => {
-      stderr(`[watchdog] committed_pct WARN ${pct}% -> broadcast FAILED: ${toErrorMessage(error)}`);
+  lastPhysRamTreeKillAction.CRIT = nowTs;
+  void invokeTreeKill({ pct: value, dryRun: false, spawnImpl })
+    .then((json) => {
+      stderr(`[watchdog] ${metric} CRIT ${value} -> tree-kill suspects=${json?.suspects_found ?? '?'} killed=${json?.killed?.length ?? 0} aborted_reason=${json?.aborted_reason ?? 'none'}`);
+    })
+    .catch((error) => {
+      stderr(`[watchdog] ${metric} CRIT ${value} -> tree-kill FAILED: ${toErrorMessage(error)}`);
     });
-    return true;
-  }
-
-  return false;
+  return true;
 }
 
 export function handleAvailableRamMb(result, {
@@ -451,6 +444,8 @@ export function handleAvailableRamMb(result, {
   now = Date.now,
   stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
   lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY },
+  spawnImpl = spawn,
+  lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY },
 } = {}) {
   if (!result?.ok || !Number.isFinite(result.availableMb)) {
     return false;
@@ -458,6 +453,14 @@ export function handleAvailableRamMb(result, {
 
   const mb = result.availableMb;
   const nowTs = now();
+  if (mb < PHYS_RAM_TREE_KILL_AVAILABLE_MB) {
+    triggerPhysicalRamTreeKill({ metric: 'available_ram_mb', value: mb }, {
+      now,
+      stderr,
+      spawnImpl,
+      lastPhysRamTreeKillAction,
+    });
+  }
   if (mb < AVAILABLE_RAM_CRIT_MB) {
     if (nowTs - lastAvailableRamAction.CRIT < AVAILABLE_RAM_DEDUP_MS) {
       return false;
@@ -564,6 +567,8 @@ export function handleAvailableRamPct(check, {
   now = Date.now,
   stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
   lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY },
+  spawnImpl = spawn,
+  lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY },
 } = {}) {
   if (check?.ok !== true || !Number.isFinite(check.pct)) {
     return null;
@@ -583,11 +588,17 @@ export function handleAvailableRamPct(check, {
   if (pct >= PHYS_RAM_CRIT_PCT) {
     level = 'CRIT';
     threshold = PHYS_RAM_CRIT_PCT;
-    content = `[watchdog] system phys_ram_used_pct ${pct.toFixed(1)}% 破 90% CRIT · 建议 session 立即 kill 重任务（watchdog 不 tree-kill · committed_pct 95% 硬兜底）`;
+    content = `[watchdog] system phys_ram_used_pct ${pct.toFixed(1)}% 破 90% CRIT · watchdog 将按真实物理内存触发 tree-kill`;
+    triggerPhysicalRamTreeKill({ metric: 'phys_ram_used_pct', value: pct }, {
+      now,
+      stderr,
+      spawnImpl,
+      lastPhysRamTreeKillAction,
+    });
   } else if (pct >= PHYS_RAM_WARN_PCT) {
     level = 'WARN';
     threshold = PHYS_RAM_WARN_PCT;
-    content = `[watchdog] system phys_ram_used_pct ${pct.toFixed(1)}% 破 80% WARN（90% 广播 CRIT · 不 tree-kill 与 committed_pct 95% 不重叠）`;
+    content = `[watchdog] system phys_ram_used_pct ${pct.toFixed(1)}% 破 80% WARN（90% CRIT 将按真实物理内存触发 tree-kill）`;
   } else {
     return null;
   }
@@ -907,6 +918,7 @@ export function createNetworkWatchdog({
   const lastCommitAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
+  const lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY };
   const lastRateLimitCritiqueAt = new Map();
   let lastCommittedPctCheck = null;
   let lastAvailableRamCheck = null;
@@ -1331,6 +1343,8 @@ export function createNetworkWatchdog({
       now,
       stderr,
       lastAvailableRamAction,
+      spawnImpl,
+      lastPhysRamTreeKillAction,
     });
     return check;
   }
@@ -1357,6 +1371,8 @@ export function createNetworkWatchdog({
       now,
       stderr,
       lastPhysRamAction,
+      spawnImpl,
+      lastPhysRamTreeKillAction,
     });
     return check;
   }

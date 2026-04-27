@@ -1,14 +1,35 @@
 ﻿import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { handleAvailableRamMb } from '../../bin/network-watchdog.mjs';
+
+function createSpawnMock({ stdout = '{"suspects_found":1,"killed":[123]}', code = 0 } = {}) {
+  const calls = [];
+  const spawnImpl = (command, args, options) => {
+    calls.push({ command, args, options });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      child.stdout.emit('data', stdout);
+      child.emit('close', code);
+    });
+    return child;
+  };
+  return { calls, spawnImpl };
+}
 
 function createHarness({ nowValue = 1_000_000 } = {}) {
   const ipcCalls = [];
   const stderrCalls = [];
+  const spawnMock = createSpawnMock();
+  const lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY };
   const lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   return {
     ipcCalls,
     stderrCalls,
+    spawnMock,
+    lastPhysRamTreeKillAction,
     lastAvailableRamAction,
     now: () => nowValue,
     ipcSend: (payload) => {
@@ -27,6 +48,8 @@ function run(result, harness) {
     now: harness.now,
     stderr: harness.stderr,
     lastAvailableRamAction: harness.lastAvailableRamAction,
+    spawnImpl: harness.spawnMock.spawnImpl,
+    lastPhysRamTreeKillAction: harness.lastPhysRamTreeKillAction,
   });
 }
 
@@ -61,6 +84,21 @@ test('available_ram_mb actions: 4000 MB broadcasts CRIT critique once', () => {
   assert.equal(harness.ipcCalls[0].topic, 'critique');
   assert.match(harness.ipcCalls[0].content, /破 5GB/);
   assert.match(harness.ipcCalls[0].content, /临界/);
+  assert.equal(harness.spawnMock.calls.length, 0);
+});
+
+test('available_ram_mb actions: below 3GB invokes physical tree-kill', async () => {
+  const harness = createHarness();
+
+  const acted = run({ ok: true, availableMb: 2_999 }, harness);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(acted, true);
+  assert.equal(harness.ipcCalls.length, 1);
+  assert.equal(harness.spawnMock.calls.length, 1);
+  assert.equal(harness.spawnMock.calls[0].command, 'pwsh');
+  assert(harness.spawnMock.calls[0].args.some((arg) => arg.includes('session-guard.ps1')));
+  assert(harness.spawnMock.calls[0].args.includes('tree-kill'));
 });
 
 test('available_ram_mb actions: CRIT dedup is independent from WARN', () => {

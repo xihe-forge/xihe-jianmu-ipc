@@ -60,35 +60,28 @@ test('committed_pct actions: 60% does not broadcast or tree-kill', () => {
   assert.equal(harness.spawnMock.calls.length, 0);
 });
 
-test('committed_pct actions: 90% broadcasts WARN critique once', () => {
+test('committed_pct actions: 90% is info-only without critique', () => {
   const harness = createHarness();
 
   const acted = run({ ok: true, pct: 90 }, harness);
 
-  assert.equal(acted, true);
-  assert.equal(harness.ipcCalls.length, 1);
-  assert.equal(harness.ipcCalls[0].topic, 'critique');
-  assert.match(harness.ipcCalls[0].content, /90/);
-  assert.match(harness.ipcCalls[0].content, /WARN/);
+  assert.equal(acted, false);
+  assert.equal(harness.ipcCalls.length, 0);
   assert.equal(harness.spawnMock.calls.length, 0);
 });
 
-test('committed_pct actions: 95% invokes session-guard tree-kill without broadcast', async () => {
+test('committed_pct actions: 95% is info-only without tree-kill', async () => {
   const harness = createHarness();
 
   const acted = run({ ok: true, pct: 95 }, harness);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(acted, true);
+  assert.equal(acted, false);
   assert.equal(harness.ipcCalls.length, 0);
-  assert.equal(harness.spawnMock.calls.length, 1);
-  assert.equal(harness.spawnMock.calls[0].command, 'pwsh');
-  assert(harness.spawnMock.calls[0].args.some((arg) => arg.includes('session-guard.ps1')));
-  assert(harness.spawnMock.calls[0].args.includes('tree-kill'));
-  assert(harness.spawnMock.calls[0].args.includes('-ExcludePattern'));
+  assert.equal(harness.spawnMock.calls.length, 0);
 });
 
-test('committed_pct actions: aborted tree-kill result does not retry or throw', async () => {
+test('committed_pct actions: 95% aborted tree-kill path is no longer used', async () => {
   const harness = createHarness();
   harness.spawnMock = createSpawnMock({
     stdout: '{"aborted_reason":"vitest root PID not found","suspects_found":0,"killed":[]}',
@@ -97,23 +90,23 @@ test('committed_pct actions: aborted tree-kill result does not retry or throw', 
   const acted = run({ ok: true, pct: 95 }, harness);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(acted, true);
-  assert.equal(harness.spawnMock.calls.length, 1);
+  assert.equal(acted, false);
+  assert.equal(harness.spawnMock.calls.length, 0);
   assert.equal(harness.ipcCalls.length, 0);
-  assert.match(harness.stderrCalls.join('\n'), /vitest root PID not found/);
+  assert.equal(harness.stderrCalls.length, 0);
 });
 
-test('committed_pct actions: dedups repeated 90% WARN within 5min', () => {
+test('committed_pct actions: repeated 90% remains info-only', () => {
   const harness = createHarness();
 
   run({ ok: true, pct: 90 }, harness);
   run({ ok: true, pct: 90 }, harness);
 
-  assert.equal(harness.ipcCalls.length, 1);
+  assert.equal(harness.ipcCalls.length, 0);
   assert.equal(harness.spawnMock.calls.length, 0);
 });
 
-test('committed_pct actions: emits second WARN after 5min dedup window', () => {
+test('committed_pct actions: dedup window does not emit info-only action', () => {
   let nowValue = 1_000_000;
   const harness = createHarness();
   harness.now = () => nowValue;
@@ -122,6 +115,6 @@ test('committed_pct actions: emits second WARN after 5min dedup window', () => {
   nowValue += (5 * 60 * 1000) + 1;
   run({ ok: true, pct: 90 }, harness);
 
-  assert.equal(harness.ipcCalls.length, 2);
+  assert.equal(harness.ipcCalls.length, 0);
   assert.equal(harness.spawnMock.calls.length, 0);
 });

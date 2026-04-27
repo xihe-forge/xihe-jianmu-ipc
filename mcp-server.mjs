@@ -18,7 +18,6 @@ import { createMcpTools } from './lib/mcp-tools.mjs';
 import { estimateContextPctFromTranscript } from './lib/context-usage-auto-handover.mjs';
 import { getClaudeDir } from './lib/claude-paths.mjs';
 import { createRegisterMessage } from './lib/protocol.mjs';
-import { findLatestTranscriptByCwd } from './lib/session-state-reader.mjs';
 import {
   DEFAULT_PORT,
   HUB_AUTOSTART_TIMEOUT,
@@ -77,10 +76,7 @@ let IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || '';
 let lastContextUsagePct = null;
 let contextUsagePctTimer = null;
-
-function getTranscriptPath() {
-  return process.env.CLAUDE_TRANSCRIPT_PATH || process.env.TRANSCRIPT_PATH || '';
-}
+const SELF_DETECTION_WINDOW_MS = 60_000;
 
 function getPidSessionJsonPath({ pid = process.pid, homeDir = null, env = process.env } = {}) {
   return join(getClaudeDir({ homeDir, env }), 'sessions', `${pid}.json`);
@@ -91,21 +87,104 @@ function encodeClaudeProjectPath(cwd) {
   return cwd.replace(/\\/g, '-').replace(/\//g, '-').replace(/:/g, '-');
 }
 
-export function findSelfTranscriptPath({ pid = process.pid, cwd = process.cwd(), homeDir = null, env = process.env } = {}) {
+function getSelfCacheDir(options = {}) {
+  return join(getClaudeDir(options), 'mcp-server-cache');
+}
+
+function getSelfCachePath({ ppid = process.ppid, homeDir = null, env = process.env, ipcName = IPC_NAME } = {}) {
+  return join(getSelfCacheDir({ homeDir, env }), `parent-${ppid}-${ipcName}.json`);
+}
+
+function loadCachedSelfTranscript(options = {}) {
+  const cachePath = getSelfCachePath(options);
+  if (!existsSync(cachePath)) return null;
+  try {
+    const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
+    if (typeof cached?.transcriptPath === 'string' && existsSync(cached.transcriptPath)) {
+      return cached.transcriptPath;
+    }
+  } catch {}
+  return null;
+}
+
+function persistSelfTranscript({ transcriptPath, sessionId }, options = {}) {
+  if (!transcriptPath) return;
+  try {
+    const cacheDir = getSelfCacheDir(options);
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(getSelfCachePath(options), JSON.stringify({
+      transcriptPath,
+      sessionId,
+      detectedAt: Date.now(),
+      ppid: options.ppid ?? process.ppid,
+      ipcName: options.ipcName ?? IPC_NAME,
+    }), 'utf8');
+  } catch {}
+}
+
+function detectSelfTranscriptByBirthtime({ cwd, homeDir = null, env = process.env, now = Date.now } = {}) {
+  const projectDir = encodeClaudeProjectPath(cwd);
+  if (!projectDir) return null;
+  const transcriptsDir = join(getClaudeDir({ homeDir, env }), 'projects', projectDir);
+  if (!existsSync(transcriptsDir)) return null;
+
+  const startTs = now();
+  let bestCandidate = null;
+  try {
+    for (const entry of readdirSync(transcriptsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      const transcriptPath = join(transcriptsDir, entry.name);
+      try {
+        const stat = statSync(transcriptPath);
+        const birthMs = stat.birthtimeMs || stat.ctimeMs || 0;
+        const ageMs = startTs - birthMs;
+        if (ageMs >= 0 && ageMs < SELF_DETECTION_WINDOW_MS) {
+          if (!bestCandidate || ageMs < bestCandidate.ageMs) {
+            bestCandidate = {
+              transcriptPath,
+              sessionId: entry.name.replace(/\.jsonl$/, ''),
+              ageMs,
+            };
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+  return bestCandidate;
+}
+
+export function findSelfTranscriptPath({ pid = process.pid, cwd = process.cwd(), homeDir = null, env = process.env, now = Date.now, ppid = process.ppid } = {}) {
+  const envPath = env.CLAUDE_TRANSCRIPT_PATH || env.TRANSCRIPT_PATH;
+  if (envPath) return envPath;
+
+  const cacheOptions = { ppid, homeDir, env, ipcName: env.IPC_NAME || env.IPC_DEFAULT_NAME || IPC_NAME };
+  const cached = loadCachedSelfTranscript(cacheOptions);
+  if (cached) return cached;
+
   const pidSessionPath = getPidSessionJsonPath({ pid, homeDir, env });
   try {
     if (existsSync(pidSessionPath)) {
       const state = JSON.parse(readFileSync(pidSessionPath, 'utf8'));
       if (typeof state?.transcriptPath === 'string' && state.transcriptPath.trim() !== '') {
+        persistSelfTranscript({ transcriptPath: state.transcriptPath, sessionId: state?.sessionId ?? '' }, cacheOptions);
         return state.transcriptPath;
       }
       const projectDir = encodeClaudeProjectPath(state?.cwd || cwd);
       if (projectDir && typeof state?.sessionId === 'string' && state.sessionId.trim() !== '') {
-        return join(getClaudeDir({ homeDir, env }), 'projects', projectDir, `${state.sessionId}.jsonl`);
+        const transcriptPath = join(getClaudeDir({ homeDir, env }), 'projects', projectDir, `${state.sessionId}.jsonl`);
+        persistSelfTranscript({ transcriptPath, sessionId: state.sessionId }, cacheOptions);
+        return transcriptPath;
       }
     }
   } catch {}
-  return findLatestTranscriptByCwd(cwd, { homeDir, env }) || getTranscriptPath();
+
+  const detected = detectSelfTranscriptByBirthtime({ cwd, homeDir, env, now });
+  if (detected) {
+    persistSelfTranscript(detected, cacheOptions);
+    return detected.transcriptPath;
+  }
+
+  return null;
 }
 
 function estimateCurrentContextPct(args = {}) {

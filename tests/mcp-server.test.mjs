@@ -50,7 +50,7 @@ test('mcp-server: client context usage push sends update message', async () => {
     assert.equal(sent.length, 1);
     assert.equal(sent[0].type, 'update');
     assert.equal(sent[0].name, 'usage-push-test');
-    assert.equal(typeof sent[0].contextUsagePct, 'number');
+    assert.equal(sent[0].contextUsagePct, null);
   } finally {
     if (originalName === undefined) {
       delete process.env.IPC_NAME;

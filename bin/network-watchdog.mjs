@@ -1,5 +1,5 @@
 ﻿import http from 'node:http';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +47,7 @@ export const WATCHDOG_RETRY_DELAYS_MS = [1_000, 5_000, 15_000];
 export const WATCHDOG_HOST = '127.0.0.1';
 export const WATCHDOG_SESSION_NAME = 'network-watchdog';
 export const HARNESS_SESSION_NAME = 'harness';
+export const FALLBACK_STORM_LOG = join(process.cwd(), 'reports', 'cron-巡视', 'fallback-storm.log');
 export const HARNESS_HEARTBEAT_TOPIC = 'harness-heartbeat';
 export const HARNESS_HEARTBEAT_PATTERN = /【harness\s+(.+?)\s+·\s+context-pct】(\d+)% \| state=(\w+) \| next_action=(\S+)/;
 export const WATCHDOG_WS_RECONNECT_DELAY_MS = 3_000;
@@ -995,7 +996,12 @@ export function createNetworkWatchdog({
             entry.detector = createContextUsageAutoHandover({
               threshold: handoverThreshold,
               estimateContextPct: async (sessionRecord = entry.sessionRecord) => {
-                const pct = Number.isFinite(Number(sessionRecord?.contextUsagePct)) ? Number(sessionRecord.contextUsagePct) : 0;
+                const raw = sessionRecord?.contextUsagePct;
+                if (raw === null || raw === undefined) {
+                  stderr(`[network-watchdog] estimateContextPct hub session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} pct=unknown (null·skip handover)`);
+                  return null;
+                }
+                const pct = Number.isFinite(Number(raw)) ? Number(raw) : null;
                 stderr(`[network-watchdog] estimateContextPct hub session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} pct=${pct}`);
                 return pct;
               },
@@ -1048,6 +1054,12 @@ export function createNetworkWatchdog({
           entry.sessionRecord = session;
 
           const result = await entry.detector.tick(session);
+          if (result?.skipped === 'pct-unknown') {
+            try {
+              mkdirSync(dirname(FALLBACK_STORM_LOG), { recursive: true });
+              appendFileSync(FALLBACK_STORM_LOG, `${new Date(now()).toISOString()} session=${sessionName} pct=unknown\n`);
+            } catch {}
+          }
           if (result?.triggered) {
             detected.push({ name: sessionName, ...result });
             stderr(`[network-watchdog] context usage handover triggered: ${sessionName} pct=${result.pct}`);

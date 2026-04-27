@@ -208,19 +208,19 @@ test('AC-CTX-V05-C: createContextUsageAutoHandover null pct 返 pct-unknown', as
   assert.equal(result.skipped, 'pct-unknown');
 });
 
-test('transcript estimator safely returns 0 for missing transcript', () => {
+test('transcript estimator safely returns null for missing transcript', () => {
   const dir = mkdtempSync(join(tmpdir(), 'transcript-missing-'));
   try {
-    assert.equal(estimateContextPctFromTranscript(join(dir, 'missing.jsonl')), 0);
+    assert.equal(estimateContextPctFromTranscript(join(dir, 'missing.jsonl')), null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('transcript estimator safely returns 0 for unreadable transcript path', () => {
+test('transcript estimator safely returns null for unreadable transcript path', () => {
   const dir = mkdtempSync(join(tmpdir(), 'transcript-unreadable-'));
   try {
-    assert.equal(estimateContextPctFromTranscript(dir), 0);
+    assert.equal(estimateContextPctFromTranscript(dir), null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

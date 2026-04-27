@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,6 +56,22 @@ function createIsolatedWatchdog(options = {}) {
     rateLimitCritiqueEnabled: false,
     ...options,
   });
+}
+
+function createSpawnMock({ stdout = '{"suspects_found":1,"killed":[123]}', code = 0 } = {}) {
+  const calls = [];
+  const spawnImpl = (command, args, options) => {
+    calls.push({ command, args, options });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      child.stdout.emit('data', stdout);
+      child.emit('close', code);
+    });
+    return child;
+  };
+  return { calls, spawnImpl };
 }
 
 test('createNetworkWatchdog: 进入 down 时会 POST /internal/network-event', async () => {
@@ -278,6 +295,76 @@ test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-run
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('createNetworkWatchdog: committed_pct is status-only and never critiques or tree-kills', async () => {
+  const sent = [];
+  const spawnMock = createSpawnMock();
+  const watchdog = createIsolatedWatchdog({
+    spawnImpl: spawnMock.spawnImpl,
+    handoverEnabled: false,
+    handoverConfig: { ipcSend: async (message) => { sent.push(message); } },
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      committed_pct: async () => ({ ok: true, pct: 95 }),
+    },
+  });
+
+  const state = await watchdog.runTick();
+  await watchdog.waitForIdle();
+
+  assert.equal(state.lastChecks.committed_pct.pct, 95);
+  assert.equal(sent.length, 0);
+  assert.equal(spawnMock.calls.length, 0);
+});
+
+test('createNetworkWatchdog: phys_ram_used_pct at 90% invokes tree-kill', async () => {
+  const spawnMock = createSpawnMock();
+  const watchdog = createIsolatedWatchdog({
+    spawnImpl: spawnMock.spawnImpl,
+    handoverEnabled: false,
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      phys_ram_used_pct: async () => ({ ok: true, pct: 90 }),
+    },
+  });
+
+  await watchdog.runTick();
+  await watchdog.waitForIdle();
+
+  assert.equal(spawnMock.calls.length, 1);
+  assert.equal(spawnMock.calls[0].command, 'pwsh');
+  assert(spawnMock.calls[0].args.some((arg) => arg.includes('session-guard.ps1')));
+  assert(spawnMock.calls[0].args.includes('tree-kill'));
+});
+
+test('createNetworkWatchdog: available_ram_mb below 3GB invokes tree-kill', async () => {
+  const spawnMock = createSpawnMock();
+  const watchdog = createIsolatedWatchdog({
+    spawnImpl: spawnMock.spawnImpl,
+    handoverEnabled: false,
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      available_ram_mb: async () => ({ ok: true, availableMb: 2999 }),
+    },
+  });
+
+  await watchdog.runTick();
+  await watchdog.waitForIdle();
+
+  assert.equal(spawnMock.calls.length, 1);
+  assert.equal(spawnMock.calls[0].command, 'pwsh');
+  assert(spawnMock.calls[0].args.some((arg) => arg.includes('session-guard.ps1')));
+  assert(spawnMock.calls[0].args.includes('tree-kill'));
 });
 
 test('createNetworkWatchdog: handover tick uses next-tick pacing label', async () => {

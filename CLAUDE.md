@@ -101,6 +101,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `GET http://127.0.0.1:3180/status` 返回 `{state, failing, lastChecks, uptime, harness}`，其中 `harness` 含 `state / contextWarnPct / lastTransition / lastReason / lastProbe`
 - watchdog 只会在 harness 进入 `down` 时触发 `triggerHarnessSelfHandover()`；`degraded` 仅代表风险态，不允许直接 handover
 - ADR-010 模块 6 `context-usage-auto-handover` 使用单一阈值 `>50%`：超过阈值后，在 IPC 队列空、git 树洁、codex task 无 in-flight 三个最小任务单元信号中任两项为 true 时，触发 atomic handoff（rename old name → spawn original name → cold start brief 接管）；5 分钟 cooldown 防抖。
+- 默认真 swap（非 dry-run）。env `WATCHDOG_HANDOVER_DRY_RUN=true` 启用 dry-run 模式（仅 IPC pre-spawn-review·不真 swap）·用于 portfolio 治理 dogfood 测试期。
 - watchdog 默认每 60s 拉 Hub `/sessions`，遍历各 session 后用 register 上报的 `cwd` 直接扫描 `~/.claude/projects/<encoded-cwd>/` 下 mtime 最新 `.jsonl`，独立读取 transcript 估算 `contextUsagePct`（usage JSON 优先，fallback bytes/4 ÷ 200000），不依赖 Hub `/sessions` 推送该字段或 `~/.claude/sessions/<pid>.json`；60s 内重复 tick 返回 `tick-interval` skip，不影响 wake-reaper / stuck-detector 并行 tick。
 - watchdog 冷启默认有 2 分钟 cold-start grace；在收到本轮 `heartbeat` / `pong` / `probe-ok` 之前，任何本应进入 `down` 的 harness 判定（包括 `ws-down-grace-exceeded`）都会被压成 `degraded` 并标记 `held-by-grace`
 - `ingestHeartbeat()` 会校验 heartbeat `ts` 鲜度：早于 watchdog `startedAt - 60s` 的历史消息，或解析失败的非法 `ts`，一律忽略，不得驱动 transition / handover

@@ -1679,6 +1679,7 @@ export async function startWatchdog(options = {}) {
     triggerHarnessSelfHandoverImpl: options.triggerHarnessSelfHandoverImpl ?? triggerHarnessSelfHandover,
     stuckDetectorEnabled: options.stuckDetectorEnabled ?? true,
     handoverEnabled: options.handoverEnabled ?? true,
+    handoverDryRun: options.handoverDryRun ?? (process.env.WATCHDOG_HANDOVER_DRY_RUN === 'true'),
     handoverConfig: {
       checkpointPath: baseHandoverConfig.checkpointPath ?? DEFAULT_CHECKPOINT_PATH,
       lastBreathPath: baseHandoverConfig.lastBreathPath ?? DEFAULT_LAST_BREATH_PATH,

@@ -499,6 +499,30 @@ Update only the `projects` list for an existing registered session through the H
 ipc_update_session(name="tech-worker", projects=["xihe-jianmu-ipc", "_portfolio"])
 ```
 
+### `ipc_cost_summary`
+
+查询 ADR-013 ccusage 成本聚合，覆盖今日、7 天、30 天或全部历史，可按 IPC/project 名或模型分组。
+Query ADR-013 ccusage cost totals for today, 7 days, 30 days, or all history, optionally grouped by IPC/project name or model.
+
+| Param      | Type   | Required | Description                    |
+| ---------- | ------ | -------- | ------------------------------ |
+| `window`   | string | no       | `today`, `7d`, `30d`, or `all` |
+| `group_by` | string | no       | `none`, `ipc_name`, or `model` |
+
+```
+ipc_cost_summary(window="today")
+ipc_cost_summary(window="30d", group_by="model")
+```
+
+### `ipc_token_status`
+
+查询 ccusage 当前 5h block 配额状态，返回 `remaining_pct`、`used_pct`、`resets_at` 和 `total_tokens`。
+Return current ccusage 5h block quota status with `remaining_pct`, `used_pct`, `resets_at`, and `total_tokens`.
+
+```
+ipc_token_status()
+```
+
 ---
 
 ## HTTP API

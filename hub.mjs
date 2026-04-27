@@ -46,6 +46,7 @@ import {
   startOpenClawRetryTimer,
 } from './lib/openclaw-adapter.mjs';
 import { createRegistryMaintainer } from './lib/session-registry.mjs';
+import { getTokenStatus } from './lib/ccusage-adapter.mjs';
 
 // 从项目根目录加载.env
 try {
@@ -259,6 +260,36 @@ ctx.broadcastToTopic = broadcastToTopic;
 ctx.broadcastNetworkDown = broadcastNetworkDown;
 ctx.broadcastNetworkUp = broadcastNetworkUp;
 const handleRequest = createHttpHandler(ctx);
+
+const ccusageCronState = { lastLevel: null, lastSentAt: 0 };
+async function runCcusageQuotaCron() {
+  try {
+    const status = await getTokenStatus({});
+    const remaining = status.remaining_pct;
+    if (!Number.isFinite(remaining)) return;
+    const level = remaining < 5 ? 'FREEZE' : remaining < 20 ? 'WARN' : null;
+    if (!level) {
+      ccusageCronState.lastLevel = null;
+      return;
+    }
+    const now = Date.now();
+    if (ccusageCronState.lastLevel === level && now - ccusageCronState.lastSentAt < 5 * 60 * 1000) return;
+    ccusageCronState.lastLevel = level;
+    ccusageCronState.lastSentAt = now;
+    routeMessage(createMessage({
+      from: 'jianmu-hub',
+      to: '*',
+      topic: 'critique',
+      contentType: 'markdown',
+      content: `[${level}] ccusage 5h block remaining ${remaining}% (used ${status.used_pct ?? 'n/a'}%, reset ${status.resets_at ?? 'unknown'}). ${level === 'FREEZE' ? 'Freeze non-critical work.' : 'Reduce token burn and avoid large spawns.'}`,
+    }));
+  } catch (error) {
+    stderr(`[ipc-hub] ccusage quota cron skipped: ${error?.message ?? error}`);
+  }
+}
+
+setInterval(runCcusageQuotaCron, 15 * 60 * 1000).unref();
+setTimeout(runCcusageQuotaCron, 30 * 1000).unref();
 
 if (process.env.IPC_ENABLE_TEST_HOOKS === '1' && parentPort) {
   parentPort.on('message', async (message) => {

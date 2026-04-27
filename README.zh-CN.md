@@ -195,6 +195,8 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 - `ipc_observation_detail(project, id)`：按 `project + id` 读取单条 observation 的完整字段，不截断 `tool_input` / `tool_output`；若 tags 中有 `jsonl:` 元数据则一并返回
 - `ipc_register_session(name, role?, projects?, access_scope?, cold_start_strategy?, note?)`：通过 Hub 维护 `~/.claude/sessions-registry.json`；name 不存在则创建，已存在则按 merge 语义更新
 - `ipc_update_session(name, projects)`：通过 Hub 仅更新已登记 session 的 `projects` 列表，其他字段保持不变
+- `ipc_cost_summary(window?, group_by?)`：ADR-013 ccusage 成本聚合查询；`window=today|7d|30d|all`，`group_by=none|ipc_name|model`
+- `ipc_token_status()`：ADR-013 ccusage 当前 5h block 配额状态；返回 `remaining_pct` / `used_pct` / `resets_at` / `total_tokens`
 
 `host="external"` 保持旧行为，只返回 `command_hint` 或 fallback 信息；`host="wt"` 在 Win32 上通过 Windows Terminal 新 tab 起新会话；`host="vscode-terminal"` 当前返回 not implemented 提示。
 

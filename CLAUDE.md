@@ -51,6 +51,8 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_register_session(name, role?, projects?, access_scope?, cold_start_strategy?, note?)` — 通过 Hub 维护 `~/.claude/sessions-registry.json`，不存在则创建，已存在则 merge 更新
 - `ipc_update_session(name, projects)` — 通过 Hub 仅更新 `sessions-registry.json` 里某 session 的 `projects` 列表
 - `estimateContextPct(transcriptPath?, contextWindow?)` — ADR-010 模块 6 context-usage-auto-handover 估算当前 transcript context 使用率（0-100），register 消息会携带 `contextUsagePct`
+- `ipc_cost_summary(window?, group_by?)` — ADR-013 ccusage 聚合成本查询；`window=today|7d|30d|all`，`group_by=none|ipc_name|model`
+- `ipc_token_status()` — ADR-013 ccusage 当前 5h block 状态；返回 `remaining_pct` / `used_pct` / `resets_at` / `total_tokens`
 
 ## HTTP API
 

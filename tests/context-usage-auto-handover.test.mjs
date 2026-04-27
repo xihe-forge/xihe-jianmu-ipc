@@ -171,6 +171,43 @@ test('transcript estimator uses last usage and clamps percent', () => {
   }
 });
 
+test('AC-CTX-V05-A: DEFAULT_CONTEXT_WINDOW 1_000_000 实测 200K usage = 20%', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ctx-test-'));
+  try {
+    const transcriptPath = join(dir, 'test.jsonl');
+    writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({ usage: { input_tokens: 100_000, cache_read_input_tokens: 100_000 } })}\n`,
+    );
+
+    const pct = estimateContextPctFromTranscript(transcriptPath);
+
+    assert.equal(Math.round(pct), 20, `应返 20%·实际 ${pct}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AC-CTX-V05-B: transcriptPath null 返 null（不是 0）', () => {
+  assert.equal(estimateContextPctFromTranscript(null), null);
+  assert.equal(estimateContextPctFromTranscript(''), null);
+  assert.equal(estimateContextPctFromTranscript('/tmp/does-not-exist.jsonl'), null);
+});
+
+test('AC-CTX-V05-C: createContextUsageAutoHandover null pct 返 pct-unknown', async () => {
+  const detector = createContextUsageAutoHandover({
+    threshold: 50,
+    estimateContextPct: async () => null,
+    isMinimalTaskUnitComplete: () => true,
+    triggerHandover: async () => ({ ok: true }),
+    cooldownMs: 0,
+  });
+
+  const result = await detector.tick();
+
+  assert.equal(result.skipped, 'pct-unknown');
+});
+
 test('transcript estimator safely returns 0 for missing transcript', () => {
   const dir = mkdtempSync(join(tmpdir(), 'transcript-missing-'));
   try {

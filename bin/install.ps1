@@ -16,9 +16,23 @@ function ipc {
 }
 "@
 
-if (!(Select-String -Path $PROFILE -Pattern 'function ipc' -Quiet -ErrorAction SilentlyContinue)) {
+$ipcxFuncCode = @"
+function ipcx {
+    param([Parameter(Mandatory)][string]`$Name)
+    codex --dangerously-bypass-approvals-and-sandbox -c "mcp_servers.jianmu-ipc.env.IPC_NAME=``"`$Name``""
+}
+"@
+
+if (!(Select-String -Path $PROFILE -Pattern '^function ipc\s*\{' -Quiet -ErrorAction SilentlyContinue)) {
     Add-Content -Path $PROFILE -Value "`n$funcCode"
     Write-Host "Done! Restart PowerShell, then use: ipc main / ipc test2"
 } else {
     Write-Host "ipc function already in profile, no changes made."
+}
+
+if (!(Select-String -Path $PROFILE -Pattern '^function ipcx' -Quiet -ErrorAction SilentlyContinue)) {
+    Add-Content -Path $PROFILE -Value "`n$ipcxFuncCode"
+    Write-Host "Done ipcx! Restart PowerShell, then use: ipcx codex-test-1"
+} else {
+    Write-Host "ipcx function already in profile, no changes made."
 }

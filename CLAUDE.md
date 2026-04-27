@@ -41,6 +41,7 @@ SKILL.md             — OpenClaw ClawHub skill清单
 - `ipc_whoami()` — 当前session身份
 - `ipc_subscribe(topic, action)` — 订阅/退订topic
 - `ipc_spawn(name, task, interactive?, model?, runtime?, host?, cwd?)` — 启动新 session；`runtime=claude|codex`，default `claude`；`host=wt|vscode-terminal|external`，默认 `external`；`cwd` 未传时回退到调用方 `process.cwd()`。`runtime=claude` 的 `wt` / `external` 都以 `IPC_NAME` 环境变量传 session 名，不使用 `--session-name` / `--resume`；canonical cmdline 是 `"...\\bin\\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。`runtime=codex` 时，`interactive=true` 通过 `wt.exe ... -- cmd /k "cd /d <cwd> && codex --dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=\"<name>\"'"` 起长存 Codex；`interactive=false` 使用 `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -c 'mcp_servers.jianmu-ipc.env.IPC_NAME="<name>"' '<task prompt>'` 一次性派单并退出。
+- PowerShell `bin/install.ps1` 安装 `ipc <name>`（Claude session）和 `ipcx <name>`（Codex session）；`ipcx` 使用 `codex --dangerously-bypass-approvals-and-sandbox -c "mcp_servers.jianmu-ipc.env.IPC_NAME=\"<name>\""`。
 - `ipc_rename(name)` — 重命名当前session
 - `ipc_reclaim_my_name(name)` — 自助回收同名 zombie 占位；Hub 会对当前 holder 主动 ping 5 秒，无 pong 才 evict
 - `ipc_task(action, ...)` — 结构化任务管理（create/update/list）

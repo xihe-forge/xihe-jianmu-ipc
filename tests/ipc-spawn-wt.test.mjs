@@ -23,7 +23,8 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
 
   test('AC-IPC-SPAWN-WT-001-c: buildWtStartCommand 含 IPC_NAME env injection', () => {
     const cmd = buildWtStartCommand({ sessionName: 'test-spawn-name', model: 'claude-opus-4-7', cwd: 'D:/workspace/test' });
-    assert.match(cmd, /set IPC_NAME=test-spawn-name/);
+    assert.match(cmd, /set "IPC_NAME=test-spawn-name"&&/);
+    assert.doesNotMatch(cmd, /set IPC_NAME=test-spawn-name\s+&&/);
   });
 
   test('AC-IPC-SPAWN-WT-001-d: buildWtStartCommand 含正确 claude.exe absolute path', () => {
@@ -49,7 +50,8 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
     assert.equal(argv[dashIdx + 1], 'cmd');
     assert.equal(argv[dashIdx + 2], '/k');
     assert.match(argv[dashIdx + 3], /cd \/d "D:\\workspace\\test"/);  // cd /d normalize backslash + quoted
-    assert.match(argv[dashIdx + 3], /set IPC_NAME=test-f/);
+    assert.match(argv[dashIdx + 3], /set "IPC_NAME=test-f"&&/);
+    assert.doesNotMatch(argv[dashIdx + 3], /set IPC_NAME=test-f\s+&&/);
     assert.match(argv[dashIdx + 3], /claude\.exe/);
   });
 
@@ -66,6 +68,19 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
     assert.equal(argv[windowIdx + 1], 'last', `--window value should be last: ${argv[windowIdx + 1]}`);
     const newTabIdx = argv.indexOf('new-tab');
     assert.ok(windowIdx < newTabIdx, `--window must appear before new-tab: windowIdx=${windowIdx} newTabIdx=${newTabIdx}`);
+  });
+
+  test('AC-IPC-SPAWN-WT-003-a: buildWtLaunchCommand uses quoted cmd set without trailing-space capture', () => {
+    const cmd = buildWtLaunchCommand({ sessionName: 'test-launch', model: undefined });
+    assert.match(cmd, /^set "IPC_NAME=test-launch"&&/);
+    assert.doesNotMatch(cmd, /set IPC_NAME=test-launch\s+&&/);
+  });
+
+  test('AC-IPC-SPAWN-WT-003-b: buildWtSpawnArgs uses quoted cmd set with && tight to assignment', () => {
+    const argv = buildWtSpawnArgs({ sessionName: 'test-trim', model: undefined, cwd: 'D:/workspace/test' });
+    const innerCmd = argv[argv.indexOf('--') + 3];
+    assert.match(innerCmd, /set "IPC_NAME=test-trim"&&/);
+    assert.doesNotMatch(innerCmd, /set IPC_NAME=test-trim\s+&&/);
   });
 
 });

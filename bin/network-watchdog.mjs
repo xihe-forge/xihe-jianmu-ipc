@@ -504,6 +504,24 @@ function buildAuthJsonHeaders(hubAuthToken) {
   return headers;
 }
 
+async function notifyOldSessionQuit({ name, fetchImpl, hubAuthToken, ipcPort, watchdogSessionName }) {
+  const response = await fetchImpl(`${buildHubUrl(ipcPort)}/send`, {
+    method: 'POST',
+    headers: buildAuthJsonHeaders(hubAuthToken),
+    body: JSON.stringify({
+      from: watchdogSessionName,
+      to: name,
+      topic: 'atomic-handoff',
+      content: 'atomic-handoff-quit',
+    }),
+  });
+  return {
+    ok: isSuccessfulResponse(response),
+    status: response.status,
+    ...(typeof response.json === 'function' ? await response.json() : {}),
+  };
+}
+
 export function createWakeReaper({
   fetchHealth,
   recentAnthropicProbes,
@@ -1095,6 +1113,13 @@ export function createNetworkWatchdog({
                   });
                 },
                 now,
+                notifyOldSessionQuit: async () => notifyOldSessionQuit({
+                  name: sessionName,
+                  fetchImpl,
+                  hubAuthToken,
+                  ipcPort,
+                  watchdogSessionName,
+                }),
                 renameSession: async () => fetchImpl(`${buildHubUrl(ipcPort)}/prepare-rebind`, {
                   method: 'POST',
                   headers: {

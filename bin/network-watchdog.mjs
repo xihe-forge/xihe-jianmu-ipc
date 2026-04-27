@@ -1053,7 +1053,7 @@ export function createNetworkWatchdog({
             stderr(`[network-watchdog] context usage handover triggered: ${sessionName} pct=${result.pct}`);
             triggeredThisTick = true;
           } else if (triggeredThisTick) {
-            skipped.push({ name: sessionName, skipped: 'global-rate-limit' });
+            skipped.push({ name: sessionName, skipped: 'pacing-deferred-next-tick' });
           } else {
             skipped.push({ name: sessionName, ...(result && typeof result === 'object' ? result : { skipped: result }) });
           }
@@ -1061,7 +1061,7 @@ export function createNetworkWatchdog({
             for (const rest of candidateSessions.slice(candidateSessions.indexOf(session) + 1)) {
               const restName = typeof rest?.name === 'string' ? rest.name.trim() : '';
               if (restName && restName !== watchdogSessionName && !restName.endsWith('-old')) {
-                skipped.push({ name: restName, skipped: 'global-rate-limit' });
+                skipped.push({ name: restName, skipped: 'pacing-deferred-next-tick' });
               }
             }
             break;

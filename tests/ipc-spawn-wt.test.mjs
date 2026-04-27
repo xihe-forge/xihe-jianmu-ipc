@@ -18,7 +18,7 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
 
   test('AC-IPC-SPAWN-WT-001-b: buildWtStartCommand 用 wt -- 分隔符（不嵌套 cmd /c）', () => {
     const cmd = buildWtStartCommand({ sessionName: 'test-spawn', model: undefined, cwd: 'D:/workspace/test' });
-    assert.match(cmd, /wt\.exe\s+new-tab.*\s--\s/, `应含 -- 分隔符: ${cmd}`);
+    assert.match(cmd, /wt\.exe\s+--window\s+last\s+new-tab.*\s--\s/, `?? --window last ? -- ???: ${cmd}`);
   });
 
   test('AC-IPC-SPAWN-WT-001-c: buildWtStartCommand 含 IPC_NAME env injection', () => {
@@ -69,3 +69,4 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
   });
 
 });
+

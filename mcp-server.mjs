@@ -291,7 +291,7 @@ export function buildWtStartCommand({ sessionName, model, cwd }) {
   // 去 `start ""` 包装（wt.exe 自身 detached）
   // 用 wt `--` 分隔符（wt 文档支持 wt new-tab [-d <dir>] -- <command>）替代 cmd /c 嵌套包装
   // cmd /k （keep open）调试期 console window 留下看错误 · production 后续改 /c
-  return `wt.exe new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} -- cmd /k "set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}"`;
+  return `wt.exe --window last new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} -- cmd /k "set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}"`;
 }
 
 export function buildWtSpawnArgs({ sessionName, model, cwd }) {
@@ -302,6 +302,7 @@ export function buildWtSpawnArgs({ sessionName, model, cwd }) {
   const cdSegment = normalizedCwd ? `cd /d ${quoteForCmd(normalizedCwd)} && ` : '';
   const innerCmd = `${cdSegment}set IPC_NAME=${sessionName} && ${quoteForCmd(claudeBin)} ${args}`;
   return [
+    '--window', 'last',
     'new-tab',
     '--title', sessionName,
     '--', 'cmd', '/k', innerCmd,

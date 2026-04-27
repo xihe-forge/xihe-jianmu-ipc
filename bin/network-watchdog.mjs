@@ -61,6 +61,9 @@ export const PHYS_RAM_WARN_PCT = 80;
 export const PHYS_RAM_CRIT_PCT = 90;
 export const PHYS_RAM_RESET_PCT = 70;
 export const PHYS_RAM_DEDUP_MS = 5 * 60 * 1000;
+export const RATE_LIMIT_WARN_FIVE_HOUR = 70;
+export const RATE_LIMIT_WARN_SEVEN_DAY = 80;
+export const RATE_LIMIT_CRITIQUE_DEDUP_MS = 5 * 60 * 1000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
@@ -604,6 +607,57 @@ export function handleAvailableRamPct(check, {
   return level;
 }
 
+function formatResetTime(resetsAt) {
+  if (!Number.isFinite(Number(resetsAt))) {
+    return 'unknown';
+  }
+  return new Date(Number(resetsAt) * 1000).toISOString();
+}
+
+export async function checkRateLimits(sessions, {
+  ipcSend = null,
+  now = Date.now,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+  lastRateLimitCritiqueAt = new Map(),
+} = {}) {
+  if (!Array.isArray(sessions) || typeof ipcSend !== 'function') {
+    return [];
+  }
+
+  const nowTs = now();
+  const critiques = [];
+  const windows = [
+    ['five_hour', RATE_LIMIT_WARN_FIVE_HOUR],
+    ['seven_day', RATE_LIMIT_WARN_SEVEN_DAY],
+  ];
+
+  for (const session of sessions) {
+    const name = typeof session?.name === 'string' && session.name.trim() ? session.name : null;
+    if (!name) continue;
+    for (const [windowName, threshold] of windows) {
+      const window = session?.rateLimits?.[windowName];
+      const pct = Number(window?.used_percentage);
+      if (!Number.isFinite(pct) || pct < threshold) continue;
+
+      const dedupKey = `${name}:${windowName}`;
+      if (nowTs - (lastRateLimitCritiqueAt.get(dedupKey) ?? Number.NEGATIVE_INFINITY) < RATE_LIMIT_CRITIQUE_DEDUP_MS) {
+        continue;
+      }
+
+      lastRateLimitCritiqueAt.set(dedupKey, nowTs);
+      const content = `[rate-limit-critique] ${name} ${windowName} ${pct}% >= ${threshold}% · resets ${formatResetTime(window?.resets_at)}`;
+      try {
+        await ipcSend({ to: 'harness', topic: 'critique', content });
+        critiques.push({ name, window: windowName, pct, threshold });
+      } catch (error) {
+        stderr(`[watchdog] rate_limit ${name} ${windowName} ${pct}% -> critique FAILED: ${toErrorMessage(error)}`);
+      }
+    }
+  }
+
+  return critiques;
+}
+
 export function createWatchdogIpcClient({
   ipcPort = DEFAULT_IPC_PORT,
   sessionName = WATCHDOG_SESSION_NAME,
@@ -831,6 +885,7 @@ export function createNetworkWatchdog({
   handoverThreshold = 50,
   handoverDryRun = true,
   getSessionStateImpl = getSessionState,
+  rateLimitCritiqueEnabled = true,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -852,6 +907,7 @@ export function createNetworkWatchdog({
   const lastCommitAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
+  const lastRateLimitCritiqueAt = new Map();
   let lastCommittedPctCheck = null;
   let lastAvailableRamCheck = null;
   let lastPhysRamPctCheck = null;
@@ -1305,6 +1361,29 @@ export function createNetworkWatchdog({
     return check;
   }
 
+  async function runRateLimitTick() {
+    if (!rateLimitCritiqueEnabled || typeof resolvedHandoverIpcSend !== 'function') {
+      return [];
+    }
+
+    try {
+      const response = await fetchImpl(`${buildHubUrl(ipcPort)}/sessions`);
+      if (!isSuccessfulResponse(response)) {
+        return [];
+      }
+      const sessions = await response.json();
+      return checkRateLimits(Array.isArray(sessions) ? sessions : [], {
+        ipcSend: resolvedHandoverIpcSend,
+        now,
+        stderr,
+        lastRateLimitCritiqueAt,
+      });
+    } catch (error) {
+      stderr(`[network-watchdog] rate_limits check failed: ${toErrorMessage(error)}`);
+      return [];
+    }
+  }
+
   async function runHarnessTick() {
     if (!harnessProbe) {
       return buildHarnessSnapshot();
@@ -1426,6 +1505,7 @@ export function createNetworkWatchdog({
         runWakeReaperTick(lastChecks),
         runStuckDetectorTick(),
         runHandoverTick(),
+        runRateLimitTick(),
       ]);
       return {
         ...networkState,

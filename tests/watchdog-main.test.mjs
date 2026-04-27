@@ -52,6 +52,7 @@ function createIsolatedWatchdog(options = {}) {
     ipcPort: TEST_IPC_PORT,
     internalToken: 'watchdog-token',
     createWatchdogIpcClientImpl: () => createIpcClientStub(),
+    rateLimitCritiqueEnabled: false,
     ...options,
   });
 }
@@ -337,6 +338,7 @@ test('createNetworkWatchdog: critiques five_hour at 70% and seven_day at 80%', a
     fetchImpl: capture.fetchImpl,
     now: () => 1_000_000,
     handoverEnabled: false,
+    rateLimitCritiqueEnabled: true,
     handoverConfig: { ipcSend: async (message) => { sent.push(message); } },
     probes: {
       cliProxy: async () => ok(),
@@ -372,6 +374,7 @@ test('createNetworkWatchdog: rate limit critique dedups per session window for 5
     fetchImpl: capture.fetchImpl,
     now: clock.now,
     handoverEnabled: false,
+    rateLimitCritiqueEnabled: true,
     handoverConfig: { ipcSend: async (message) => { sent.push(message); } },
     probes: {
       cliProxy: async () => ok(),

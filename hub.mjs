@@ -389,6 +389,13 @@ wss.on('connection', (ws, req) => {
     pid: null,
     cwd: null,
     contextUsagePct: null,
+    contextWindow: null,
+    rateLimits: null,
+    cost: null,
+    model: null,
+    sessionId: null,
+    transcriptPath: null,
+    lastStatuslinePushAt: null,
   };
   session.ws = ws;
   session.connectedAt = Date.now();

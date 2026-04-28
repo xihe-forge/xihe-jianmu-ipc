@@ -2,7 +2,7 @@
 
 > IPC 基础设施 repo 的活清单。按优先级分段。所有条目有明确"现状 / 目标 / 验收 / Owner / ETA"。
 
-**最后刷新**：2026-04-26T14:46+08:00（jianmu-pm · 此前两条 14:21/14:25/14:56 时间戳因叙事累加错配 +6-18min · feedback_timestamp_format 复刻 · 已纠正用 `date` 真实 wall clock）
+**最后刷新**：2026-04-28T19:33:47+08:00（codex-ke-impl · ADR-014 Phase 2 K.E sessions Map race fix GREEN 同步）
 **刷新节奏**：每次重要产出 + 每周一 portfolio-sync · 老板 88% 周限额硬规矩：每完成任务立即落盘 + commit + push（不批量积压）
 
 ---
@@ -169,6 +169,10 @@
 
 ## 已完成（按日期倒排，最近 14 天）
 
+### 2026-04-28
+
+- [x] **ADR-014 Phase 2 K.E sessions Map race fix** TDD Red→Green（RED `4ffb0ae` + GREEN 本提交）。`hub.mjs` 同名 connection critical section 改 async-mutex per-name lock，覆盖 force-rebind / zombie-rebind / pendingRebind / inboxExpiry / sessions.set；新增 `tests/sessions-map-race.test.mjs` 4 case（N=8 force 同名、同名 non-force name taken、mixed force+zombie、不同 name 不互锁）。`async-mutex@0.5.x` 已入 `package.json` + `package-lock.json`。验收：K.E 单文件 4/4 GREEN、`pnpm -C ... test` 全绿、manual smoke 临时 Hub 并发 8 force-rebind 终态唯一。
+
 ### 2026-04-26
 
 - [x] **AC-ADR-006-PLAN-B-C stale-suspend detector** TDD Red→Green（origin/master 二 commit：RED `e98a070` + GREEN `84c0994` · 5/5 PASS · npm test PASS · push OK · codex `bvvrzu8vq` ~6min 一次过 SOP v1.0 grep-only preflight 应用）。新建 `lib/stale-suspend-detector.mjs` `createStaleSuspendDetector` 工厂 + 60s 周期检 sessions.values 命中 stale > 10min + ws OPEN + 未 suspended + 未 cooldown 5min → db.suspendSession reason='stuck-stale'。`lib/http-handlers.mjs` `/sessions` 扩 lastAliveProbe 字段。watchdog wire detector。配合 Plan A wake + Plan C reaper 三层 portfolio session 自动接续完整链：retry exhausted → stale → suspend → anthropic OK → wake stale → 自动续上挂起任务。**ADR-006 v0.1 → v0.1.1 改路径 C 后 3 plan + design 全 ship**
@@ -233,3 +237,4 @@
 | 2026-04-25T14:25+08:00 | jianmu-pm | 三 P1 同日闭环（自驱模式）：(1) hub-daemon.vbs 时间盒 TDD origin/master e694790/2f375ed/43d6f97 587 pass schtasks 10min repetition fix，提前 3 天；(2) ADR-003 hook 失效 install-hooks TDD（xihe-tianshu-harness 仓 dec1535/46722fd）+ 实际 install merge user settings.json，老板派单 ~1.5h 闭环；(3) v0.5.0 CHANGELOG+version bump local commit 158eaf1 prep · 待 SSH push tag。Q9 mode #3 stream disconnect 第 4 例（bbrj22chz）+ feedback_codex_dispatch.md "heredoc + codex exec 同 Bash call 禁止"段（xuanji 踩坑同步沉淀）。两条目同步：hub-daemon 时间盒删 P1 移已完成段；v0.5.0 release cut 现状改为"local commit 待 SSH push tag" |
 | 2026-04-26T02:14+08:00 | jianmu-pm | P0 全面重置（响应 boss 88% 周限额 + harness 02:10 todo 频次升级硬规矩）：(1) ADR-008 Phase 2 P0 标 done（harness 已 ship session-cold-start.md v1.3 切换 · 移已完成）；(2) 新 P0 = 切账号窗口待 trigger · spawn fix v2 keystone 已解锁（5b9a6b9+0967749+df9de3a · 7/7 PASS）· runtime cache 是 reload trigger 不是 prerequisite；(3) 新 P0 = ADR-009 / API rate limit 治理 gap 4 SOP（boss 21:34 派 · successor 接班后做）；(4) 已完成段加 2026-04-26 spawn fix v2 + 2026-04-25 晚 P0 spawn 链 11 条目（fix v1 / portfolio acceptance e2e ship gate / hook PS native v2 / hub-uptime baseline v0.2 / handover schema v2 / dependabot fix / ADR-003-gap-eval / cold-start-drill design）；(5) 双 user memory 沉淀 feedback_codex_log_dir_mkdir + feedback_mcp_server_no_hot_reload（mcp-server 改 ship ≠ portfolio runtime 生效 · 必须切账号 reload · 与 settings.json hot-reload 同源） |
 | 2026-04-26T14:21+08:00 | jianmu-pm | 自驱抓 backlog（response harness 14:07 信号 + boss 13:57 "活都干完了吗" critique）：(1) ADR-009 v0.1 design ship `cb38bc3` 4 SOP 完整（boss 21:34 派 P0 ack）；(2) ADR-006 Plan A codex `bwoknxtsk` 14:14 dispatched · TDD RED→GREEN broadcastNetworkUp 扩 stale session auto-wake；(3) ADR-006 Plan C 待 Plan A done 后接力 + 评估与 SOP-1 共派；P0 段重排：ADR-009 v0.1 design 已 ship 等 review / ADR-006 Plan A 实施中 / Plan C 待派 |
+| 2026-04-28T19:33:47+08:00 | codex-ke-impl | ADR-014 Phase 2 K.E sessions Map race fix GREEN 同步：per-name async-mutex、4 case race test、manual smoke、全量测试通过；report/dispatch-record 路径按 brief 落盘 |

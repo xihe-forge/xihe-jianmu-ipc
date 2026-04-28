@@ -30,6 +30,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { parentPort } from 'node:worker_threads';
+import { Mutex } from 'async-mutex';
 import { WebSocketServer } from 'ws';
 import { audit } from './lib/audit.mjs';
 import { startCIRelay, stopCIRelay } from './lib/ci-relay.mjs';
@@ -156,10 +157,18 @@ function normalizeAppServerThreadId(value) {
 
 /** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null, gracefulReleasing?:boolean}>} */
 const sessions = new Map();
+const sessionMutexes = new Map();
 const ackPending = new Map(); // messageId → { sender, ts }
 const deliveredMessageIds = new Map(); // messageId → timestamp（去重）
 const sessionReclaim = createSessionReclaimHandler({ sessions, audit, findPendingRebind });
 const appServerClients = new Map();
+
+function getSessionMutex(name) {
+  if (!sessionMutexes.has(name)) {
+    sessionMutexes.set(name, new Mutex());
+  }
+  return sessionMutexes.get(name);
+}
 
 setInterval(() => {
   const cutoff = Date.now() - 300000;
@@ -435,6 +444,20 @@ if (process.env.IPC_ENABLE_TEST_HOOKS === '1' && parentPort) {
           result = { name: sessionName, connectedAt };
           break;
         }
+        case 'setSessionIsAlive': {
+          const sessionName = message.payload?.name;
+          const isAlive = message.payload?.isAlive;
+          if (!sessionName || typeof isAlive !== 'boolean') {
+            throw new Error('setSessionIsAlive requires { name, isAlive }');
+          }
+          const session = sessions.get(sessionName);
+          if (!session?.ws) {
+            throw new Error(`session websocket not found: ${sessionName}`);
+          }
+          session.ws.isAlive = isAlive;
+          result = { name: sessionName, isAlive };
+          break;
+        }
         case 'attachMockCodexAppServer': {
           const sessionName = message.payload?.sessionName;
           if (!sessionName) throw new Error('attachMockCodexAppServer requires sessionName');
@@ -516,7 +539,7 @@ const wss = new WebSocketServer({
   },
 });
 
-wss.on('connection', (ws, req) => {
+wss.on('connection', async (ws, req) => {
   const url = new URL(req.url, `http://localhost`);
   const name = url.searchParams.get('name');
   const token = url.searchParams.get('token');
@@ -532,68 +555,103 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  const pendingRebind = findPendingRebind(name);
-  const existing = sessions.get(name);
-  if (pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
-    // Explicit release-rebind has priority over ?force=1. While the current owner
-    // is still connected, the successor must wait instead of zombie-killing it.
-    ws.close(4001, 'name taken');
-    return;
-  }
-  if (!pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
-    const staleForMs = Date.now() - (existing.connectedAt || 0);
-    const zombieDetected =
-      existing.ws.isAlive === false ||
-      (staleForMs > 2 * HEARTBEAT_INTERVAL && existing.ws.isAlive === false);
-
-    if (forceRebind || zombieDetected) {
-      audit(forceRebind ? 'force_rebind' : 'zombie_rebind', {
-        name,
-        staleForMs,
-        previousConnectedAt: existing.connectedAt || 0,
-        previousIsAlive: existing.ws.isAlive ?? null,
-        remoteAddress: req.socket.remoteAddress,
-      });
-      existing.ws.terminate();
-    } else {
-      ws.close(4001, 'name taken');
+  let session = null;
+  let pendingRebind = null;
+  let handleSessionMessage = null;
+  const queuedMessages = [];
+  const onSessionMessage = (raw) => {
+    if (handleSessionMessage) {
+      handleSessionMessage(raw);
       return;
     }
-  }
-  if (existing && existing.inboxExpiry !== null) {
-    clearTimeout(existing.inboxExpiry);
-    existing.inboxExpiry = null;
-  }
-  const session = existing ?? {
-    name,
-    ws: null,
-    connectedAt: Date.now(),
-    topics: new Set(),
-    inbox: [],
-    inboxExpiry: null,
-    gracefulReleasing: false,
-    pid: null,
-    cwd: null,
-    contextUsagePct: null,
-    contextWindow: null,
-    rateLimits: null,
-    cost: null,
-    model: null,
-    sessionId: null,
-    transcriptPath: null,
-    lastStatuslinePushAt: null,
-    subprocess: false,
-    runtime: 'unknown',
-    appServerPid: null,
-    appServerThreadId: null,
+    queuedMessages.push(raw);
   };
-  session.ws = ws;
-  session.connectedAt = Date.now();
-  session.gracefulReleasing = false;
-  if (pendingRebind) {
-    session.topics = new Set(pendingRebind.lastTopics);
+  ws.on('message', onSessionMessage);
+
+  let release = null;
+  try {
+    release = await getSessionMutex(name).acquire();
+
+    if (ws.readyState !== ws.OPEN) {
+      ws.off('message', onSessionMessage);
+      return;
+    }
+
+    pendingRebind = findPendingRebind(name);
+    const existing = sessions.get(name);
+    if (pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
+      // Explicit release-rebind has priority over ?force=1. While the current owner
+      // is still connected, the successor must wait instead of zombie-killing it.
+      ws.close(4001, 'name taken');
+      ws.off('message', onSessionMessage);
+      return;
+    }
+    if (!pendingRebind && existing && existing.ws && existing.ws.readyState === existing.ws.OPEN) {
+      const staleForMs = Date.now() - (existing.connectedAt || 0);
+      const zombieDetected =
+        existing.ws.isAlive === false ||
+        (staleForMs > 2 * HEARTBEAT_INTERVAL && existing.ws.isAlive === false);
+
+      if (forceRebind || zombieDetected) {
+        audit(forceRebind ? 'force_rebind' : 'zombie_rebind', {
+          name,
+          staleForMs,
+          previousConnectedAt: existing.connectedAt || 0,
+          previousIsAlive: existing.ws.isAlive ?? null,
+          remoteAddress: req.socket.remoteAddress,
+        });
+        existing.ws.terminate();
+      } else {
+        ws.close(4001, 'name taken');
+        ws.off('message', onSessionMessage);
+        return;
+      }
+    }
+    if (existing && existing.inboxExpiry !== null) {
+      clearTimeout(existing.inboxExpiry);
+      existing.inboxExpiry = null;
+    }
+    session = existing ?? {
+      name,
+      ws: null,
+      connectedAt: Date.now(),
+      topics: new Set(),
+      inbox: [],
+      inboxExpiry: null,
+      gracefulReleasing: false,
+      pid: null,
+      cwd: null,
+      contextUsagePct: null,
+      contextWindow: null,
+      rateLimits: null,
+      cost: null,
+      model: null,
+      sessionId: null,
+      transcriptPath: null,
+      lastStatuslinePushAt: null,
+      subprocess: false,
+      runtime: 'unknown',
+      appServerPid: null,
+      appServerThreadId: null,
+    };
+    session.ws = ws;
+    session.connectedAt = Date.now();
+    session.gracefulReleasing = false;
+    if (pendingRebind) {
+      session.topics = new Set(pendingRebind.lastTopics);
+    }
+    sessions.set(name, session);
+  } catch (error) {
+    ws.off('message', onSessionMessage);
+    stderr(`[ipc-hub] session registration error for ${name}: ${error?.message ?? error}`);
+    if (ws.readyState === ws.OPEN) {
+      ws.close(1011, 'registration failed');
+    }
+    return;
+  } finally {
+    if (release) release();
   }
-  sessions.set(name, session);
+
   resetIdleTimer();
   audit('session_connect', { name, total: countLive() });
   stderr(`[ipc-hub] session connected: ${name} (total: ${countLive()})`);
@@ -614,7 +672,7 @@ wss.on('connection', (ws, req) => {
     ws.isAlive = true;
   });
 
-  ws.on('message', (raw) => {
+  handleSessionMessage = (raw) => {
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -702,7 +760,7 @@ wss.on('connection', (ws, req) => {
       default:
         send(ws, { type: 'error', error: `unknown message type: ${msg.type}` });
     }
-  });
+  };
 
   ws.on('close', () => {
     if (session.ws !== ws) return;
@@ -730,6 +788,10 @@ wss.on('connection', (ws, req) => {
   ws.on('error', (err) => {
     stderr(`[ipc-hub] ws error on session ${name}: ${err.message}`);
   });
+
+  for (const raw of queuedMessages.splice(0)) {
+    handleSessionMessage(raw);
+  }
 });
 
 // 心跳 + 定期清理

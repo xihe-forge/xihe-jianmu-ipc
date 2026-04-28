@@ -66,6 +66,14 @@
 
 ## 二、已 ship 产出（按时序倒排）
 
+### 2026-04-28
+
+- **ADR-014 Phase 2 K.E sessions Map race fix**
+  - 仓位：TDD Red→Green 双 commit（RED `4ffb0ae` + GREEN 本提交）
+  - 改了什么：`hub.mjs` WebSocket connection handler 改 async，并用 `async-mutex` per-name lock 包住同名 session Map 临界区，覆盖 `findPendingRebind` / existing holder 判定 / force-rebind 或 zombie-rebind terminate / inboxExpiry 清理 / `sessions.set(name, session)`；不同 session name 互不阻塞
+  - 为什么改：ADR-014 Phase 2 K.E 收口 sessions Map race，避免同名 force-rebind burst 时 Hub 最终态只记录后到 socket、早到 socket 仍连着但 Hub 失联
+  - 怎么验的：新增 `tests/sessions-map-race.test.mjs` 4 case，K.E 单文件 4/4 GREEN；`pnpm -C xihe-jianmu-ipc test` 全量通过；manual smoke 临时 Hub 并发 8 force-rebind 终态唯一；Hub 直接启动 smoke `/health` OK，现有 3179 `ipc_whoami` OK
+
 ### 2026-04-24
 
 - **ipc_reclaim_my_name MCP 工具 + /reclaim-name Hub endpoint**（ADR-008 Phase 1）
@@ -186,4 +194,5 @@ ADR-008（`ipc_reclaim_my_name`）作为 v0.5.0 的补丁特性一并 cut releas
 
 | 版本 | 日期 | 作者 | 说明 |
 |---|---|---|---|
+| v1.1 | 2026-04-28 | codex-ke-impl | 同步 ADR-014 Phase 2 K.E sessions Map race fix：per-name async-mutex + 4 case TDD + 全量测试验收 |
 | v1.0 | 2026-04-24 | jianmu-pm | 首版，兑现 2026-04-20 交接承诺（"首版豁免：handover/PROJECT-PLAN.md + TODO.md 将在下次交接前必补"）；迁入 ROADMAP + v0.5.0 phase plan + ADR-008 Phase 1 产出 |

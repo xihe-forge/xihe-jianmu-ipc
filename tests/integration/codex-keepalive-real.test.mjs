@@ -17,61 +17,65 @@ function buildAppServerEnv(env = process.env) {
   };
 }
 
-test('real codex app-server thread stays alive across three keepalive pings', { timeout: 60_000 }, async () => {
-  const client = createAppServerClient({
-    cwd: process.cwd(),
-    env: buildAppServerEnv(),
-    requestTimeoutMs: 60_000,
-    trace: () => {},
-  });
-  let keepalive = null;
-  let pingCount = 0;
-
-  try {
-    client.on('stderr', () => {});
-    await client.initialize({
-      clientInfo: { name: 'xihe-ipc-keepalive-test', version: '0.5.0' },
-    });
-    const { threadId } = await client.threadStart({
+test(
+  'real codex app-server thread stays alive across three keepalive pings',
+  { timeout: 60_000 },
+  async () => {
+    const client = createAppServerClient({
       cwd: process.cwd(),
-      approvalPolicy: 'never',
-      sandbox: 'danger-full-access',
-      experimentalRawEvents: true,
-      persistExtendedHistory: true,
+      env: buildAppServerEnv(),
+      requestTimeoutMs: 60_000,
+      trace: () => {},
     });
+    let keepalive = null;
+    let pingCount = 0;
 
-    assert.equal(typeof client.threadRead, 'function');
-    assert.ok(threadId);
+    try {
+      client.on('stderr', () => {});
+      await client.initialize({
+        clientInfo: { name: 'xihe-ipc-keepalive-test', version: '0.5.0' },
+      });
+      const { threadId } = await client.threadStart({
+        cwd: process.cwd(),
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+        experimentalRawEvents: true,
+        persistExtendedHistory: true,
+      });
 
-    const countedClient = {
-      ...client,
-      threadRead: async (id) => {
-        pingCount += 1;
-        return await client.threadRead(id);
-      },
-      threadStatus: (id) => client.threadStatus(id),
-      on: (eventName, handler) => client.on(eventName, handler),
-      off: (eventName, handler) => client.off(eventName, handler),
-    };
+      assert.equal(typeof client.threadRead, 'function');
+      assert.ok(threadId);
 
-    keepalive = createThreadKeepalive({
-      client: countedClient,
-      threadId,
-      sessionName: 'integration-codex-keepalive',
-      intervalMs: 10_000,
-    });
-    keepalive.start();
+      const countedClient = {
+        ...client,
+        threadRead: async (id) => {
+          pingCount += 1;
+          return await client.threadRead(id);
+        },
+        threadStatus: (id) => client.threadStatus(id),
+        on: (eventName, handler) => client.on(eventName, handler),
+        off: (eventName, handler) => client.off(eventName, handler),
+      };
 
-    const startedAt = Date.now();
-    await delay(31_500);
-    const elapsedMs = Date.now() - startedAt;
-    const read = await client.threadRead(threadId);
+      keepalive = createThreadKeepalive({
+        client: countedClient,
+        threadId,
+        sessionName: 'integration-codex-keepalive',
+        intervalMs: 10_000,
+      });
+      keepalive.start();
 
-    assert.ok(pingCount >= 3, `expected >=3 keepalive pings, got ${pingCount}`);
-    assert.notEqual(read.thread?.status?.type, 'closed');
-    assert.ok(elapsedMs < 45_000, `30s timeline exceeded: ${elapsedMs}ms`);
-  } finally {
-    keepalive?.stop();
-    await client.close();
-  }
-});
+      const startedAt = Date.now();
+      await delay(31_500);
+      const elapsedMs = Date.now() - startedAt;
+      const read = await client.threadRead(threadId);
+
+      assert.ok(pingCount >= 3, `expected >=3 keepalive pings, got ${pingCount}`);
+      assert.notEqual(read.thread?.status?.type, 'closed');
+      assert.ok(elapsedMs < 45_000, `30s timeline exceeded: ${elapsedMs}ms`);
+    } finally {
+      keepalive?.stop();
+      await client.close();
+    }
+  },
+);

@@ -19,6 +19,7 @@ import {
   formatInjectItem,
   resolveSpawnSpec,
 } from './lib/codex-app-server-client.mjs';
+import { createThreadKeepalive } from './lib/codex-thread-keepalive.mjs';
 import { createMcpTools } from './lib/mcp-tools.mjs';
 import { estimateContextPctFromTranscript } from './lib/context-usage-auto-handover.mjs';
 import { getClaudeDir, getHomeDir } from './lib/claude-paths.mjs';
@@ -104,6 +105,7 @@ let localAppServerClient = null;
 let localAppServerThreadId = null;
 let localAppServerPid = null;
 const spawnedAppServerClients = new Map();
+const threadKeepaliveMap = new Map();
 const SELF_DETECTION_WINDOW_MS = 60_000;
 
 function getPidSessionJsonPath({ pid = process.pid, homeDir = null, env = process.env } = {}) {
@@ -602,6 +604,7 @@ async function ensureLocalCodexAppServer() {
 async function startSpawnedCodexAppServer({ sessionName, cwd }) {
   const existing = spawnedAppServerClients.get(sessionName);
   if (existing) {
+    stopCodexThreadKeepalive(sessionName, 'replace-app-server');
     try {
       await existing.client.close();
     } catch {}
@@ -609,7 +612,61 @@ async function startSpawnedCodexAppServer({ sessionName, cwd }) {
   }
   const bridge = await startCodexAppServerBridge({ sessionName, cwd });
   spawnedAppServerClients.set(sessionName, bridge);
+  startCodexThreadKeepalive({ sessionName, client: bridge.client, threadId: bridge.threadId });
   return bridge;
+}
+
+export function startCodexThreadKeepalive({ sessionName, client, threadId }) {
+  stopCodexThreadKeepalive(sessionName, 'restart-keepalive');
+  const keepalive = createThreadKeepalive({
+    client,
+    threadId,
+    sessionName,
+    stderr: (message) => process.stderr.write(message),
+    audit: (event, data) => mcpTrace(event, data),
+  });
+  keepalive.on('closed', (event) => {
+    threadKeepaliveMap.delete(sessionName);
+    process.stderr.write(
+      `[ipc] codex thread ${threadId} closed; auto-rebind deferred for session ${sessionName}\n`,
+    );
+    mcpTrace('codex_thread_keepalive_closed_deferred_rebind', {
+      sessionName,
+      threadId,
+      reason: event?.reason ?? null,
+    });
+  });
+  keepalive.start();
+  threadKeepaliveMap.set(sessionName, keepalive);
+  return keepalive;
+}
+
+export function stopCodexThreadKeepalive(sessionName, reason = 'manual') {
+  const keepalive = threadKeepaliveMap.get(sessionName);
+  if (!keepalive) {
+    return { stopped: false, sessionName, reason };
+  }
+  const result = keepalive.stop(reason);
+  threadKeepaliveMap.delete(sessionName);
+  return { ...result, stopped: true };
+}
+
+export function stopAllCodexThreadKeepalives(reason = 'manual') {
+  const results = [];
+  for (const sessionName of [...threadKeepaliveMap.keys()]) {
+    results.push(stopCodexThreadKeepalive(sessionName, reason));
+  }
+  return results;
+}
+
+export function getCodexThreadKeepaliveState(sessionName) {
+  const keepalive = threadKeepaliveMap.get(sessionName);
+  return {
+    sessionName,
+    exists: Boolean(keepalive),
+    alive: Boolean(keepalive?.isAlive()),
+    threadId: keepalive?.threadId ?? null,
+  };
 }
 
 async function pushLocalCodexInboundViaAppServer(msg) {
@@ -1040,6 +1097,7 @@ export async function spawnSession({
       process.stderr.write(
         `[ipc] codex background session "${sessionName}" exited (code=${code})\n`,
       );
+      stopCodexThreadKeepalive(sessionName, 'spawn-child-exit');
     });
 
     let appServer = null;
@@ -1666,6 +1724,7 @@ function connect() {
     mcpTrace('ws_disconnect', { code: event.code, reason: event.reason });
     process.stderr.write(`[ipc] disconnected from hub (code=${event.code})\n`);
     ws = null;
+    stopAllCodexThreadKeepalives('ws-close');
     scheduleReconnect();
   });
 
@@ -1716,6 +1775,7 @@ async function initialConnect() {
           mcpTrace('ws_disconnect', { code: ev.code, reason: ev.reason });
           process.stderr.write(`[ipc] disconnected from hub (code=${ev.code})\n`);
           ws = null;
+          stopAllCodexThreadKeepalives('ws-close');
           scheduleReconnect();
         });
 

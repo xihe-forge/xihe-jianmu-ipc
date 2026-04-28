@@ -36,6 +36,7 @@ export function buildSessionUrl(port, name, options = {}) {
 
 export function startHub({
   prefix = 'hub-fixture',
+  port = randomPort(),
   env = {},
   heartbeatIntervalMs = null,
   heartbeatTimeoutMs = null,
@@ -43,17 +44,19 @@ export function startHub({
   startTimeoutMs = HUB_START_TIMEOUT,
 } = {}) {
   return new Promise((resolve, reject) => {
-    const port = randomPort();
+    const hubPort = Number.isInteger(port) && port > 0 ? port : randomPort();
     const dbPath = env.IPC_DB_PATH || createTempDbPath(prefix);
     const stderrChunks = [];
     const envAssignments = Object.entries({
-      IPC_PORT: String(port),
+      IPC_PORT: String(hubPort),
       IPC_DB_PATH: dbPath,
       ...env,
-    }).map(([key, value]) => {
-      if (value === undefined) return '';
-      return `process.env[${JSON.stringify(key)}] = ${JSON.stringify(String(value))};`;
-    }).join('\n');
+    })
+      .map(([key, value]) => {
+        if (value === undefined) return '';
+        return `process.env[${JSON.stringify(key)}] = ${JSON.stringify(String(value))};`;
+      })
+      .join('\n');
 
     const worker = new Worker(
       `
@@ -140,7 +143,7 @@ export function startHub({
         return;
       }
 
-      resolve({ worker, port, dbPath, stderrChunks });
+      resolve({ worker, port: hubPort, dbPath, stderrChunks });
     }
   });
 }
@@ -152,10 +155,7 @@ export async function stopHub(hub) {
 
   try {
     if (worker) {
-      await Promise.race([
-        worker.terminate().catch(() => {}),
-        sleep(2_000),
-      ]);
+      await Promise.race([worker.terminate().catch(() => {}), sleep(2_000)]);
     }
   } finally {
     cleanupDbFiles(dbPath);

@@ -33,7 +33,11 @@ async function startPhase3Hub(prefix) {
       },
       startTimeoutMs: 5_000,
     });
-    assert.equal(hub.port, PHASE3_PORT, `Phase 3 must use temporary hub port ${PHASE3_PORT}; got ${hub.port}`);
+    assert.equal(
+      hub.port,
+      PHASE3_PORT,
+      `Phase 3 must use temporary hub port ${PHASE3_PORT}; got ${hub.port}`,
+    );
     return hub;
   } catch (error) {
     await stopHub(hub);
@@ -51,7 +55,11 @@ async function postSend(hub, { from, to, content }) {
     path: '/send',
     json: { from, to, content },
   });
-  assert.equal(response.statusCode, 200, `POST /send failed: ${JSON.stringify(response.body)}\n${hubLog(hub)}`);
+  assert.equal(
+    response.statusCode,
+    200,
+    `POST /send failed: ${JSON.stringify(response.body)}\n${hubLog(hub)}`,
+  );
   assert.equal(response.body.accepted, true, JSON.stringify(response.body));
   return response.body;
 }
@@ -73,10 +81,6 @@ async function attachMockAppServer(hub, options) {
   return await workerRequest(hub.worker, 'attachMockCodexAppServer', options, 3_000);
 }
 
-async function updateMockAppServer(hub, options) {
-  return await workerRequest(hub.worker, 'updateMockCodexAppServer', options, 3_000);
-}
-
 async function getMockAppServer(hub, sessionName) {
   return await workerRequest(hub.worker, 'getMockCodexAppServer', { sessionName }, 3_000);
 }
@@ -95,8 +99,12 @@ function querySqliteEvidence(dbPath, marker) {
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
     const like = `%${marker}%`;
-    const messages = db.prepare('SELECT id, "from", "to", content, ts FROM messages WHERE content LIKE ?').all(like);
-    const inbox = db.prepare('SELECT session_name, message, ts FROM inbox WHERE message LIKE ?').all(like);
+    const messages = db
+      .prepare('SELECT id, "from", "to", content, ts FROM messages WHERE content LIKE ?')
+      .all(like);
+    const inbox = db
+      .prepare('SELECT session_name, message, ts FROM inbox WHERE message LIKE ?')
+      .all(like);
     return { messages, inbox };
   } finally {
     db.close();
@@ -109,37 +117,21 @@ function writeFakeCodexExecutable() {
   const script = `
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
-const require = createRequire(${JSON.stringify(packageUrl)});
-const WebSocket = require('ws');
-const args = process.argv.slice(2);
-const sessionName = process.env.IPC_NAME || 'ac5-test';
+const require = createRequire(${JSON.stringify(packageUrl)}), WebSocket = require('ws');
+const args = process.argv.slice(2), sessionName = process.env.IPC_NAME || 'ac5-test';
 const threadId = process.env.PHASE3_FAKE_CODEX_THREAD_ID || '00000000-0000-4000-8000-000000000005';
 function ok(id, result = {}) { process.stdout.write(JSON.stringify({ id, result }) + '\\n'); }
-if (args[0] === 'app-server') {
-  const rl = createInterface({ input: process.stdin });
-  rl.on('line', (line) => {
-    if (!line.trim()) return; let request; try { request = JSON.parse(line); } catch { return; }
-    if (request.method === 'initialize') return ok(request.id, { codexHome: process.cwd() });
-    if (request.method === 'thread/start' || request.method === 'thread/read') return ok(request.id, { thread: { id: threadId, status: { type: 'idle' } } });
-    if (request.method === 'thread/inject_items' || request.method === 'turn/steer') return ok(request.id, { ok: true });
-    ok(request.id);
-  });
-  setInterval(() => {}, 1_000);
-} else if (args[0] === 'exec') {
-  const host = process.env.IPC_HUB_HOST || '127.0.0.1';
-  const port = process.env.IPC_PORT || '31791';
-  const url = 'ws://' + host + ':' + port + '/ws?name=' + encodeURIComponent(sessionName) + '&force=1';
-  const ws = new WebSocket(url);
+if (args[0] === 'app-server') { const rl = createInterface({ input: process.stdin }); rl.on('line', (line) => {
+  if (!line.trim()) return; let request; try { request = JSON.parse(line); } catch { return; }
+  if (request.method === 'initialize') return ok(request.id, { codexHome: process.cwd() });
+  if (request.method === 'thread/start' || request.method === 'thread/read') return ok(request.id, { thread: { id: threadId, status: { type: 'idle' } } });
+  if (request.method === 'thread/inject_items' || request.method === 'turn/steer') return ok(request.id, { ok: true }); ok(request.id);
+}); setInterval(() => {}, 1_000); } else if (args[0] === 'exec') {
+  const host = process.env.IPC_HUB_HOST || '127.0.0.1', port = process.env.IPC_PORT || '31791', ws = new WebSocket('ws://' + host + ':' + port + '/ws?name=' + encodeURIComponent(sessionName) + '&force=1');
   ws.on('open', () => ws.send(JSON.stringify({ type: 'register', name: sessionName, runtime: 'codex', pid: process.pid, cwd: process.cwd(), appServerThreadId: threadId })));
-  ws.on('message', (raw) => {
-    let msg; try { msg = JSON.parse(raw.toString()); } catch { return; }
-    if (msg.type === 'ping') ws.send(JSON.stringify({ type: 'pong' }));
-  });
+  ws.on('message', (raw) => { let msg; try { msg = JSON.parse(raw.toString()); } catch { return; } if (msg.type === 'ping') ws.send(JSON.stringify({ type: 'pong' })); });
   setInterval(() => {}, 1_000);
-} else {
-  process.stderr.write('fake codex invoked with ' + args.join(' ') + '\\n');
-  setInterval(() => {}, 1_000);
-}
+} else { process.stderr.write('fake codex invoked with ' + args.join(' ') + '\\n'); setInterval(() => {}, 1_000); }
 `;
   writeFileSync(join(dir, 'fake-codex.mjs'), script, 'utf8');
 
@@ -147,7 +139,11 @@ if (args[0] === 'app-server') {
     writeFileSync(join(dir, 'codex.cmd'), '@echo off\r\nnode "%~dp0fake-codex.mjs" %*\r\n', 'utf8');
   } else {
     const executable = join(dir, 'codex');
-    writeFileSync(executable, '#!/usr/bin/env sh\nnode "$(dirname "$0")/fake-codex.mjs" "$@"\n', 'utf8');
+    writeFileSync(
+      executable,
+      '#!/usr/bin/env sh\nnode "$(dirname "$0")/fake-codex.mjs" "$@"\n',
+      'utf8',
+    );
     chmodSync(executable, 0o755);
   }
 
@@ -300,6 +296,7 @@ describe('Phase 3 integration AC suite', { concurrency: false }, () => {
 
       assert.equal(ccMessage.content, marker);
       assert.match(codexCall.threadId, UUID_RE);
+      console.log(JSON.stringify({ ac: 'AC-3', cc: true, codexMethod: codexCall.method }));
     } finally {
       await Promise.all(sockets.map((socket) => closeWebSocket(socket)));
       await stopHub(hub);
@@ -320,6 +317,14 @@ describe('Phase 3 integration AC suite', { concurrency: false }, () => {
       assert.match(spawned.result.appServerThreadId, UUID_RE);
       assert.equal(pidIsAlive(spawned.result.pid), true, JSON.stringify(spawned.result));
       assert.equal(pidIsAlive(spawned.result.appServerPid), true, JSON.stringify(spawned.result));
+      console.log(
+        JSON.stringify({
+          ac: 'AC-5',
+          pid: spawned.result.pid,
+          appServerPid: spawned.result.appServerPid,
+          threadId: spawned.result.appServerThreadId,
+        }),
+      );
     } finally {
       if (spawned) {
         spawned.mcpServer.stopCodexThreadKeepalive('ac5-test', 'phase3-test-cleanup');
@@ -363,6 +368,13 @@ describe('Phase 3 integration AC suite', { concurrency: false }, () => {
         appServerState.calls.some((call) => call.error?.includes('mock app server push failed')),
         JSON.stringify({ appServerState, log: hubLog(hub) }),
       );
+      console.log(
+        JSON.stringify({
+          ac: 'AC-6',
+          messages: evidence.messages.length,
+          inbox: evidence.inbox.length,
+        }),
+      );
     } finally {
       await Promise.all(sockets.map((socket) => closeWebSocket(socket)));
       await stopHub(hub);
@@ -380,7 +392,6 @@ describe('Phase 3 integration AC suite', { concurrency: false }, () => {
       });
       sockets.push(codex);
       await attachMockAppServer(hub, { sessionName: 'ac7-test', threadId, activeTurnId });
-      await updateMockAppServer(hub, { sessionName: 'ac7-test', activeTurnId });
 
       const marker = '[AC-7 PERF]';
       const startedAt = performance.now();
@@ -394,9 +405,13 @@ describe('Phase 3 integration AC suite', { concurrency: false }, () => {
       const deltaMs = performance.now() - startedAt;
 
       assert.equal(call.expectedTurnId, activeTurnId, JSON.stringify(call));
-      assert.ok(
-        deltaMs < 500,
-        `PERF_FAIL delta=${deltaMs.toFixed(1)}ms; hubLog=${hubLog(hub)}`,
+      assert.ok(deltaMs < 500, `PERF_FAIL delta=${deltaMs.toFixed(1)}ms; hubLog=${hubLog(hub)}`);
+      console.log(
+        JSON.stringify({
+          ac: 'AC-7',
+          deltaMs: Number(deltaMs.toFixed(1)),
+          status: deltaMs < 200 ? 'PERF_PASS' : 'PERF_ACCEPTABLE',
+        }),
       );
     } finally {
       await Promise.all(sockets.map((socket) => closeWebSocket(socket)));
@@ -415,6 +430,9 @@ describe('Phase 3 integration AC suite', { concurrency: false }, () => {
         listening,
         [],
         `AC-8 expected stdio-only app-server, found LISTEN ports: ${JSON.stringify(listening)}`,
+      );
+      console.log(
+        JSON.stringify({ ac: 'AC-8', appServerPid: spawned.result.appServerPid, listening }),
       );
     } finally {
       if (spawned) {

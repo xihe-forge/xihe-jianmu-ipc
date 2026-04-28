@@ -311,6 +311,99 @@ setInterval(runCcusageQuotaCron, 15 * 60 * 1000).unref();
 setTimeout(runCcusageQuotaCron, 30 * 1000).unref();
 
 if (process.env.IPC_ENABLE_TEST_HOOKS === '1' && parentPort) {
+  const mockCodexAppServers = new Map();
+
+  function collectInputText(input) {
+    if (typeof input === 'string') return input;
+    if (!Array.isArray(input)) return JSON.stringify(input ?? '');
+    return input
+      .map((part) => {
+        if (typeof part?.text === 'string') return part.text;
+        if (typeof part?.content === 'string') return part.content;
+        return JSON.stringify(part ?? '');
+      })
+      .join('');
+  }
+
+  function collectInjectItemsText(items) {
+    if (!Array.isArray(items)) return JSON.stringify(items ?? '');
+    return items
+      .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
+      .map((part) => part?.text ?? part?.output_text ?? '')
+      .join('');
+  }
+
+  function createMockCodexAppServer({
+    sessionName,
+    threadId,
+    activeTurnId = null,
+    failPush = false,
+  }) {
+    const state = {
+      sessionName,
+      threadId,
+      activeTurnId,
+      failPush: failPush === true,
+      calls: [],
+    };
+    const maybeFail = (call) => {
+      if (!state.failPush) return;
+      call.error = 'mock app server push failed';
+      throw new Error(call.error);
+    };
+    const client = {
+      threadStatus(requestedThreadId) {
+        const call = {
+          method: 'threadStatus',
+          threadId: requestedThreadId,
+          activeTurnId: state.activeTurnId,
+          ts: Date.now(),
+        };
+        state.calls.push(call);
+        return {
+          threadId: requestedThreadId,
+          status: { type: state.activeTurnId ? 'active' : 'idle' },
+          activeTurnId: state.activeTurnId,
+        };
+      },
+      async turnSteer(requestedThreadId, expectedTurnId, input) {
+        const call = {
+          method: 'turnSteer',
+          threadId: requestedThreadId,
+          expectedTurnId,
+          content: collectInputText(input),
+          ts: Date.now(),
+        };
+        state.calls.push(call);
+        maybeFail(call);
+        return { ok: true };
+      },
+      async threadInjectItems(requestedThreadId, items) {
+        const call = {
+          method: 'threadInjectItems',
+          threadId: requestedThreadId,
+          content: collectInjectItemsText(items),
+          ts: Date.now(),
+        };
+        state.calls.push(call);
+        maybeFail(call);
+        return { ok: true };
+      },
+    };
+    return { state, client };
+  }
+
+  function summarizeMockCodexAppServer(mock) {
+    if (!mock) return null;
+    return {
+      sessionName: mock.state.sessionName,
+      threadId: mock.state.threadId,
+      activeTurnId: mock.state.activeTurnId,
+      failPush: mock.state.failPush,
+      calls: mock.state.calls,
+    };
+  }
+
   parentPort.on('message', async (message) => {
     if (!message || typeof message !== 'object' || !message.requestId || !message.action) {
       return;
@@ -340,6 +433,49 @@ if (process.env.IPC_ENABLE_TEST_HOOKS === '1' && parentPort) {
           }
           session.connectedAt = connectedAt;
           result = { name: sessionName, connectedAt };
+          break;
+        }
+        case 'attachMockCodexAppServer': {
+          const sessionName = message.payload?.sessionName;
+          if (!sessionName) throw new Error('attachMockCodexAppServer requires sessionName');
+          const session = sessions.get(sessionName);
+          if (!session) throw new Error(`session not found: ${sessionName}`);
+          const threadId = normalizeAppServerThreadId(
+            message.payload?.threadId ?? session.appServerThreadId,
+          );
+          if (!threadId) throw new Error('attachMockCodexAppServer requires threadId');
+          const mock = createMockCodexAppServer({
+            sessionName,
+            threadId,
+            activeTurnId: message.payload?.activeTurnId ?? null,
+            failPush: message.payload?.failPush === true,
+          });
+          mockCodexAppServers.set(sessionName, mock);
+          appServerClients.set(sessionName, mock.client);
+          session.appServerClient = mock.client;
+          session.runtime = 'codex';
+          session.appServerThreadId = threadId;
+          result = summarizeMockCodexAppServer(mock);
+          break;
+        }
+        case 'updateMockCodexAppServer': {
+          const sessionName = message.payload?.sessionName;
+          const mock = mockCodexAppServers.get(sessionName);
+          if (!mock) throw new Error(`mock codex app server not found: ${sessionName}`);
+          if (Object.hasOwn(message.payload, 'activeTurnId')) {
+            mock.state.activeTurnId = message.payload.activeTurnId ?? null;
+          }
+          if (Object.hasOwn(message.payload, 'failPush')) {
+            mock.state.failPush = message.payload.failPush === true;
+          }
+          result = summarizeMockCodexAppServer(mock);
+          break;
+        }
+        case 'getMockCodexAppServer': {
+          const sessionName = message.payload?.sessionName;
+          const mock = mockCodexAppServers.get(sessionName);
+          if (!mock) throw new Error(`mock codex app server not found: ${sessionName}`);
+          result = summarizeMockCodexAppServer(mock);
           break;
         }
         default:
@@ -447,6 +583,7 @@ wss.on('connection', (ws, req) => {
     transcriptPath: null,
     lastStatuslinePushAt: null,
     runtime: 'unknown',
+    appServerPid: null,
     appServerThreadId: null,
   };
   session.ws = ws;
@@ -501,11 +638,13 @@ wss.on('connection', (ws, req) => {
         session.cwd = normalizeCwd(msg.cwd);
         session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
         session.runtime = normalizeRuntime(msg.runtime);
+        session.appServerPid = normalizePid(msg.appServerPid);
         session.appServerThreadId = normalizeAppServerThreadId(msg.appServerThreadId);
         send(ws, {
           type: 'registered',
           name: session.name,
           runtime: session.runtime,
+          appServerPid: session.appServerPid,
           appServerThreadId: session.appServerThreadId,
         });
         break;

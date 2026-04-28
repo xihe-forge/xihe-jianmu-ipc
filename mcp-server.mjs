@@ -578,8 +578,21 @@ async function startCodexAppServerBridge({ sessionName, cwd }) {
 }
 
 async function ensureLocalCodexAppServer() {
-  if (resolveRuntime() !== 'codex') return null;
+  const resolvedRuntime = resolveRuntime();
+  if (resolvedRuntime !== 'codex') {
+    mcpTrace('codex_app_server_bridge_skip', {
+      reason: 'not-codex-runtime',
+      resolved_runtime: resolvedRuntime,
+      ipc_name: process.env.IPC_NAME ?? null,
+      mcp_client_info: mcpClientInfo ? { name: mcpClientInfo.name ?? null } : null,
+    });
+    return null;
+  }
   if (localAppServerClient && localAppServerThreadId) {
+    mcpTrace('codex_app_server_bridge_skip', {
+      reason: 'already-initialized',
+      thread_id: localAppServerThreadId,
+    });
     return {
       client: localAppServerClient,
       threadId: localAppServerThreadId,

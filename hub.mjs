@@ -582,6 +582,7 @@ wss.on('connection', (ws, req) => {
     sessionId: null,
     transcriptPath: null,
     lastStatuslinePushAt: null,
+    subprocess: false,
     runtime: 'unknown',
     appServerPid: null,
     appServerThreadId: null,
@@ -637,6 +638,7 @@ wss.on('connection', (ws, req) => {
         session.pid = normalizePid(msg.pid);
         session.cwd = normalizeCwd(msg.cwd);
         session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
+        session.subprocess = msg.subprocess === true;
         session.runtime = normalizeRuntime(msg.runtime);
         session.appServerPid = normalizePid(msg.appServerPid);
         session.appServerThreadId = normalizeAppServerThreadId(msg.appServerThreadId);

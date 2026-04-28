@@ -28,6 +28,11 @@ import {
 } from '../lib/network-probes.mjs';
 import { createStuckSessionDetector } from '../lib/stuck-session-detector.mjs';
 import {
+  createZombiePidDetector,
+  isPidAlive,
+  ZOMBIE_PID_TICK_INTERVAL_MS_DEFAULT,
+} from '../lib/zombie-pid-detector.mjs';
+import {
   createAtomicHandoverTrigger,
   createContextUsageAutoHandover,
 } from '../lib/context-usage-auto-handover.mjs';
@@ -909,6 +914,11 @@ export function createNetworkWatchdog({
   ipcSpawn = null,
   stuckDetectorEnabled = false,
   stuckDetectorTickIntervalMs = 60 * 1000,
+  zombiePidDetectorEnabled = true,
+  zombiePidDetectorTickIntervalMs = ZOMBIE_PID_TICK_INTERVAL_MS_DEFAULT,
+  zombiePidDetectorInitialLastTickAt = Date.now(),
+  zombiePidDetectorDryRun = process.env.WATCHDOG_K_D_DRY_RUN !== 'false',
+  zombiePidDetectorIsPidAlive = isPidAlive,
   handoverEnabled = false,
   handoverTickIntervalMs = 60 * 1000,
   handoverThreshold = 50,
@@ -944,6 +954,8 @@ export function createNetworkWatchdog({
   const anthropicProbeHistory = [];
   let wakeReaperNow = 0;
   let lastStuckDetectorTickAt = 0;
+  let lastZombiePidDetectorTickAt = zombiePidDetectorInitialLastTickAt;
+  let lastZombiePidDetectorTickResult = { scanned: 0, dead: 0, evicted: 0, dryRun: [] };
   let lastHandoverTickAt = 0;
   let lastHandoverTickResult = { detected: [], skipped: [] };
   const contextUsageHandoverDetectors = new Map();
@@ -1041,6 +1053,34 @@ export function createNetworkWatchdog({
       getSessionState: getSessionStateImpl,
       readTranscriptTail,
       now,
+    })
+    : null;
+  const zombiePidDetector = zombiePidDetectorEnabled
+    ? createZombiePidDetector({
+      getSessions: async () => {
+        const response = await fetchImpl(`${buildHubUrl(ipcPort)}/sessions?include_anonymous=1`);
+        if (!isSuccessfulResponse(response)) {
+          return [];
+        }
+        const payload = await response.json();
+        if (Array.isArray(payload)) return payload;
+        if (Array.isArray(payload?.sessions)) return payload.sessions;
+        return [];
+      },
+      isPidAlive: zombiePidDetectorIsPidAlive,
+      postReclaim: async (name) => {
+        const response = await fetchImpl(`${buildHubUrl(ipcPort)}/reclaim-name`, {
+          method: 'POST',
+          headers: buildAuthJsonHeaders(hubAuthToken),
+          body: JSON.stringify({ name }),
+        });
+        if (!isSuccessfulResponse(response)) {
+          return { ok: false, reason: `http-${response?.status ?? 'unknown'}` };
+        }
+        return response.json();
+      },
+      dryRun: zombiePidDetectorDryRun,
+      stderr,
     })
     : null;
   const handoverDetector = handoverEnabled && typeof ipcSpawn === 'function'
@@ -1481,6 +1521,30 @@ export function createNetworkWatchdog({
     }
   }
 
+  async function runZombiePidDetectorTick() {
+    if (!zombiePidDetector) {
+      return { scanned: 0, dead: 0, evicted: 0, dryRun: [] };
+    }
+    const ts = Date.now();
+    if (ts - lastZombiePidDetectorTickAt < zombiePidDetectorTickIntervalMs) {
+      return lastZombiePidDetectorTickResult;
+    }
+    lastZombiePidDetectorTickAt = ts;
+    try {
+      lastZombiePidDetectorTickResult = await zombiePidDetector.tick();
+      if (lastZombiePidDetectorTickResult.dead > 0) {
+        stderr(
+          `[network-watchdog] zombie-pid tick: scanned=${lastZombiePidDetectorTickResult.scanned} dead=${lastZombiePidDetectorTickResult.dead} evicted=${lastZombiePidDetectorTickResult.evicted} dryRun=${lastZombiePidDetectorTickResult.dryRun.length}`,
+        );
+      }
+      return lastZombiePidDetectorTickResult;
+    } catch (error) {
+      stderr(`[network-watchdog] zombie-pid tick failed: ${error?.message ?? error}`);
+      lastZombiePidDetectorTickResult = { scanned: 0, dead: 0, evicted: 0, dryRun: [] };
+      return lastZombiePidDetectorTickResult;
+    }
+  }
+
   async function runHandoverTick() {
     if (!handoverDetector) {
       return { detected: [], skipped: [] };
@@ -1545,6 +1609,7 @@ export function createNetworkWatchdog({
       await Promise.all([
         runWakeReaperTick(lastChecks),
         runStuckDetectorTick(),
+        runZombiePidDetectorTick(),
         runHandoverTick(),
         runRateLimitTick(),
       ]);
@@ -1654,10 +1719,13 @@ export function createNetworkWatchdog({
     getHarnessState: buildHarnessSnapshot,
     getLastHandoverResult: () => lastHandoverResult,
     getLastHandoverTickResult: () => lastHandoverTickResult,
+    getLastZombiePidDetectorTickResult: () => lastZombiePidDetectorTickResult,
     getConfig: () => ({
       ipcPort,
       watchdogPort: currentWatchdogPort,
       intervalMs,
+      zombiePidDetectorEnabled,
+      zombiePidDetectorDryRun,
     }),
   };
 
@@ -1673,6 +1741,7 @@ export function formatWatchdogHelp() {
     `  IPC_WATCHDOG_PORT=${DEFAULT_WATCHDOG_PORT}      Watchdog status port`,
     `  IPC_WATCHDOG_INTERVAL_MS=${DEFAULT_WATCHDOG_INTERVAL_MS}  Probe interval in milliseconds`,
     `  WATCHDOG_COLD_START_GRACE_MS=${DEFAULT_WATCHDOG_COLD_START_GRACE_MS}  Suppress harness self-handover until first alive signal`,
+    '  WATCHDOG_K_D_DRY_RUN=true          Zombie pid cleanup dry-run; set false to evict',
     '  IPC_INTERNAL_TOKEN=<token>          Shared internal auth token',
   ].join('\n');
 }
@@ -1703,6 +1772,8 @@ export async function startWatchdog(options = {}) {
     lineage,
     triggerHarnessSelfHandoverImpl: options.triggerHarnessSelfHandoverImpl ?? triggerHarnessSelfHandover,
     stuckDetectorEnabled: options.stuckDetectorEnabled ?? true,
+    zombiePidDetectorEnabled: options.zombiePidDetectorEnabled ?? true,
+    zombiePidDetectorDryRun: options.zombiePidDetectorDryRun ?? (process.env.WATCHDOG_K_D_DRY_RUN !== 'false'),
     handoverEnabled: options.handoverEnabled ?? true,
     handoverDryRun: options.handoverDryRun ?? (process.env.WATCHDOG_HANDOVER_DRY_RUN === 'true'),
     handoverConfig: {
@@ -1751,5 +1822,3 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exit(1);
   }
 }
-
-

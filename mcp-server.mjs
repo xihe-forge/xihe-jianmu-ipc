@@ -91,9 +91,11 @@ function mcpTrace(event, detail = {}) {
 // Environment
 // ---------------------------------------------------------------------------
 // Priority: IPC_NAME (explicit) > IPC_DEFAULT_NAME (.mcp.json) > auto-generated
+const IPC_NAME_FROM_ENV = Boolean(process.env.IPC_NAME || process.env.IPC_DEFAULT_NAME);
 let IPC_NAME = process.env.IPC_NAME || process.env.IPC_DEFAULT_NAME || `session-${process.pid}`;
-if (!process.env.IPC_NAME && !process.env.IPC_DEFAULT_NAME) {
-  process.stderr.write(`[ipc] IPC_NAME not set, using auto-generated: ${IPC_NAME}\n`);
+let IPC_NAME_IS_FALLBACK = !IPC_NAME_FROM_ENV;
+if (IPC_NAME_IS_FALLBACK) {
+  process.stderr.write(`[ipc] IPC_NAME not set, using auto-generated: ${IPC_NAME} (subprocess fallback)\n`);
 }
 
 let IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
@@ -365,6 +367,7 @@ function createCurrentRegisterMessage() {
   return {
     ...message,
     runtime: resolveRuntime(),
+    subprocess: IPC_NAME_IS_FALLBACK,
     appServerThreadId: localAppServerThreadId,
   };
 }
@@ -455,6 +458,7 @@ const mcpTools = createMcpTools({
   getSessionName: () => IPC_NAME,
   setSessionName: (name) => {
     IPC_NAME = name;
+    IPC_NAME_IS_FALLBACK = false;
   },
   getHubHost: () => HOST,
   setHubHost: (host) => {

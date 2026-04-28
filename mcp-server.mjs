@@ -595,9 +595,18 @@ async function ensureLocalCodexAppServer() {
     process.stderr.write(
       `[ipc] codex app-server bridge ready for "${IPC_NAME}" thread=${localAppServerThreadId} pid=${localAppServerPid ?? 'n/a'}\n`,
     );
+    mcpTrace('codex_app_server_bridge_ready', {
+      thread_id: localAppServerThreadId,
+      app_server_pid: localAppServerPid ?? null,
+    });
     return bridge;
   } catch (error) {
     process.stderr.write(`[ipc] codex app-server bridge unavailable: ${error?.message ?? error}\n`);
+    mcpTrace('codex_app_server_bridge_unavailable', {
+      error_message: error?.message ?? String(error),
+      error_name: error?.name ?? null,
+      error_stack: error?.stack ?? null,
+    });
     localAppServerClient = null;
     localAppServerThreadId = null;
     localAppServerPid = null;

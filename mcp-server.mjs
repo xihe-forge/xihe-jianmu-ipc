@@ -686,6 +686,25 @@ async function pushLocalCodexInboundViaAppServer(msg) {
         formatInjectItem(content),
       ]);
       mcpTrace('codex_app_server_inject_ok', { msg_id: msg.id });
+
+      const statusAfterInject = localAppServerClient.threadStatus(localAppServerThreadId);
+      if (!statusAfterInject.activeTurnId) {
+        try {
+          const wakeResult = await localAppServerClient.turnStart(
+            localAppServerThreadId,
+            '请处理上方 inject 进 history 的新消息',
+          );
+          mcpTrace('codex_app_server_idle_wake_ok', {
+            msg_id: msg.id,
+            turn_id: wakeResult?.turnId ?? null,
+          });
+        } catch (wakeError) {
+          mcpTrace('codex_app_server_idle_wake_failed', {
+            msg_id: msg.id,
+            error: wakeError?.message ?? String(wakeError),
+          });
+        }
+      }
     }
     return true;
   } catch (error) {

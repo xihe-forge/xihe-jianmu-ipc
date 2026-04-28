@@ -88,7 +88,10 @@ describe('codex App Server JSON-RPC client', () => {
   });
 
   test('threadInjectItems sends schema 4 item payload and traces full request', async () => {
-    const { client, requests, traces } = createClient((request) => ({ id: request.id, result: {} }));
+    const { client, requests, traces } = createClient((request) => ({
+      id: request.id,
+      result: {},
+    }));
     const item = formatInjectItem('[IPC-INJECT] hello');
 
     await client.threadInjectItems('thread-1', [item]);
@@ -141,16 +144,18 @@ describe('codex App Server JSON-RPC client', () => {
     const { client, child } = createClient((request) => ({ id: request.id, result: {} }));
     client.on('notification', (message) => notifications.push(message.method));
 
-    child.stdout.write(`${JSON.stringify({ method: 'turn/started', params: { threadId: 't', turn: { id: 'u' } } })}\n`);
-    child.stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 't', turnId: 'u', delta: 'hi' } })}\n`);
-    child.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { threadId: 't', turn: { id: 'u' } } })}\n`);
+    child.stdout.write(
+      `${JSON.stringify({ method: 'turn/started', params: { threadId: 't', turn: { id: 'u' } } })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 't', turnId: 'u', delta: 'hi' } })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({ method: 'turn/completed', params: { threadId: 't', turn: { id: 'u' } } })}\n`,
+    );
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.deepEqual(notifications, [
-      'turn/started',
-      'item/agentMessage/delta',
-      'turn/completed',
-    ]);
+    assert.deepEqual(notifications, ['turn/started', 'item/agentMessage/delta', 'turn/completed']);
     assert.equal(client.threadStatus('t').activeTurnId, null);
   });
 });

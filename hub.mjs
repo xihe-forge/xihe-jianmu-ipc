@@ -140,11 +140,26 @@ function checkAuth(providedToken, sessionName = null) {
   return true;
 }
 
+function normalizeRuntime(value) {
+  if (typeof value !== 'string') return 'unknown';
+  const runtime = value.trim().toLowerCase();
+  if (runtime === 'claude' || runtime === 'cc' || runtime === 'claude-code') return 'claude';
+  if (runtime === 'codex') return 'codex';
+  return 'unknown';
+}
+
+function normalizeAppServerThreadId(value) {
+  if (typeof value !== 'string') return null;
+  const threadId = value.trim();
+  return threadId === '' ? null : threadId;
+}
+
 /** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null, gracefulReleasing?:boolean}>} */
 const sessions = new Map();
 const ackPending = new Map(); // messageId → { sender, ts }
 const deliveredMessageIds = new Map(); // messageId → timestamp（去重）
 const sessionReclaim = createSessionReclaimHandler({ sessions, audit, findPendingRebind });
+const appServerClients = new Map();
 
 setInterval(() => {
   const cutoff = Date.now() - 300000;
@@ -235,6 +250,7 @@ const ctx = {
   updateSessionRecordProjects: (payload, options = {}) =>
     registryMaintainer.updateSessionProjects(payload, options),
   sessionReclaim,
+  appServerClients,
 };
 
 const {
@@ -273,16 +289,19 @@ async function runCcusageQuotaCron() {
       return;
     }
     const now = Date.now();
-    if (ccusageCronState.lastLevel === level && now - ccusageCronState.lastSentAt < 5 * 60 * 1000) return;
+    if (ccusageCronState.lastLevel === level && now - ccusageCronState.lastSentAt < 5 * 60 * 1000)
+      return;
     ccusageCronState.lastLevel = level;
     ccusageCronState.lastSentAt = now;
-    routeMessage(createMessage({
-      from: 'jianmu-hub',
-      to: '*',
-      topic: 'critique',
-      contentType: 'markdown',
-      content: `[${level}] ccusage 5h block remaining ${remaining}% (used ${status.used_pct ?? 'n/a'}%, reset ${status.resets_at ?? 'unknown'}). ${level === 'FREEZE' ? 'Freeze non-critical work.' : 'Reduce token burn and avoid large spawns.'}`,
-    }));
+    routeMessage(
+      createMessage({
+        from: 'jianmu-hub',
+        to: '*',
+        topic: 'critique',
+        contentType: 'markdown',
+        content: `[${level}] ccusage 5h block remaining ${remaining}% (used ${status.used_pct ?? 'n/a'}%, reset ${status.resets_at ?? 'unknown'}). ${level === 'FREEZE' ? 'Freeze non-critical work.' : 'Reduce token burn and avoid large spawns.'}`,
+      }),
+    );
   } catch (error) {
     stderr(`[ipc-hub] ccusage quota cron skipped: ${error?.message ?? error}`);
   }
@@ -427,6 +446,8 @@ wss.on('connection', (ws, req) => {
     sessionId: null,
     transcriptPath: null,
     lastStatuslinePushAt: null,
+    runtime: 'unknown',
+    appServerThreadId: null,
   };
   session.ws = ws;
   session.connectedAt = Date.now();
@@ -479,7 +500,14 @@ wss.on('connection', (ws, req) => {
         session.pid = normalizePid(msg.pid);
         session.cwd = normalizeCwd(msg.cwd);
         session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
-        send(ws, { type: 'registered', name: session.name });
+        session.runtime = normalizeRuntime(msg.runtime);
+        session.appServerThreadId = normalizeAppServerThreadId(msg.appServerThreadId);
+        send(ws, {
+          type: 'registered',
+          name: session.name,
+          runtime: session.runtime,
+          appServerThreadId: session.appServerThreadId,
+        });
         break;
       case 'update':
         if (Object.hasOwn(msg, 'contextUsagePct')) {
@@ -511,11 +539,15 @@ wss.on('connection', (ws, req) => {
           const senderSession = sessions.get(pending.sender);
           if (senderSession?.ws?.readyState === senderSession?.ws?.OPEN) {
             try {
-              safePushAndAudit(senderSession, {
-                type: 'ack',
-                messageId: msg.messageId,
-                confirmedBy: session.name,
-              }, { reason: 'ack-notify', audit });
+              safePushAndAudit(
+                senderSession,
+                {
+                  type: 'ack',
+                  messageId: msg.messageId,
+                  confirmedBy: session.name,
+                },
+                { reason: 'ack-notify', audit },
+              );
             } catch (err) {
               stderr(`[ipc-hub] send error: ${err.message}`);
             }

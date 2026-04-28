@@ -14,6 +14,11 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createChannelNotifier } from './lib/channel-notification.mjs';
+import {
+  createAppServerClient,
+  formatInjectItem,
+  resolveSpawnSpec,
+} from './lib/codex-app-server-client.mjs';
 import { createMcpTools } from './lib/mcp-tools.mjs';
 import { estimateContextPctFromTranscript } from './lib/context-usage-auto-handover.mjs';
 import { getClaudeDir, getHomeDir } from './lib/claude-paths.mjs';
@@ -23,8 +28,19 @@ import {
   HUB_AUTOSTART_TIMEOUT,
   HUB_AUTOSTART_RETRY_INTERVAL,
 } from './lib/constants.mjs';
-import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync, renameSync, unlinkSync, rmdirSync } from 'fs';
-import { spawn } from 'child_process';
+import {
+  appendFileSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  statSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  rmdirSync,
+} from 'fs';
+import { execFileSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import http from 'http';
@@ -41,22 +57,29 @@ const MCP_TRACE_LOG = join(
 );
 const MCP_TRACE_ENABLED = process.env.IPC_MCP_TRACE_DISABLE !== '1';
 let mcpTraceSizeWarningShown = false;
-try { mkdirSync(dirname(MCP_TRACE_LOG), { recursive: true }); } catch {}
+try {
+  mkdirSync(dirname(MCP_TRACE_LOG), { recursive: true });
+} catch {}
 
 function mcpTrace(event, detail = {}) {
   if (!MCP_TRACE_ENABLED) return;
   try {
-    if (!mcpTraceSizeWarningShown && existsSync(MCP_TRACE_LOG) && statSync(MCP_TRACE_LOG).size > 50 * 1024 * 1024) {
+    if (
+      !mcpTraceSizeWarningShown &&
+      existsSync(MCP_TRACE_LOG) &&
+      statSync(MCP_TRACE_LOG).size > 50 * 1024 * 1024
+    ) {
       mcpTraceSizeWarningShown = true;
       process.stderr.write(`[ipc] warning: MCP trace log exceeds 50MB: ${MCP_TRACE_LOG}\n`);
     }
-    const line = JSON.stringify({
-      ts: new Date().toISOString(),
-      pid: process.pid,
-      ipc_name: process.env.IPC_NAME || null,
-      event,
-      ...detail,
-    }) + '\n';
+    const line =
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        pid: process.pid,
+        ipc_name: process.env.IPC_NAME || null,
+        event,
+        ...detail,
+      }) + '\n';
     appendFileSync(MCP_TRACE_LOG, line, { encoding: 'utf8' });
   } catch {
     // Trace failures must never crash MCP server.
@@ -76,6 +99,11 @@ let IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
 const AUTH_TOKEN = process.env.IPC_AUTH_TOKEN || '';
 let lastContextUsagePct = null;
 let contextUsagePctTimer = null;
+let mcpClientInfo = null;
+let localAppServerClient = null;
+let localAppServerThreadId = null;
+let localAppServerPid = null;
+const spawnedAppServerClients = new Map();
 const SELF_DETECTION_WINDOW_MS = 60_000;
 
 function getPidSessionJsonPath({ pid = process.pid, homeDir = null, env = process.env } = {}) {
@@ -91,7 +119,12 @@ function getSelfCacheDir(options = {}) {
   return join(getClaudeDir(options), 'mcp-server-cache');
 }
 
-function getSelfCachePath({ ppid = process.ppid, homeDir = null, env = process.env, ipcName = IPC_NAME } = {}) {
+function getSelfCachePath({
+  ppid = process.ppid,
+  homeDir = null,
+  env = process.env,
+  ipcName = IPC_NAME,
+} = {}) {
   return join(getSelfCacheDir({ homeDir, env }), `parent-${ppid}-${ipcName}.json`);
 }
 
@@ -112,17 +145,26 @@ function persistSelfTranscript({ transcriptPath, sessionId }, options = {}) {
   try {
     const cacheDir = getSelfCacheDir(options);
     mkdirSync(cacheDir, { recursive: true });
-    writeFileSync(getSelfCachePath(options), JSON.stringify({
-      transcriptPath,
-      sessionId,
-      detectedAt: Date.now(),
-      ppid: options.ppid ?? process.ppid,
-      ipcName: options.ipcName ?? IPC_NAME,
-    }), 'utf8');
+    writeFileSync(
+      getSelfCachePath(options),
+      JSON.stringify({
+        transcriptPath,
+        sessionId,
+        detectedAt: Date.now(),
+        ppid: options.ppid ?? process.ppid,
+        ipcName: options.ipcName ?? IPC_NAME,
+      }),
+      'utf8',
+    );
   } catch {}
 }
 
-function detectSelfTranscriptByBirthtime({ cwd, homeDir = null, env = process.env, now = Date.now } = {}) {
+function detectSelfTranscriptByBirthtime({
+  cwd,
+  homeDir = null,
+  env = process.env,
+  now = Date.now,
+} = {}) {
   const projectDir = encodeClaudeProjectPath(cwd);
   if (!projectDir) return null;
   const transcriptsDir = join(getClaudeDir({ homeDir, env }), 'projects', projectDir);
@@ -153,11 +195,23 @@ function detectSelfTranscriptByBirthtime({ cwd, homeDir = null, env = process.en
   return bestCandidate;
 }
 
-export function findSelfTranscriptPath({ pid = process.pid, cwd = process.cwd(), homeDir = null, env = process.env, now = Date.now, ppid = process.ppid } = {}) {
+export function findSelfTranscriptPath({
+  pid = process.pid,
+  cwd = process.cwd(),
+  homeDir = null,
+  env = process.env,
+  now = Date.now,
+  ppid = process.ppid,
+} = {}) {
   const envPath = env.CLAUDE_TRANSCRIPT_PATH || env.TRANSCRIPT_PATH;
   if (envPath) return envPath;
 
-  const cacheOptions = { ppid, homeDir, env, ipcName: env.IPC_NAME || env.IPC_DEFAULT_NAME || IPC_NAME };
+  const cacheOptions = {
+    ppid,
+    homeDir,
+    env,
+    ipcName: env.IPC_NAME || env.IPC_DEFAULT_NAME || IPC_NAME,
+  };
   const cached = loadCachedSelfTranscript(cacheOptions);
   if (cached) return cached;
 
@@ -166,12 +220,20 @@ export function findSelfTranscriptPath({ pid = process.pid, cwd = process.cwd(),
     if (existsSync(pidSessionPath)) {
       const state = JSON.parse(readFileSync(pidSessionPath, 'utf8'));
       if (typeof state?.transcriptPath === 'string' && state.transcriptPath.trim() !== '') {
-        persistSelfTranscript({ transcriptPath: state.transcriptPath, sessionId: state?.sessionId ?? '' }, cacheOptions);
+        persistSelfTranscript(
+          { transcriptPath: state.transcriptPath, sessionId: state?.sessionId ?? '' },
+          cacheOptions,
+        );
         return state.transcriptPath;
       }
       const projectDir = encodeClaudeProjectPath(state?.cwd || cwd);
       if (projectDir && typeof state?.sessionId === 'string' && state.sessionId.trim() !== '') {
-        const transcriptPath = join(getClaudeDir({ homeDir, env }), 'projects', projectDir, `${state.sessionId}.jsonl`);
+        const transcriptPath = join(
+          getClaudeDir({ homeDir, env }),
+          'projects',
+          projectDir,
+          `${state.sessionId}.jsonl`,
+        );
         persistSelfTranscript({ transcriptPath, sessionId: state.sessionId }, cacheOptions);
         return transcriptPath;
       }
@@ -188,12 +250,18 @@ export function findSelfTranscriptPath({ pid = process.pid, cwd = process.cwd(),
 }
 
 function estimateCurrentContextPct(args = {}) {
-  const pct = estimateContextPctFromTranscript(args.transcriptPath || findSelfTranscriptPath(args), args);
+  const pct = estimateContextPctFromTranscript(
+    args.transcriptPath || findSelfTranscriptPath(args),
+    args,
+  );
   lastContextUsagePct = pct;
   return pct;
 }
 
-export function createContextUsageUpdateMessage({ name = IPC_NAME, contextUsagePct = lastContextUsagePct } = {}) {
+export function createContextUsageUpdateMessage({
+  name = IPC_NAME,
+  contextUsagePct = lastContextUsagePct,
+} = {}) {
   return {
     type: 'update',
     name,
@@ -201,7 +269,11 @@ export function createContextUsageUpdateMessage({ name = IPC_NAME, contextUsageP
   };
 }
 
-export function pushContextUsagePctUpdate({ send = wsSend, stderrLog = (message) => process.stderr.write(message), args = {} } = {}) {
+export function pushContextUsagePctUpdate({
+  send = wsSend,
+  stderrLog = (message) => process.stderr.write(message),
+  args = {},
+} = {}) {
   try {
     const contextUsagePct = estimateCurrentContextPct(args);
     send(createContextUsageUpdateMessage({ contextUsagePct }));
@@ -221,13 +293,78 @@ function startContextUsagePctTimer() {
   return contextUsagePctTimer;
 }
 
+function normalizeRuntimeName(value) {
+  if (typeof value !== 'string') return 'unknown';
+  const runtime = value.trim().toLowerCase();
+  if (runtime === 'claude' || runtime === 'cc' || runtime === 'claude-code') return 'claude';
+  if (runtime === 'codex') return 'codex';
+  return 'unknown';
+}
+
+function runtimeFromText(value) {
+  if (typeof value !== 'string') return 'unknown';
+  const lower = value.toLowerCase();
+  if (lower.includes('codex')) return 'codex';
+  if (lower.includes('claude')) return 'claude';
+  return 'unknown';
+}
+
+function getParentCommandLine({ ppid = process.ppid, platform = process.platform } = {}) {
+  if (!ppid || !Number.isInteger(ppid) || ppid <= 0) return '';
+  try {
+    if (platform === 'win32') {
+      return execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${ppid}").CommandLine`,
+        ],
+        {
+          encoding: 'utf8',
+          timeout: 1000,
+          windowsHide: true,
+        },
+      ).trim();
+    }
+    const cmdlinePath = `/proc/${ppid}/cmdline`;
+    if (existsSync(cmdlinePath)) {
+      return readFileSync(cmdlinePath, 'utf8').replace(/\0/g, ' ').trim();
+    }
+  } catch {}
+  return '';
+}
+
+export function resolveRuntime({
+  env = process.env,
+  ppid = process.ppid,
+  platform = process.platform,
+  clientInfo = mcpClientInfo,
+} = {}) {
+  const fromEnv = normalizeRuntimeName(env.IPC_RUNTIME);
+  if (fromEnv !== 'unknown') return fromEnv;
+
+  const fromParent = runtimeFromText(getParentCommandLine({ ppid, platform }));
+  if (fromParent !== 'unknown') return fromParent;
+
+  const fromClientInfo = runtimeFromText(clientInfo?.name ?? '');
+  if (fromClientInfo !== 'unknown') return fromClientInfo;
+
+  return 'unknown';
+}
+
 function createCurrentRegisterMessage() {
-  return createRegisterMessage({
+  const message = createRegisterMessage({
     name: IPC_NAME,
     pid: process.pid,
     cwd: process.cwd(),
     contextUsagePct: lastContextUsagePct ?? estimateCurrentContextPct(),
   });
+  return {
+    ...message,
+    runtime: resolveRuntime(),
+    appServerThreadId: localAppServerThreadId,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -265,11 +402,13 @@ const MAX_RECONNECT_ATTEMPTS = Infinity; // never give up
 const RECONNECT_BASE_DELAY = 3000;
 const RECONNECT_MAX_DELAY = 60000;
 
-const outgoingQueue = [];     // queued while disconnected
+const outgoingQueue = []; // queued while disconnected
 
 function disconnectWs() {
   if (!ws) return;
-  try { ws.close(); } catch {}
+  try {
+    ws.close();
+  } catch {}
   ws = null;
 }
 
@@ -302,18 +441,27 @@ const channelNotifier = createChannelNotifier({
   trace: mcpTrace,
 });
 
-server.oninitialized = () => channelNotifier.markInitialized();
+server.oninitialized = () => {
+  mcpClientInfo = server.getClientVersion?.() ?? null;
+  channelNotifier.markInitialized();
+};
 
 // ---------------------------------------------------------------------------
 // Tool handlers
 // ---------------------------------------------------------------------------
 const mcpTools = createMcpTools({
   getSessionName: () => IPC_NAME,
-  setSessionName: (name) => { IPC_NAME = name; },
+  setSessionName: (name) => {
+    IPC_NAME = name;
+  },
   getHubHost: () => HOST,
-  setHubHost: (host) => { HOST = host; },
+  setHubHost: (host) => {
+    HOST = host;
+  },
   getHubPort: () => IPC_PORT,
-  setHubPort: (port) => { IPC_PORT = port; },
+  setHubPort: (port) => {
+    IPC_PORT = port;
+  },
   getWs: () => ws,
   disconnectWs,
   reconnect: reconnectHub,
@@ -329,7 +477,8 @@ const mcpTools = createMcpTools({
 
 server.setRequestHandler(ListToolsRequestSchema, async () => mcpTools.listTools());
 server.setRequestHandler(CallToolRequestSchema, async (request) =>
-  mcpTools.handleToolCall(request.params.name, request.params.arguments));
+  mcpTools.handleToolCall(request.params.name, request.params.arguments),
+);
 
 // ---------------------------------------------------------------------------
 // spawnSession — launch a new Claude Code session (background or interactive)
@@ -340,7 +489,8 @@ function buildInteractiveCommand({ sessionName, model }) {
   return `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
 }
 
-const DEFAULT_CLAUDE_BIN = 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
+const DEFAULT_CLAUDE_BIN =
+  'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
 const DEFAULT_SPAWN_FALLBACK_CWD = 'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness';
 const VSCODE_URI_BRIEF_LIMIT_BYTES = 5 * 1024;
 
@@ -354,7 +504,7 @@ function buildClaudeLaunchArgs({ model } = {}) {
 
 export function buildCodexLaunchArgs({ sessionName, cmdEscaped = false }) {
   const ipcNameValue = cmdEscaped ? `\\"${sessionName}\\"` : `"${sessionName}"`;
-  return `--dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=${ipcNameValue}'`;
+  return `--dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=${ipcNameValue}' -c 'mcp_servers.jianmu-ipc.env.IPC_RUNTIME="codex"'`;
 }
 
 function quoteForShellSingle(value) {
@@ -373,6 +523,120 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function spawnCodexProcess(args, options) {
+  const spec = resolveSpawnSpec('codex', args, options?.env ?? process.env);
+  return spawn(spec.command, spec.args, { ...options, shell: spec.shell });
+}
+
+function buildAppServerEnv(env = process.env) {
+  return {
+    ...env,
+    RUST_LOG: env.RUST_LOG || 'warn',
+    LOG_FORMAT: env.LOG_FORMAT || 'json',
+    NO_COLOR: '1',
+    FORCE_COLOR: '0',
+  };
+}
+
+function formatInboundIpcContent(msg) {
+  const content =
+    typeof msg?.content === 'string' ? msg.content : JSON.stringify(msg?.content ?? '');
+  return `[IPC-INBOUND from ${msg?.from ?? 'unknown'}] ${content}`;
+}
+
+async function startCodexAppServerBridge({ sessionName, cwd }) {
+  const client = createAppServerClient({
+    cwd,
+    env: buildAppServerEnv(),
+    requestTimeoutMs: 60_000,
+    trace: (line) => process.stderr.write(`${line}\n`),
+  });
+  client.on('stderr', (line) => {
+    process.stderr.write(`[ipc:${sessionName}:app-server] ${line}`);
+  });
+  await client.initialize({
+    clientInfo: { name: 'xihe-ipc-hub', title: 'xihe IPC Hub', version: '0.5.0' },
+  });
+  const { threadId } = await client.threadStart({
+    cwd,
+    approvalPolicy: 'never',
+    sandbox: 'danger-full-access',
+    experimentalRawEvents: true,
+    persistExtendedHistory: true,
+  });
+  if (!threadId) {
+    await client.close();
+    throw new Error('codex app-server thread/start did not return threadId');
+  }
+  return { client, threadId, pid: client.child?.pid ?? null };
+}
+
+async function ensureLocalCodexAppServer() {
+  if (resolveRuntime() !== 'codex') return null;
+  if (localAppServerClient && localAppServerThreadId) {
+    return {
+      client: localAppServerClient,
+      threadId: localAppServerThreadId,
+      pid: localAppServerPid,
+    };
+  }
+
+  try {
+    const bridge = await startCodexAppServerBridge({ sessionName: IPC_NAME, cwd: process.cwd() });
+    localAppServerClient = bridge.client;
+    localAppServerThreadId = bridge.threadId;
+    localAppServerPid = bridge.pid;
+    process.stderr.write(
+      `[ipc] codex app-server bridge ready for "${IPC_NAME}" thread=${localAppServerThreadId} pid=${localAppServerPid ?? 'n/a'}\n`,
+    );
+    return bridge;
+  } catch (error) {
+    process.stderr.write(`[ipc] codex app-server bridge unavailable: ${error?.message ?? error}\n`);
+    localAppServerClient = null;
+    localAppServerThreadId = null;
+    localAppServerPid = null;
+    return null;
+  }
+}
+
+async function startSpawnedCodexAppServer({ sessionName, cwd }) {
+  const existing = spawnedAppServerClients.get(sessionName);
+  if (existing) {
+    try {
+      await existing.client.close();
+    } catch {}
+    spawnedAppServerClients.delete(sessionName);
+  }
+  const bridge = await startCodexAppServerBridge({ sessionName, cwd });
+  spawnedAppServerClients.set(sessionName, bridge);
+  return bridge;
+}
+
+async function pushLocalCodexInboundViaAppServer(msg) {
+  if (!localAppServerClient || !localAppServerThreadId) return false;
+  const content = formatInboundIpcContent(msg);
+  try {
+    const status = localAppServerClient.threadStatus(localAppServerThreadId);
+    if (status.activeTurnId) {
+      await localAppServerClient.turnSteer(localAppServerThreadId, status.activeTurnId, content);
+      mcpTrace('codex_app_server_steer_ok', { msg_id: msg.id, turn_id: status.activeTurnId });
+    } else {
+      await localAppServerClient.threadInjectItems(localAppServerThreadId, [
+        formatInjectItem(content),
+      ]);
+      mcpTrace('codex_app_server_inject_ok', { msg_id: msg.id });
+    }
+    return true;
+  } catch (error) {
+    mcpTrace('codex_app_server_push_failed', {
+      msg_id: msg.id,
+      error: error?.message ?? String(error),
+    });
+    process.stderr.write(`[ipc] codex app-server push failed: ${error?.message ?? error}\n`);
+    return false;
+  }
+}
+
 function getClaudeJsonPath({ homeDir = null, env = process.env } = {}) {
   return join(getHomeDir({ homeDir, env }), '.claude.json');
 }
@@ -382,13 +646,10 @@ function normalizeProjectCwd(cwd) {
   return cwd.replace(/\\/g, '/');
 }
 
-export async function patchTrustForCwd(cwd, {
-  homeDir = null,
-  env = process.env,
-  now = Date.now,
-  retryMs = 25,
-  timeoutMs = 5000,
-} = {}) {
+export async function patchTrustForCwd(
+  cwd,
+  { homeDir = null, env = process.env, now = Date.now, retryMs = 25, timeoutMs = 5000 } = {},
+) {
   if (typeof cwd !== 'string' || cwd.trim() === '') return false;
 
   const normalizedCwd = normalizeProjectCwd(cwd);
@@ -418,7 +679,11 @@ export async function patchTrustForCwd(cwd, {
     if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects)) {
       config.projects = {};
     }
-    if (!config.projects[normalizedCwd] || typeof config.projects[normalizedCwd] !== 'object' || Array.isArray(config.projects[normalizedCwd])) {
+    if (
+      !config.projects[normalizedCwd] ||
+      typeof config.projects[normalizedCwd] !== 'object' ||
+      Array.isArray(config.projects[normalizedCwd])
+    ) {
       config.projects[normalizedCwd] = {};
     }
     config.projects[normalizedCwd].hasTrustDialogAccepted = true;
@@ -427,8 +692,12 @@ export async function patchTrustForCwd(cwd, {
     renameSync(tmpPath, configPath);
     return true;
   } finally {
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
-    try { rmdirSync(lockDir); } catch {}
+    try {
+      if (existsSync(tmpPath)) unlinkSync(tmpPath);
+    } catch {}
+    try {
+      rmdirSync(lockDir);
+    } catch {}
   }
 }
 
@@ -452,24 +721,14 @@ export function buildWtSpawnArgs({ sessionName, model, cwd }) {
   const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
   const cdSegment = normalizedCwd ? `cd /d ${quoteForCmd(normalizedCwd)} && ` : '';
   const innerCmd = `${cdSegment}set "IPC_NAME=${sessionName}"&&${quoteForCmd(claudeBin)} ${args}`;
-  return [
-    '--window', 'last',
-    'new-tab',
-    '--title', sessionName,
-    '--', 'cmd', '/k', innerCmd,
-  ];
+  return ['--window', 'last', 'new-tab', '--title', sessionName, '--', 'cmd', '/k', innerCmd];
 }
 
 export function buildCodexWtCommand({ sessionName, cwd }) {
   const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
   const cdSegment = normalizedCwd ? `cd /d ${quoteForCmd(normalizedCwd)} && ` : '';
   const innerCmd = `${cdSegment}codex ${buildCodexLaunchArgs({ sessionName, cmdEscaped: true })}`;
-  return [
-    '--window', 'last',
-    'new-tab',
-    '--title', sessionName,
-    '--', 'cmd', '/k', innerCmd,
-  ];
+  return ['--window', 'last', 'new-tab', '--title', sessionName, '--', 'cmd', '/k', innerCmd];
 }
 
 function buildCodexExecArgs({ sessionName, prompt }) {
@@ -479,6 +738,8 @@ function buildCodexExecArgs({ sessionName, prompt }) {
     '--skip-git-repo-check',
     '-c',
     `mcp_servers.jianmu-ipc.env.IPC_NAME="${sessionName}"`,
+    '-c',
+    'mcp_servers.jianmu-ipc.env.IPC_RUNTIME="codex"',
     prompt,
   ];
 }
@@ -495,10 +756,14 @@ function countWindowsTerminalProcesses() {
 
   return new Promise((resolveCount) => {
     let stdout = '';
-    const child = spawn('tasklist', ['/FI', 'IMAGENAME eq WindowsTerminal.exe', '/NH', '/FO', 'CSV'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
+    const child = spawn(
+      'tasklist',
+      ['/FI', 'IMAGENAME eq WindowsTerminal.exe', '/NH', '/FO', 'CSV'],
+      {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      },
+    );
 
     child.stdout.on('data', (chunk) => {
       stdout += String(chunk);
@@ -510,8 +775,7 @@ function countWindowsTerminalProcesses() {
       const count = stdout
         .split(/\r?\n/)
         .map((line) => line.trim())
-        .filter((line) => /^"WindowsTerminal\.exe"/i.test(line))
-        .length;
+        .filter((line) => /^"WindowsTerminal\.exe"/i.test(line)).length;
       resolveCount(count);
     });
   });
@@ -525,7 +789,9 @@ function scheduleWtSilentFailureProbe({ baselineCount }) {
   const timer = setTimeout(async () => {
     const afterCount = await countWindowsTerminalProcesses();
     if (afterCount === 0) {
-      process.stderr.write('[ipc] wt spawn silent-failure: no WindowsTerminal.exe process detected after start\n');
+      process.stderr.write(
+        '[ipc] wt spawn silent-failure: no WindowsTerminal.exe process detected after start\n',
+      );
     }
   }, 500);
   if (typeof timer?.unref === 'function') {
@@ -557,9 +823,7 @@ function readIpcAuthTokenFromMcpConfig(cwd) {
   try {
     const parsed = JSON.parse(readFileSync(configPath, 'utf8'));
     const token = parsed?.mcpServers?.ipc?.env?.IPC_AUTH_TOKEN;
-    return typeof token === 'string' && token.trim() !== ''
-      ? token.trim()
-      : null;
+    return typeof token === 'string' && token.trim() !== '' ? token.trim() : null;
   } catch {
     return null;
   }
@@ -571,7 +835,14 @@ function maskToken(token) {
 
 function buildOtherMaskedEnv(env = {}) {
   return Object.entries(env)
-    .filter(([key, value]) => key !== 'IPC_NAME' && key !== 'IPC_AUTH_TOKEN' && value !== undefined && value !== null && value !== '')
+    .filter(
+      ([key, value]) =>
+        key !== 'IPC_NAME' &&
+        key !== 'IPC_AUTH_TOKEN' &&
+        value !== undefined &&
+        value !== null &&
+        value !== '',
+    )
     .map(([key, value]) => `${key}=${maskEnvValue(key, value)}`)
     .join(' ');
 }
@@ -589,33 +860,29 @@ function buildSpawnFallbackContent({
   const effectiveCwd = cwd || DEFAULT_SPAWN_FALLBACK_CWD;
   const claudeBin = getClaudeBinPath();
   const configIpcAuthToken = readIpcAuthTokenFromMcpConfig(effectiveCwd);
-  const ipcAuthToken = configIpcAuthToken
-    || (typeof env.IPC_AUTH_TOKEN === 'string' && env.IPC_AUTH_TOKEN.trim() !== '' ? env.IPC_AUTH_TOKEN.trim() : '');
+  const ipcAuthToken =
+    configIpcAuthToken ||
+    (typeof env.IPC_AUTH_TOKEN === 'string' && env.IPC_AUTH_TOKEN.trim() !== ''
+      ? env.IPC_AUTH_TOKEN.trim()
+      : '');
   const otherMaskedEnv = buildOtherMaskedEnv(env);
-  const envLine = `IPC_NAME=${sessionName}`
-    + `${ipcAuthToken ? ` IPC_AUTH_TOKEN=${maskToken(ipcAuthToken)}${configIpcAuthToken ? ' (完整 token 从 cwd .mcp.json 读)' : ''}` : ''}`
-    + `${otherMaskedEnv ? ` ${otherMaskedEnv}` : ''}`;
+  const envLine =
+    `IPC_NAME=${sessionName}` +
+    `${ipcAuthToken ? ` IPC_AUTH_TOKEN=${maskToken(ipcAuthToken)}${configIpcAuthToken ? ' (完整 token 从 cwd .mcp.json 读)' : ''}` : ''}` +
+    `${otherMaskedEnv ? ` ${otherMaskedEnv}` : ''}`;
   const defaultTaskHint = `续跑 handover/HANDOVER-${sessionName.toUpperCase()}-<ymdhm>.md @ commit <sha-7>`;
   return (
-    `【jianmu-pm ${iso} · spawn-fallback】\n`
-    + `cmdline: "${claudeBin}" ${buildClaudeLaunchArgs({ model })}\n`
-    + `cwd: ${normalizeDisplayPath(effectiveCwd)}\n`
-    + `env: ${envLine}\n`
-    + `task_hint: ${taskHint || task || defaultTaskHint}\n`
-    + `post_spawn_action: 新 session 冷启清单 step 3 ipc_whoami → 若名非 ${sessionName} 调 ipc_rename ${sessionName}（借 pending_rebind 5s 宽限继承）\n`
-    + `spawn_reason: ${reason}`
+    `【jianmu-pm ${iso} · spawn-fallback】\n` +
+    `cmdline: "${claudeBin}" ${buildClaudeLaunchArgs({ model })}\n` +
+    `cwd: ${normalizeDisplayPath(effectiveCwd)}\n` +
+    `env: ${envLine}\n` +
+    `task_hint: ${taskHint || task || defaultTaskHint}\n` +
+    `post_spawn_action: 新 session 冷启清单 step 3 ipc_whoami → 若名非 ${sessionName} 调 ipc_rename ${sessionName}（借 pending_rebind 5s 宽限继承）\n` +
+    `spawn_reason: ${reason}`
   );
 }
 
-async function sendSpawnFallbackIpc({
-  sessionName,
-  task,
-  reason,
-  cwd,
-  taskHint,
-  model,
-  env = {},
-}) {
+async function sendSpawnFallbackIpc({ sessionName, task, reason, cwd, taskHint, model, env = {} }) {
   const content = buildSpawnFallbackContent({
     sessionName,
     task,
@@ -654,6 +921,7 @@ export async function spawnSession({
   const ipcEnv = {
     ...process.env,
     IPC_NAME: sessionName,
+    IPC_RUNTIME: runtime,
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost',
   };
@@ -699,6 +967,7 @@ export async function spawnSession({
         mode: 'interactive',
         dryRun: true,
         command_hint: commandHint,
+        app_server_command_hint: 'codex app-server --listen stdio://',
         cwd: normalizeDisplayPath(spawnCwd),
       };
     }
@@ -715,8 +984,26 @@ export async function spawnSession({
     });
     child.unref();
     scheduleWtSilentFailureProbe({ baselineCount: baselineTerminalCount });
+    let appServer = null;
+    try {
+      appServer = await startSpawnedCodexAppServer({ sessionName, cwd: spawnCwd });
+    } catch (error) {
+      process.stderr.write(
+        `[ipc] codex app-server spawn failed for "${sessionName}": ${error?.message ?? error}\n`,
+      );
+    }
     process.stderr.write(`[ipc] spawned codex wt session "${sessionName}"\n`);
-    return { name: sessionName, host: 'wt', runtime: 'codex', mode: 'interactive', spawned: true, status: 'spawned', pid: child.pid };
+    return {
+      name: sessionName,
+      host: 'wt',
+      runtime: 'codex',
+      mode: 'interactive',
+      spawned: true,
+      status: 'spawned',
+      pid: child.pid,
+      appServerPid: appServer?.pid ?? null,
+      appServerThreadId: appServer?.threadId ?? null,
+    };
   }
 
   if (runtime === 'codex' && !interactive) {
@@ -731,12 +1018,13 @@ export async function spawnSession({
         spawned: false,
         dryRun: true,
         command_hint: commandHint,
+        app_server_command_hint: 'codex app-server --listen stdio://',
         cwd: normalizeDisplayPath(spawnCwd),
         exit_cleanup: 'hub session closes when codex exec exits',
       };
     }
 
-    const child = spawn('codex', codexArgs, {
+    const child = spawnCodexProcess(codexArgs, {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: ipcEnv,
@@ -745,14 +1033,27 @@ export async function spawnSession({
     });
     child.unref();
 
-    child.stderr?.on('data', d => {
+    child.stderr?.on('data', (d) => {
       process.stderr.write(`[ipc:${sessionName}] ${d.toString()}`);
     });
     child.on('exit', (code) => {
-      process.stderr.write(`[ipc] codex background session "${sessionName}" exited (code=${code})\n`);
+      process.stderr.write(
+        `[ipc] codex background session "${sessionName}" exited (code=${code})\n`,
+      );
     });
 
-    process.stderr.write(`[ipc] spawned codex background session "${sessionName}" (pid=${child.pid})\n`);
+    let appServer = null;
+    try {
+      appServer = await startSpawnedCodexAppServer({ sessionName, cwd: spawnCwd });
+    } catch (error) {
+      process.stderr.write(
+        `[ipc] codex app-server spawn failed for "${sessionName}": ${error?.message ?? error}\n`,
+      );
+    }
+
+    process.stderr.write(
+      `[ipc] spawned codex background session "${sessionName}" (pid=${child.pid})\n`,
+    );
     return {
       name: sessionName,
       mode: 'background',
@@ -760,6 +1061,8 @@ export async function spawnSession({
       runtime: 'codex',
       status: 'spawned',
       pid: child.pid,
+      appServerPid: appServer?.pid ?? null,
+      appServerThreadId: appServer?.threadId ?? null,
       exit_cleanup: 'hub session closes when codex exec exits',
     };
   }
@@ -902,7 +1205,13 @@ export async function spawnSession({
     });
     child.unref();
     process.stderr.write(`[ipc] spawned vscode-uri session "${sessionName}"\n`);
-    return { name: sessionName, host: 'vscode-uri', spawned: true, status: 'spawned', pid: child.pid };
+    return {
+      name: sessionName,
+      host: 'vscode-uri',
+      spawned: true,
+      status: 'spawned',
+      pid: child.pid,
+    };
   }
 
   if (requestedHost === 'external' && !interactive) {
@@ -961,13 +1270,16 @@ export async function spawnSession({
         const { execSync: _execSync } = await import('node:child_process');
         _execSync('which powershell.exe', { stdio: 'ignore' });
         isWSL2 = true;
-      } catch { /* not WSL2 or no powershell.exe */ }
+      } catch {
+        /* not WSL2 or no powershell.exe */
+      }
 
       if (isWSL2) {
         // WSL2: write a temp .ps1 script and execute it via wt.exe / powershell.exe
         // Avoids all quoting issues with inline -Command strings
         const { writeFileSync: _wfs } = await import('node:fs');
-        const wslToWin = (p) => p.replace(/^\/mnt\/([a-z])\//, (_, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\');
+        const wslToWin = (p) =>
+          p.replace(/^\/mnt\/([a-z])\//, (_, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\');
         const patchScriptWin = wslToWin(join(PROJECT_DIR, 'bin', 'patch-channels.mjs'));
         const mcpServerWin = wslToWin(join(PROJECT_DIR, 'mcp-server.mjs'));
         const winHome = process.env.USERPROFILE || `C:\\Users\\${process.env.USERNAME || 'user'}`;
@@ -1010,14 +1322,30 @@ export async function spawnSession({
           const { execSync: _es2 } = await import('node:child_process');
           _es2('which wt.exe', { stdio: 'ignore' });
           wtAvailable = true;
-        } catch { /* no wt.exe */ }
+        } catch {
+          /* no wt.exe */
+        }
 
         if (wtAvailable) {
-          spawn('wt.exe', ['new-tab', '--title', sessionName, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1Win], {
-            detached: true,
-            stdio: 'ignore',
-            env: ipcEnv,
-          }).unref();
+          spawn(
+            'wt.exe',
+            [
+              'new-tab',
+              '--title',
+              sessionName,
+              'powershell.exe',
+              '-NoExit',
+              '-ExecutionPolicy',
+              'Bypass',
+              '-File',
+              tmpPs1Win,
+            ],
+            {
+              detached: true,
+              stdio: 'ignore',
+              env: ipcEnv,
+            },
+          ).unref();
         } else {
           spawn('powershell.exe', ['-NoExit', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1Win], {
             detached: true,
@@ -1031,28 +1359,50 @@ export async function spawnSession({
         let spawned = false;
         for (const term of terminals) {
           try {
-            spawn(term, ['--', 'bash', '-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`], {
+            spawn(
+              term,
+              [
+                '--',
+                'bash',
+                '-c',
+                `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`,
+              ],
+              {
+                detached: true,
+                stdio: 'ignore',
+                env: ipcEnv,
+              },
+            ).unref();
+            spawned = true;
+            break;
+          } catch {
+            continue;
+          }
+        }
+        if (!spawned) {
+          spawn(
+            'bash',
+            [
+              '-c',
+              `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`,
+            ],
+            {
               detached: true,
               stdio: 'ignore',
               env: ipcEnv,
-            }).unref();
-            spawned = true;
-            break;
-          } catch { continue; }
-        }
-        if (!spawned) {
-          spawn('bash', ['-c', `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`], {
-            detached: true,
-            stdio: 'ignore',
-            env: ipcEnv,
-          }).unref();
+            },
+          ).unref();
         }
       }
     }
 
     process.stderr.write(`[ipc] spawned interactive session "${sessionName}" in new terminal\n`);
-    return { name: sessionName, mode: 'interactive', host: requestedHost ?? 'legacy', status: 'spawned' };
-
+    return {
+      name: sessionName,
+      mode: 'interactive',
+      host: requestedHost ?? 'legacy',
+      status: 'spawned',
+    };
   } else {
     // Background mode: run claude -p (one-shot, non-interactive)
     const claudeArgs = ['-p', '--dangerously-skip-permissions'];
@@ -1069,8 +1419,10 @@ export async function spawnSession({
 
     // Log stdout/stderr for debugging
     let output = '';
-    child.stdout?.on('data', d => { output += d.toString(); });
-    child.stderr?.on('data', d => {
+    child.stdout?.on('data', (d) => {
+      output += d.toString();
+    });
+    child.stderr?.on('data', (d) => {
       process.stderr.write(`[ipc:${sessionName}] ${d.toString()}`);
     });
     child.on('exit', (code) => {
@@ -1152,14 +1504,49 @@ function scheduleReconnect() {
   );
   reconnectAttempts++;
   mcpTrace('ws_reconnect_scheduled', { delay, attempt: reconnectAttempts });
-  process.stderr.write(`[ipc] reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})\n`);
+  process.stderr.write(
+    `[ipc] reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})\n`,
+  );
   setTimeout(connect, delay);
 }
 
 // ---------------------------------------------------------------------------
 // Shared WebSocket message handler
 // ---------------------------------------------------------------------------
-function handleWsMessage(event) {
+function ackInboundMessage(msg) {
+  if (!msg.id) return;
+  wsSend({ type: 'ack', messageId: msg.id, from: IPC_NAME });
+  mcpTrace('ack_sent', { msg_id: msg.id, confirmed_by: IPC_NAME });
+
+  try {
+    const pcPath = join(PROJECT_DIR, 'data', 'pending-cards.json');
+    if (existsSync(pcPath)) {
+      const pc = JSON.parse(readFileSync(pcPath, 'utf8'));
+      let changed = false;
+      for (const [, info] of Object.entries(pc)) {
+        if (!info.tasks || !Array.isArray(info.tasks)) continue;
+        for (const task of info.tasks) {
+          if (
+            task.stage < 2 &&
+            (task.hubMessageId === msg.id || task.id === msg.id || !task.hubMessageId)
+          ) {
+            task.stage = 2;
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (changed) {
+        writeFileSync(pcPath, JSON.stringify(pc));
+        process.stderr.write(
+          `[ipc] updated pending-cards.json: ACK from ${IPC_NAME} for ${msg.id}\n`,
+        );
+      }
+    }
+  } catch {}
+}
+
+async function handleWsMessage(event) {
   mcpTrace('ws_inbound', { raw_len: event.data?.length ?? 0 });
   let msg;
   try {
@@ -1179,7 +1566,8 @@ function handleWsMessage(event) {
 
   if (msg.type === 'message') {
     // Intercept feishu ping: reply directly without pushing to LLM (0 token)
-    const isFeishuPing = msg.from?.startsWith('feishu') &&
+    const isFeishuPing =
+      msg.from?.startsWith('feishu') &&
       typeof msg.content === 'string' &&
       (msg.content.trim().toLowerCase() === 'ping' || msg.content.trim().toLowerCase() === '/ping');
 
@@ -1190,18 +1578,35 @@ function handleWsMessage(event) {
       const body = JSON.stringify(
         replyTo.startsWith('feishu-group:')
           ? { from: IPC_NAME, to: replyTo, content: pong }
-          : { app: replyTo.split(':')[1], content: pong }
+          : { app: replyTo.split(':')[1], content: pong },
       );
       const path = replyTo.startsWith('feishu-group:') ? '/send' : '/feishu-reply';
-      const req = http.request({
-        hostname: HOST, port: IPC_PORT, path, method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      }, () => {});
+      const req = http.request(
+        {
+          hostname: HOST,
+          port: IPC_PORT,
+          path,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          },
+        },
+        () => {},
+      );
       req.on('error', () => {});
       req.write(body);
       req.end();
       process.stderr.write(`[ipc] feishu ping intercepted from ${msg.from}, pong sent (0 token)\n`);
       return; // Don't push to LLM
+    }
+
+    if (resolveRuntime() === 'codex' && (await pushLocalCodexInboundViaAppServer(msg))) {
+      ackInboundMessage(msg);
+      process.stderr.write(
+        `[ipc] pushed codex App Server inbound from ${msg.from ?? '(unknown)'}\n`,
+      );
+      return;
     }
 
     mcpTrace('channel_push_begin', {
@@ -1211,34 +1616,7 @@ function handleWsMessage(event) {
     });
     pushChannelNotification(msg);
     // Send ack back to Hub so the sender knows delivery succeeded
-    if (msg.id) {
-      wsSend({ type: 'ack', messageId: msg.id, from: IPC_NAME });
-      mcpTrace('ack_sent', { msg_id: msg.id, confirmed_by: IPC_NAME });
-
-      // Update pending-cards.json so feishu-bridge can advance task to stage 2
-      try {
-        const pcPath = join(PROJECT_DIR, 'data', 'pending-cards.json');
-        if (existsSync(pcPath)) {
-          const pc = JSON.parse(readFileSync(pcPath, 'utf8'));
-          let changed = false;
-          for (const [, info] of Object.entries(pc)) {
-            if (!info.tasks || !Array.isArray(info.tasks)) continue;
-            for (const task of info.tasks) {
-              // Match by hubMessageId if available, otherwise advance oldest stage-1 task
-              if (task.stage < 2 && (task.hubMessageId === msg.id || task.id === msg.id || !task.hubMessageId)) {
-                task.stage = 2;
-                changed = true;
-                break; // Only advance one task per ACK
-              }
-            }
-          }
-          if (changed) {
-            writeFileSync(pcPath, JSON.stringify(pc));
-            process.stderr.write(`[ipc] updated pending-cards.json: ACK from ${IPC_NAME} for ${msg.id}\n`);
-          }
-        }
-      } catch {}
-    }
+    ackInboundMessage(msg);
     process.stderr.write(`[ipc] pushed channel notification from ${msg.from ?? '(unknown)'}\n`);
   } else if (msg.type === 'ack') {
     process.stderr.write(`[ipc] delivery confirmed: ${msg.messageId} by ${msg.confirmedBy}\n`);
@@ -1352,7 +1730,11 @@ async function initialConnect() {
       const onError = (ev) => {
         cleanup();
         mcpTrace('ws_connect_error', { message: ev?.message ?? 'unknown' });
-        try { socket.close(); } catch { /* ignore */ }
+        try {
+          socket.close();
+        } catch {
+          /* ignore */
+        }
         handleFailure();
       };
 
@@ -1368,7 +1750,9 @@ async function initialConnect() {
 
       elapsed += HUB_AUTOSTART_RETRY_INTERVAL;
       if (elapsed >= HUB_AUTOSTART_TIMEOUT) {
-        process.stderr.write('[ipc] could not connect to hub within timeout, will retry in background\n');
+        process.stderr.write(
+          '[ipc] could not connect to hub within timeout, will retry in background\n',
+        );
         scheduleReconnect();
         resolve(); // continue starting the MCP server anyway
         return;
@@ -1390,33 +1774,59 @@ function httpGet(url) {
     if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
     const req = http.get(url, { headers }, (res) => {
       let body = '';
-      res.on('data', (chunk) => { body += chunk; });
+      res.on('data', (chunk) => {
+        body += chunk;
+      });
       res.on('end', () => {
-        try { resolve(JSON.parse(body)); }
-        catch { reject(new Error(`invalid JSON from ${url}: ${body}`)); }
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          reject(new Error(`invalid JSON from ${url}: ${body}`));
+        }
       });
     });
     req.on('error', reject);
-    req.setTimeout(5000, () => { req.destroy(new Error('timeout')); });
+    req.setTimeout(5000, () => {
+      req.destroy(new Error('timeout'));
+    });
   });
 }
 
 function httpPost(url, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) };
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data),
+    };
     if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
     const parsed = new URL(url);
-    const req = http.request({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname, method: 'POST', headers }, (res) => {
-      let buf = '';
-      res.on('data', (chunk) => { buf += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(buf)); }
-        catch { reject(new Error(`invalid JSON from ${url}: ${buf}`)); }
-      });
-    });
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: 'POST',
+        headers,
+      },
+      (res) => {
+        let buf = '';
+        res.on('data', (chunk) => {
+          buf += chunk;
+        });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(buf));
+          } catch {
+            reject(new Error(`invalid JSON from ${url}: ${buf}`));
+          }
+        });
+      },
+    );
     req.on('error', reject);
-    req.setTimeout(5000, () => { req.destroy(new Error('timeout')); });
+    req.setTimeout(5000, () => {
+      req.destroy(new Error('timeout'));
+    });
     req.write(data);
     req.end();
   });
@@ -1425,19 +1835,38 @@ function httpPost(url, body) {
 function httpPatch(url, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) };
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data),
+    };
     if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
     const parsed = new URL(url);
-    const req = http.request({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname, method: 'PATCH', headers }, (res) => {
-      let buf = '';
-      res.on('data', (chunk) => { buf += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(buf)); }
-        catch { reject(new Error(`invalid JSON from ${url}: ${buf}`)); }
-      });
-    });
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: 'PATCH',
+        headers,
+      },
+      (res) => {
+        let buf = '';
+        res.on('data', (chunk) => {
+          buf += chunk;
+        });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(buf));
+          } catch {
+            reject(new Error(`invalid JSON from ${url}: ${buf}`));
+          }
+        });
+      },
+    );
     req.on('error', reject);
-    req.setTimeout(5000, () => { req.destroy(new Error('timeout')); });
+    req.setTimeout(5000, () => {
+      req.destroy(new Error('timeout'));
+    });
     req.write(data);
     req.end();
   });
@@ -1456,12 +1885,19 @@ function wsSend(payload) {
   const msg = typeof payload === 'object' ? payload : null;
   if (msg?.type === 'message' && msg.from && msg.to && msg.content) {
     httpPost(`http://${HOST}:${IPC_PORT}/send`, {
-      from: msg.from, to: msg.to, content: msg.content, topic: msg.topic ?? null,
-    }).then(res => {
-      process.stderr.write(`[ipc] HTTP fallback: ${res?.ok ? 'sent' : 'failed'} (${msg.from} → ${msg.to})\n`);
-    }).catch(err => {
-      process.stderr.write(`[ipc] HTTP fallback failed: ${err?.message ?? err}\n`);
-    });
+      from: msg.from,
+      to: msg.to,
+      content: msg.content,
+      topic: msg.topic ?? null,
+    })
+      .then((res) => {
+        process.stderr.write(
+          `[ipc] HTTP fallback: ${res?.ok ? 'sent' : 'failed'} (${msg.from} → ${msg.to})\n`,
+        );
+      })
+      .catch((err) => {
+        process.stderr.write(`[ipc] HTTP fallback failed: ${err?.message ?? err}\n`);
+      });
     return false; // delivered via HTTP async, not guaranteed
   }
   // Non-message payloads (subscribe, etc) — queue for later
@@ -1485,15 +1921,20 @@ async function main() {
   await server.connect(transport);
 
   process.stderr.write('[ipc] MCP server ready, connecting to hub in background...\n');
+  await ensureLocalCodexAppServer();
 
   // Connect to hub in background (non-blocking)
-  initialConnect().then(() => {
-    process.stderr.write(`[ipc] hub connection established (session="${IPC_NAME}", hub=${HOST}:${IPC_PORT})\n`);
-    startContextUsagePctTimer();
-  }).catch((err) => {
-    process.stderr.write(`[ipc] hub connection failed: ${err?.message ?? err}\n`);
-    startContextUsagePctTimer();
-  });
+  initialConnect()
+    .then(() => {
+      process.stderr.write(
+        `[ipc] hub connection established (session="${IPC_NAME}", hub=${HOST}:${IPC_PORT})\n`,
+      );
+      startContextUsagePctTimer();
+    })
+    .catch((err) => {
+      process.stderr.write(`[ipc] hub connection failed: ${err?.message ?? err}\n`);
+      startContextUsagePctTimer();
+    });
 }
 
 // ---------------------------------------------------------------------------

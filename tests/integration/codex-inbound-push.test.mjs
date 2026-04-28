@@ -4,8 +4,12 @@ import assert from 'node:assert/strict';
 import { createAppServerClient, formatInjectItem } from '../../lib/codex-app-server-client.mjs';
 import { createRouter } from '../../lib/router.mjs';
 
-const codexVersion = spawnSync('codex', ['--version'], { encoding: 'utf8', windowsHide: true });
-const liveSkipReason = codexVersion.status === 0 ? false : 'INTEGRATION_SKIPPED: codex CLI unavailable';
+const codexVersion =
+  process.platform === 'win32'
+    ? spawnSync('cmd.exe', ['/c', 'codex', '--version'], { encoding: 'utf8', windowsHide: true })
+    : spawnSync('codex', ['--version'], { encoding: 'utf8', windowsHide: true });
+const liveSkipReason =
+  codexVersion.status === 0 ? false : 'INTEGRATION_SKIPPED: codex CLI unavailable';
 
 function waitFor(client, predicate, timeoutMs, label) {
   return new Promise((resolve, reject) => {
@@ -50,9 +54,10 @@ async function waitForTurnText(client, threadId, turnId) {
   });
   await waitFor(
     client,
-    (message) => message.method === 'turn/completed'
-      && message.params?.threadId === threadId
-      && message.params?.turn?.id === turnId,
+    (message) =>
+      message.method === 'turn/completed' &&
+      message.params?.threadId === threadId &&
+      message.params?.turn?.id === turnId,
     300000,
     `turn/completed ${turnId}`,
   );
@@ -77,41 +82,49 @@ async function createLiveClient() {
   return { client, threadId };
 }
 
-test('AC-1 active turn steer surfaces marker', { timeout: 360000, skip: liveSkipReason }, async () => {
-  const { client, threadId } = await createLiveClient();
-  try {
-    const start = await client.turnStart(
-      threadId,
-      'Wait briefly for an incoming steer marker, then answer with every marker you saw.',
-    );
-    await waitFor(
-      client,
-      (message) => message.method === 'turn/started' && message.params?.turn?.id === start.turnId,
-      60000,
-      'turn/started',
-    );
-    await client.turnSteer(threadId, start.turnId, '[AC-1 STEER] integration marker');
-    const text = await waitForTurnText(client, threadId, start.turnId);
-    assert.match(text, /\[AC-1 STEER\]/);
-  } finally {
-    await client.close();
-  }
-});
+test(
+  'AC-1 active turn steer surfaces marker',
+  { timeout: 360000, skip: liveSkipReason },
+  async () => {
+    const { client, threadId } = await createLiveClient();
+    try {
+      const start = await client.turnStart(
+        threadId,
+        'Wait briefly for an incoming steer marker, then answer with every marker you saw.',
+      );
+      await waitFor(
+        client,
+        (message) => message.method === 'turn/started' && message.params?.turn?.id === start.turnId,
+        60000,
+        'turn/started',
+      );
+      await client.turnSteer(threadId, start.turnId, '[AC-1 STEER] integration marker');
+      const text = await waitForTurnText(client, threadId, start.turnId);
+      assert.match(text, /\[AC-1 STEER\]/);
+    } finally {
+      await client.close();
+    }
+  },
+);
 
-test('AC-2 idle inject schema 4 surfaces on next turn', { timeout: 360000, skip: liveSkipReason }, async () => {
-  const { client, threadId } = await createLiveClient();
-  try {
-    await client.threadInjectItems(threadId, [formatInjectItem('[AC-2 INJECT] idle marker')]);
-    const start = await client.turnStart(
-      threadId,
-      'List all AC-2 markers visible in this thread. Include the marker verbatim.',
-    );
-    const text = await waitForTurnText(client, threadId, start.turnId);
-    assert.match(text, /\[AC-2 INJECT\]/);
-  } finally {
-    await client.close();
-  }
-});
+test(
+  'AC-2 idle inject schema 4 surfaces on next turn',
+  { timeout: 360000, skip: liveSkipReason },
+  async () => {
+    const { client, threadId } = await createLiveClient();
+    try {
+      await client.threadInjectItems(threadId, [formatInjectItem('[AC-2 INJECT] idle marker')]);
+      const start = await client.turnStart(
+        threadId,
+        'List all AC-2 markers visible in this thread. Include the marker verbatim.',
+      );
+      const text = await waitForTurnText(client, threadId, start.turnId);
+      assert.match(text, /\[AC-2 INJECT\]/);
+    } finally {
+      await client.close();
+    }
+  },
+);
 
 test('AC-4 claude runtime keeps WebSocket push path', { timeout: 5000 }, async () => {
   const pushed = [];

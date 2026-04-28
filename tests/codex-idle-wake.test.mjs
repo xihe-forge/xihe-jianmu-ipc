@@ -108,7 +108,8 @@ test('idle codex IPC injects history, starts a wake turn, and emits wake trace',
     const turnStartCalls = calls.filter((call) => call.method === 'turnStart');
     assert.equal(turnStartCalls.length, 1);
     assert.equal(turnStartCalls[0].threadId, 'thread-idle');
-    assert.match(turnStartCalls[0].input, /请处理/);
+    assert.match(turnStartCalls[0].input, /← ipc:/);
+    assert.match(turnStartCalls[0].input, /回显到 reply 第一行/);
 
     const events = await readTraceEvents(harness.tracePath);
     assert.equal(

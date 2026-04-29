@@ -14,6 +14,14 @@ const sourceWrapperPath = join(projectRoot, 'bin', 'claude-stdin-auto-accept.mjs
 let tempDir;
 let wrapperPath;
 
+const realPtyPrompt =
+  'WARNING:Loadingdevelopmentchannels' +
+  '--dangerously-load-development-channelsisforlocalchanneldevelopmentonly.' +
+  'Channels:server:ipc' +
+  '❯1.Iamusingthisforlocaldevelopment' +
+  '2.Exit' +
+  'Entertoconfirm·Esctocancel';
+
 const fakePtySource = String.raw`
 import { appendFileSync } from 'node:fs';
 
@@ -29,8 +37,25 @@ function normalizeData(data) {
   return String(data);
 }
 
+function parseEvents() {
+  if (!process.env.PTY_MOCK_DATA_EVENTS) return [];
+  return JSON.parse(process.env.PTY_MOCK_DATA_EVENTS);
+}
+
 export function spawn(command, args, options) {
+  const dataHandlers = [];
   const exitHandlers = [];
+  let exited = false;
+
+  function emitData(data) {
+    for (const handler of dataHandlers) handler(data);
+  }
+
+  function emitExit(exitCode = 0) {
+    if (exited) return;
+    exited = true;
+    for (const handler of exitHandlers) handler({ exitCode, signal: undefined });
+  }
 
   record('spawn', {
     command,
@@ -41,26 +66,32 @@ export function spawn(command, args, options) {
       rows: options?.rows,
       cwd: options?.cwd,
       hasEnv: Boolean(options?.env),
-      ipcName: options?.env?.IPC_NAME ?? null,
     },
   });
 
   return {
     write(data) {
-      record('write', { data: normalizeData(data) });
+      const text = normalizeData(data);
+      record('write', { data: text });
+
+      if (process.env.PTY_MOCK_READY_ON_ACCEPT === '1' && text === '\r') {
+        setTimeout(() => emitData('Listening for channel messages from: server:ipc'), 0);
+      }
+      if (process.env.PTY_MOCK_HELP_ON_USER === '1' && text.includes('/help')) {
+        setTimeout(() => emitData('Help: /help command palette'), 0);
+      }
+      if (process.env.PTY_MOCK_EXIT_ON_ACCEPT === '1' && text === '\r') {
+        setTimeout(() => emitExit(0), 0);
+      }
       if (process.env.PTY_MOCK_EXIT_ON_WRITE === '1') {
-        setTimeout(() => {
-          for (const handler of exitHandlers) {
-            handler({ exitCode: 0, signal: undefined });
-          }
-        }, 0);
+        setTimeout(() => emitExit(0), 0);
       }
     },
     onData(handler) {
+      dataHandlers.push(handler);
       record('onData');
-      if (process.env.PTY_MOCK_EMIT_DATA !== undefined) {
-        const delayMs = Number.parseInt(process.env.PTY_MOCK_EMIT_DATA_MS ?? '0', 10);
-        setTimeout(() => handler(process.env.PTY_MOCK_EMIT_DATA), delayMs);
+      for (const event of parseEvents()) {
+        setTimeout(() => emitData(event.data), event.delayMs ?? 0);
       }
       return { dispose() {} };
     },
@@ -70,7 +101,7 @@ export function spawn(command, args, options) {
       if (process.env.PTY_MOCK_EXIT_MS !== undefined) {
         const delayMs = Number.parseInt(process.env.PTY_MOCK_EXIT_MS, 10);
         const exitCode = Number.parseInt(process.env.PTY_MOCK_EXIT_CODE ?? '0', 10);
-        setTimeout(() => handler({ exitCode, signal: undefined }), delayMs);
+        setTimeout(() => emitExit(exitCode), delayMs);
       }
       return { dispose() {} };
     },
@@ -82,10 +113,9 @@ export function spawn(command, args, options) {
 `;
 
 before(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), 'claude-stdin-auto-accept-pty-'));
+  tempDir = await mkdtemp(join(tmpdir(), 'claude-stdin-auto-accept-real-confirm-'));
   wrapperPath = join(tempDir, 'claude-stdin-auto-accept.mjs');
   await writeFile(wrapperPath, await readFile(sourceWrapperPath, 'utf8'), 'utf8');
-  await writeFakePtyPackage('node-pty-prebuilt-multiarch');
   await writeFakePtyPackage('@lydell/node-pty');
 });
 
@@ -106,21 +136,25 @@ async function writeFakePtyPackage(packageName) {
   await writeFile(join(packageDir, 'index.js'), fakePtySource, 'utf8');
 }
 
-function readEvents(logPath) {
+async function readEvents(logPath) {
   if (!existsSync(logPath)) return [];
-  return readFile(logPath, 'utf8').then((content) => (
-    content
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => JSON.parse(line))
-  ));
+  const content = await readFile(logPath, 'utf8');
+  return content
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
-async function runWrapper({ args, env = {}, stdin, stdinDelayMs = 50, timeoutMs = 2500 }) {
+async function runWrapper({
+  env = {},
+  stdin,
+  stdinDelayMs = 50,
+  timeoutMs = 1500,
+}) {
   const logPath = join(tempDir, `${Math.random().toString(16).slice(2)}.jsonl`);
 
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [wrapperPath, process.execPath, ...args], {
+    const child = spawn(process.execPath, [wrapperPath, process.execPath, '-e', 'setInterval(() => {}, 1000)'], {
       cwd: projectRoot,
       env: { ...process.env, PTY_MOCK_LOG: logPath, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -178,85 +212,69 @@ async function runWrapper({ args, env = {}, stdin, stdinDelayMs = 50, timeoutMs 
   });
 }
 
-describe('ADR-014 Phase 2 K.M stdin auto-accept real PTY behavior', () => {
-  test('pty.spawn is called once with the Claude binary, args, cwd, env, and xterm geometry', async () => {
-    const script = 'setTimeout(() => process.exit(0), 10);';
+function writeEvents(result) {
+  return result.events.filter((event) => event.event === 'write');
+}
+
+describe('ADR-014 Phase 2 K.N PTY prompt confirmation', () => {
+  test('real compact Claude PTY prompt confirms pre-selected option 1 with one Enter', async () => {
     const result = await runWrapper({
-      args: ['-e', script, '--sentinel'],
-      env: { PTY_MOCK_EXIT_MS: '10', IPC_NAME: 'km-unit' },
-    });
-
-    assert.equal(result.code, 0);
-    const spawnEvents = result.events.filter((event) => event.event === 'spawn');
-    assert.equal(spawnEvents.length, 1);
-    assert.equal(spawnEvents[0].command, process.execPath);
-    assert.deepEqual(spawnEvents[0].args, ['-e', script, '--sentinel']);
-    assert.equal(spawnEvents[0].options.name, 'xterm-256color');
-    assert.equal(spawnEvents[0].options.cols, 120);
-    assert.equal(spawnEvents[0].options.rows, 30);
-    assert.equal(spawnEvents[0].options.cwd, projectRoot);
-    assert.equal(spawnEvents[0].options.hasEnv, true);
-    assert.equal(spawnEvents[0].options.ipcName, 'km-unit');
-  });
-
-  test("configured fallback accept writes Enter to the PTY child after the guard", async () => {
-    const result = await runWrapper({
-      args: ['-e', 'setTimeout(() => process.exit(0), 2000);'],
-      env: { CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS: '50', PTY_MOCK_EXIT_ON_WRITE: '1' },
-      timeoutMs: 3000,
-    });
-
-    assert.equal(result.code, 0);
-    const writeEvent = result.events.find((event) => event.event === 'write');
-    assert.ok(writeEvent, `missing write event: ${JSON.stringify(result.events)}`);
-    assert.equal(writeEvent.data, '\r');
-    assert.ok(writeEvent.t - result.startedAt >= 25, `write happened too early: ${writeEvent.t - result.startedAt}ms`);
-    assert.ok(writeEvent.t - result.startedAt < 500, `write happened too late: ${writeEvent.t - result.startedAt}ms`);
-  });
-
-  test('child onData output is forwarded to process stdout', async () => {
-    const result = await runWrapper({
-      args: ['-e', 'setTimeout(() => process.exit(0), 50);'],
-      env: { PTY_MOCK_EMIT_DATA: 'hello from pty', PTY_MOCK_EXIT_MS: '20' },
-    });
-
-    assert.equal(result.code, 0);
-    assert.equal(result.stdout, 'hello from pty');
-  });
-
-  test('development-channel prompt output confirms the selected default option with Enter', async () => {
-    const result = await runWrapper({
-      args: ['-e', 'setTimeout(() => process.exit(0), 1000);'],
       env: {
         CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS: '5000',
-        PTY_MOCK_EMIT_DATA: 'WARNING: Loading development channels\nEnter to confirm',
-        PTY_MOCK_EXIT_ON_WRITE: '1',
+        PTY_MOCK_DATA_EVENTS: JSON.stringify([{ delayMs: 20, data: realPtyPrompt }]),
+        PTY_MOCK_EXIT_MS: '400',
       },
-      timeoutMs: 1500,
     });
 
     assert.equal(result.code, 0);
-    assert.ok(
-      result.events.some((event) => event.event === 'write' && event.data === '\r'),
-      `missing prompt confirmation write: ${JSON.stringify(result.events)}`,
-    );
+    assert.equal(result.stdout, realPtyPrompt);
+    assert.deepEqual(writeEvents(result).map((event) => event.data), ['\r']);
   });
 
-  test('process stdin data is forwarded to child.write for interactive input', async () => {
+  test('prompt-detected confirm wins before the fallback guard and cancels double send', async () => {
     const result = await runWrapper({
-      args: ['-e', 'setTimeout(() => process.exit(0), 1000);'],
       env: {
-        CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS: '5000',
-        PTY_MOCK_EXIT_ON_WRITE: '1',
+        CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS: '500',
+        PTY_MOCK_DATA_EVENTS: JSON.stringify([{ delayMs: 100, data: realPtyPrompt }]),
+        PTY_MOCK_EXIT_ON_ACCEPT: '1',
       },
-      stdin: 'test',
-      timeoutMs: 1500,
     });
 
     assert.equal(result.code, 0);
-    assert.ok(
-      result.events.some((event) => event.event === 'write' && event.data === 'test'),
-      `missing forwarded stdin write: ${JSON.stringify(result.events)}`,
-    );
+    const writes = writeEvents(result);
+    assert.deepEqual(writes.map((event) => event.data), ['\r']);
+    assert.ok(writes[0].t - result.startedAt < 500, `prompt confirm should beat fallback: ${writes[0].t - result.startedAt}ms`);
+  });
+
+  test('no prompt output falls back to one Enter instead of 1 plus Enter', async () => {
+    const result = await runWrapper({
+      env: {
+        CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS: '50',
+        PTY_MOCK_EXIT_ON_WRITE: '1',
+      },
+    });
+
+    assert.equal(result.code, 0);
+    assert.deepEqual(writeEvents(result).map((event) => event.data), ['\r']);
+  });
+
+  test('user /help after ready sees no extra auto newline or leaked numeric input', async () => {
+    const result = await runWrapper({
+      env: {
+        CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS: '5000',
+        PTY_MOCK_DATA_EVENTS: JSON.stringify([{ delayMs: 20, data: realPtyPrompt }]),
+        PTY_MOCK_READY_ON_ACCEPT: '1',
+        PTY_MOCK_HELP_ON_USER: '1',
+        PTY_MOCK_EXIT_MS: '500',
+      },
+      stdin: '/help\r',
+      stdinDelayMs: 220,
+    });
+
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /Listening for channel messages from: server:ipc/);
+    assert.match(result.stdout, /Help: \/help command palette/);
+    assert.deepEqual(writeEvents(result).map((event) => event.data), ['\r', '/help\r']);
+    assert.equal(writeEvents(result).some((event) => event.data.includes('1')), false);
   });
 });

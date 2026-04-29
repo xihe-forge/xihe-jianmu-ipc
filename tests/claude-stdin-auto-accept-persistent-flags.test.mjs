@@ -133,7 +133,7 @@ async function runWrapper({ env = {}, timeoutMs = 1500 }) {
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [wrapperPath, process.execPath, '-e', 'setInterval(() => {}, 1000)'], {
       cwd: projectRoot,
-      env: { ...process.env, PTY_MOCK_LOG: logPath, ...env },
+      env: { ...process.env, IPC_NAME: '', PTY_MOCK_LOG: logPath, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

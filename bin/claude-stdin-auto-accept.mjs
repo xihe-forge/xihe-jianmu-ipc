@@ -23,8 +23,11 @@ try {
 }
 
 const ANSI_ESCAPE_PATTERN = /(?:\x1B\][^\x07]*(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[@-Z\\-_])/g;
+const OSC_TITLE_PATTERN = /\x1B\][012];[^\x07\x1B]*(?:\x07|\x1B\\)/g;
+const LARGE_BLANK_FILL_PATTERN = /\x1B\[H {160,}\r?\n?\x1B\[K(?:\x1B\[\d+C)?/g;
 const AUTO_ACCEPT_DATA = '\r';
 const READY_MARKER = 'listeningforchannelmessagesfrom:server:ipc';
+const ipcName = (process.env.IPC_NAME ?? '').trim();
 const PROMPTS = [
   {
     key: 'workspaceTrust',
@@ -77,6 +80,19 @@ function normalizeTerminalText(data) {
 
 function compactTerminalText(data) {
   return normalizeTerminalText(data).replace(/\s+/g, '').toLowerCase();
+}
+
+function titleSequence(title) {
+  return `\x1b]0;${title}\x07`;
+}
+
+function rewriteTitle(data) {
+  if (!ipcName) return String(data);
+  return String(data).replace(OSC_TITLE_PATTERN, titleSequence(ipcName));
+}
+
+function sanitizeTerminalOutput(data) {
+  return rewriteTitle(data).replace(LARGE_BLANK_FILL_PATTERN, '\x1b[2J\x1b[H');
 }
 
 function clearEarlyAutoAcceptTimer() {
@@ -154,7 +170,7 @@ function maybeConfirmPrompt(data) {
 }
 
 child.onData((data) => {
-  process.stdout.write(data);
+  process.stdout.write(sanitizeTerminalOutput(data));
   maybeConfirmPrompt(data);
 });
 
@@ -170,6 +186,10 @@ const earlyWriteMs = Number.parseInt(
 earlyAutoAcceptTimer = setTimeout(() => {
   writeEarlyAutoAccept();
 }, Number.isFinite(earlyWriteMs) && earlyWriteMs > 0 ? earlyWriteMs : 7000);
+
+if (ipcName) {
+  process.stdout.write(titleSequence(ipcName));
+}
 
 process.stdin.setRawMode?.(true);
 process.stdin.resume();

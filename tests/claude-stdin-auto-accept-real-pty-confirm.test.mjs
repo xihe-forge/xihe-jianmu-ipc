@@ -156,7 +156,7 @@ async function runWrapper({
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [wrapperPath, process.execPath, '-e', 'setInterval(() => {}, 1000)'], {
       cwd: projectRoot,
-      env: { ...process.env, PTY_MOCK_LOG: logPath, ...env },
+      env: { ...process.env, IPC_NAME: '', PTY_MOCK_LOG: logPath, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -265,10 +265,10 @@ describe('ADR-014 Phase 2 K.N PTY prompt confirmation', () => {
         PTY_MOCK_DATA_EVENTS: JSON.stringify([{ delayMs: 20, data: realPtyPrompt }]),
         PTY_MOCK_READY_ON_ACCEPT: '1',
         PTY_MOCK_HELP_ON_USER: '1',
-        PTY_MOCK_EXIT_MS: '500',
+        PTY_MOCK_EXIT_MS: '800',
       },
       stdin: '/help\r',
-      stdinDelayMs: 220,
+      stdinDelayMs: 420,
     });
 
     assert.equal(result.code, 0);

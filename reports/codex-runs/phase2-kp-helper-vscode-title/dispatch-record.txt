@@ -1,0 +1,15 @@
+phase=phase2-kp-helper-vscode-title
+task=ADR-014 Phase 2 K.P helper VSCode blank fill + IPC_NAME tab title
+red_commit=5b388c0 test(ipc): cover helper title and blank fill polish
+green_commit=fix(ipc): set helper tab title and sanitize prompt blank fill
+p1a_evidence=reports/codex-runs/phase2-kp-helper-vscode-title/impl-report.md L1-L20
+p1a_probe=temp/codex-runs/phase2-kp-helper-vscode-title/p1a-xterm-probe.json
+tests_red=node --test tests\claude-stdin-auto-accept-tab-title.test.mjs EXIT=1 expected RED 1/5 pass 4/5 fail
+tests_targeted=node --test helper/title suites EXIT=0 29/29
+tests_full=pnpm test EXIT=0
+smoke_trusted=real helper + real claude.exe cwd=D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc IPC_NAME=test-kp titleTestKpCount=3 rawClaudeOscTitleCount=0 homeBlankFillCount=0 autoAcceptEnterCount=1
+smoke_untrusted=real helper + real claude.exe temp cwd IPC_NAME=test-kp titleTestKpCount=3 rawClaudeOscTitleCount=0 homeBlankFillCount=0 clearHomeCount=1 autoAcceptEnterCount=2
+smoke_cleanup=removed this-run helper wrapper pid=65120 and child claude pid=95368; unrelated IPC_NAME=harness cmd tree left untouched
+manual_visual=pending boss VSCode terminal + Windows PowerShell terminal ipc test-kp
+inner_EXIT=0
+outer_EXIT=0

@@ -16,6 +16,12 @@ const installPs1 = readFileSync(new URL('../bin/install.ps1', import.meta.url), 
 const installPs1Path = fileURLToPath(new URL('../bin/install.ps1', import.meta.url));
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
+function extractHereStringVar(name) {
+  const match = installPs1.match(new RegExp(`\\$${name}\\s*=\\s*@"\\r?\\n([\\s\\S]*?)\\r?\\n"@`));
+  assert.ok(match, `${name} here-string should exist`);
+  return match[1];
+}
+
 function stripBom(value) {
   return value.replace(/^\uFEFF/, '');
 }
@@ -89,6 +95,29 @@ test('install.ps1 ipcx keeps nested TOML string quotes escaped', () => {
     installPs1,
     /mcp_servers\.jianmu-ipc\.env\.IPC_NAME=``"`\$Name``""/,
   );
+});
+
+test('install.ps1 ipcx launches Codex from xiheAi root with balanced location restore', () => {
+  const ipcxFunc = extractHereStringVar('ipcxFuncCode');
+
+  assert.match(ipcxFunc, /\$projectRoot = 'D:\\workspace\\ai\\research\\xiheAi'/);
+  assert.match(ipcxFunc, /Push-Location `?\$projectRoot/);
+  assert.match(ipcxFunc, /try\s*\{/);
+  assert.match(ipcxFunc, /finally\s*\{\s*Pop-Location\s*\}/);
+});
+
+test('install.ps1 ipcx runs Codex through the title wrapper with IPC_NAME in env and config', () => {
+  const ipcxFunc = extractHereStringVar('ipcxFuncCode');
+
+  assert.match(ipcxFunc, /\$env:IPC_NAME = `?\$Name/);
+  assert.match(ipcxFunc, /\$wrapper = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc\\bin\\codex-title-wrapper\.mjs'/);
+  assert.match(ipcxFunc, /\$codexBin = "`?\$env:APPDATA\\npm\\codex\.cmd"/);
+  assert.match(ipcxFunc, /& `?\$node `?\$wrapper `?\$codexBin --dangerously-bypass-approvals-and-sandbox/);
+  assert.match(ipcxFunc, /mcp_servers\.jianmu-ipc\.env\.IPC_NAME=``"`\$Name``""/);
+});
+
+test('package.json publishes the Codex title wrapper used by ipcx', () => {
+  assert.ok(packageJson.files.includes('bin/codex-title-wrapper.mjs'));
 });
 
 test('package.json runs install.ps1 from npm postinstall without failing non-Windows installs', () => {

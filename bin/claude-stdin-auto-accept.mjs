@@ -70,6 +70,22 @@ child.once('exit', (code, signal) => {
   process.exit(code ?? 0);
 });
 
+// K.K-2: CC inquirer prompt 走 raw tty 不写 stdout·expect-style match 不到·timeout 30s 太久 user 看到 warning hang
+// 改 1500ms 无条件 write '1\n' 不依赖 prompt 检测（feedback_evidence_before_assumption 实证 raw tty 模式）
+const earlyWriteMs = Number.parseInt(
+  process.env.CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS ?? '1500',
+  10,
+);
+setTimeout(() => {
+  if (!acceptSent && !child.killed) {
+    process.stderr.write(
+      `[claude-stdin-auto-accept] early write 1 at ${Number.isFinite(earlyWriteMs) ? earlyWriteMs : 1500}ms (no prompt match yet)\n`,
+    );
+    sendAccept();
+  }
+}, Number.isFinite(earlyWriteMs) && earlyWriteMs > 0 ? earlyWriteMs : 1500);
+
+// 30s timeout 仍保留兜底·防 1500ms 太早 CC 还没起来读 stdin
 setTimeout(() => {
   if (!acceptSent && !child.killed) {
     process.stderr.write('[claude-stdin-auto-accept] timeout 30s no prompt detected - force write 1\n');

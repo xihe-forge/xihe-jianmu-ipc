@@ -180,7 +180,7 @@ describe('ADR-014 Phase 2 K.Q helper cwd, sanitizer, and raw PTY capture', () =>
     const installPs1 = await readFile(installPs1Path, 'utf8');
 
     assert.match(installPs1, /\$projectRoot = 'D:\\workspace\\ai\\research\\xiheAi'/);
-    assert.match(installPs1, /Push-Location \$projectRoot/);
+    assert.match(installPs1, /Push-Location `?\$projectRoot/);
     assert.match(installPs1, /finally\s*\{\s*Pop-Location\s*\}/);
   });
 

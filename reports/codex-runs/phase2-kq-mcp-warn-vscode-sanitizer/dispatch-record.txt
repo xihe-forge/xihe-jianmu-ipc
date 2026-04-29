@@ -1,0 +1,23 @@
+phase=phase2-kq-mcp-warn-vscode-sanitizer
+task=ADR-014 Phase 2 K.Q dev-channels MCP warn + VSCode pwsh sanitizer
+red_commit=b0a95cc test(ipc): cover K.Q helper cwd and PTY sanitizing
+green_commit=fix(ipc): launch helper from project root and capture raw PTY
+q1_classification=fatal cwd-dependent MCP lookup, not cosmetic stderr noise
+q1_source_probe=installed package is native bin/claude.exe; binary string probe found --dangerously-load-development-channels and no MCP server configured
+q1_project_mcp=claude mcp list cwd=D:\workspace\ai\research\xiheAi saw ipc connected
+q1_home_mcp=claude mcp list cwd=C:\Users\jolen saw no MCP servers configured
+q1_fix=generated and installed ipc profile function Push-Location D:\workspace\ai\research\xiheAi before helper launch
+q1_profile_ps7=EXIT=0 rendered project cwd, listener present, missing-MCP warning absent
+q1_profile_ps5=EXIT=0 rendered project cwd, listener present, missing-MCP warning absent
+q2_fix=expanded large blank fill sanitizer to CSI H/f/d/G/A with >=100 spaces
+q2_raw_log=IPC_HELPER_RAW_LOG append-mode raw PTY capture before sanitization
+q2_raw_log_usage=$env:IPC_HELPER_RAW_LOG = 'D:\tmp\vscode-pwsh-raw.log'; ipc test-q2-capture
+q2_raw_log_smoke=temp/kq-real-raw-pty.log rawBytes=3952
+vscode_title_caveat=VSCode 1.110.1 default terminal.integrated.tabs.title is ${process}; OSC sequence may not appear in tab unless title template/session honors it
+tests_kq=node --test tests\claude-stdin-auto-accept-q1q2-fix.test.mjs EXIT=0 5/5
+tests_install=node --test tests\install-ps1.test.mjs EXIT=0 10/10
+tests_regression_bundle=node --test helper regression bundle EXIT=0 25/25
+tests_full=pnpm test EXIT=0
+manual_visual=pending boss VSCode pwsh + Windows PS ipc test-kq
+inner_EXIT=0
+outer_EXIT=0

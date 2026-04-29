@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createWriteStream } from 'node:fs';
 import * as pty from '@lydell/node-pty';
 
 const [, , claudeBin, ...claudeArgs] = process.argv;
@@ -24,10 +25,12 @@ try {
 
 const ANSI_ESCAPE_PATTERN = /(?:\x1B\][^\x07]*(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[@-Z\\-_])/g;
 const OSC_TITLE_PATTERN = /\x1B\][012];[^\x07\x1B]*(?:\x07|\x1B\\)/g;
-const LARGE_BLANK_FILL_PATTERN = /\x1B\[H {160,}\r?\n?\x1B\[K(?:\x1B\[\d+C)?/g;
+const LARGE_BLANK_FILL_PATTERN = /\x1B\[(?:\d+(?:;\d+)?)?[HfdGA] {100,}\r?\n?(?:\x1B\[K)?(?:\x1B\[\d+C)?/g;
 const AUTO_ACCEPT_DATA = '\r';
 const READY_MARKER = 'listeningforchannelmessagesfrom:server:ipc';
 const ipcName = (process.env.IPC_NAME ?? '').trim();
+const rawLogPath = process.env.IPC_HELPER_RAW_LOG?.trim();
+let rawLogStream;
 const PROMPTS = [
   {
     key: 'workspaceTrust',
@@ -65,6 +68,15 @@ let terminalCompactTextTail = '';
 let earlyAutoAcceptTimer;
 let fallbackAccepted = false;
 let seenListeningReady = false;
+
+if (rawLogPath) {
+  rawLogStream = createWriteStream(rawLogPath, { flags: 'a' });
+  rawLogStream.on('error', (error) => {
+    process.stderr.write(`[claude-stdin-auto-accept] raw PTY log failed: ${error?.message ?? error}\n`);
+    rawLogStream = undefined;
+  });
+  process.stderr.write(`[claude-stdin-auto-accept] raw PTY log enabled: ${rawLogPath}\n`);
+}
 
 function debug(message) {
   if (process.env.CLAUDE_STDIN_AUTO_ACCEPT_DEBUG !== '1') return;
@@ -170,11 +182,18 @@ function maybeConfirmPrompt(data) {
 }
 
 child.onData((data) => {
+  rawLogStream?.write(data);
   process.stdout.write(sanitizeTerminalOutput(data));
   maybeConfirmPrompt(data);
 });
 
 child.onExit(({ exitCode }) => {
+  if (rawLogStream) {
+    rawLogStream.end(() => {
+      process.exit(exitCode ?? 0);
+    });
+    return;
+  }
   process.exit(exitCode ?? 0);
 });
 

@@ -30,7 +30,7 @@ describe('ADR-014 Phase 2 K.M stdin auto-accept legacy expect removal', () => {
   });
 
   test('PTY output, parent stdin, and terminal resize are forwarded', () => {
-    assert.match(wrapperSource, /child\.onData\(\(data\) => \{\s*process\.stdout\.write\(sanitizeTerminalOutput\(data\)\);/s);
+    assert.match(wrapperSource, /child\.onData\(\(data\) => \{[\s\S]*process\.stdout\.write\(sanitizeTerminalOutput\(data\)\);/);
     assert.match(wrapperSource, /maybeConfirmPrompt\(data\)/);
     assert.match(wrapperSource, /function sanitizeTerminalOutput\(data\)/);
     assert.match(wrapperSource, /trySendAutoAccept\('prompt-detected', \{ key, data, delayMs \}\)/);

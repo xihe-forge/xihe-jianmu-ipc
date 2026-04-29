@@ -26,7 +26,18 @@ $funcCode = @"
 function ipc {
     param([Parameter(Mandatory)][string]`$Name)
     `$env:IPC_NAME = `$Name
-    claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc
+
+    `$node = 'D:\software\ide\nodejs\node.exe'
+    `$helper = 'D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\claude-stdin-auto-accept.mjs'
+    `$claudeBin = "`$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
+    `$projectRoot = 'D:\workspace\ai\research\xiheAi'
+
+    Push-Location `$projectRoot
+    try {
+        & `$node `$helper `$claudeBin --dangerously-skip-permissions --dangerously-load-development-channels server:ipc
+    } finally {
+        Pop-Location
+    }
 }
 "@
 

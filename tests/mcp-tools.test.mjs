@@ -125,6 +125,12 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function decodePowerShellCommandFromHint(commandHint) {
+  const match = commandHint.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+  assert.ok(match, `missing -EncodedCommand: ${commandHint}`);
+  return Buffer.from(match[1], 'base64').toString('utf16le');
+}
+
 async function importMcpServerModule() {
   const moduleUrl = new URL('../mcp-server.mjs', import.meta.url);
   return import(`${moduleUrl.href}?test=${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -559,12 +565,17 @@ test(
       assert.equal(payload.host, 'wt');
       assert.equal(payload.dryRun, true);
       assert.equal(payload.cwd, normalizedSandbox);
-      assert.match(payload.command_hint, /^wt\.exe --window last new-tab --title worker-b -- cmd \/k /);
-      assert.doesNotMatch(payload.command_hint, /--starting-directory/);
-      assert.match(payload.command_hint, new RegExp(`cd /d "${escapedWindowsCwd}" && set "IPC_NAME=worker-b"&&`));
       assert.match(
         payload.command_hint,
-        /"C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus$/,
+        /^wt\.exe --window last new-tab --title worker-b -- powershell\.exe -NoExit -NoProfile -EncodedCommand /,
+      );
+      assert.doesNotMatch(payload.command_hint, /--starting-directory/);
+      const psCommand = decodePowerShellCommandFromHint(payload.command_hint);
+      assert.match(psCommand, new RegExp(`Set-Location -LiteralPath '${escapedWindowsCwd}'`));
+      assert.match(psCommand, /\$env:IPC_NAME='worker-b'/);
+      assert.match(
+        psCommand,
+        /claude-stdin-auto-accept\.mjs' 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus$/,
       );
     } finally {
       rmSync(sandbox, { recursive: true, force: true });

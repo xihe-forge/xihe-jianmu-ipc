@@ -12,6 +12,10 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverSource = readFileSync(join(__dirname, '..', 'mcp-server.mjs'), 'utf8');
+const wrapperSource = readFileSync(
+  join(__dirname, '..', 'bin', 'claude-stdin-auto-accept.mjs'),
+  'utf8',
+);
 const DEV_CHANNEL_FLAG = '--dangerously-load-development-channels server:ipc';
 
 function extractFunctionSource(name) {
@@ -22,6 +26,16 @@ function extractFunctionSource(name) {
   const candidates = [nextFunction, nextExportFunction].filter((index) => index !== -1);
   const end = candidates.length > 0 ? Math.min(...candidates) : serverSource.length;
   return serverSource.slice(start, end);
+}
+
+function decodePowerShellCommand(encoded) {
+  return Buffer.from(encoded, 'base64').toString('utf16le');
+}
+
+function decodePowerShellCommandFromHint(commandHint) {
+  const match = commandHint.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+  assert.ok(match, `missing -EncodedCommand: ${commandHint}`);
+  return decodePowerShellCommand(match[1]);
 }
 
 describe('ADR-014 Phase 2 K.K spawn stdin auto-accept', () => {
@@ -38,7 +52,7 @@ describe('ADR-014 Phase 2 K.K spawn stdin auto-accept', () => {
     assert.match(wslScriptSource, new RegExp(DEV_CHANNEL_FLAG));
   });
 
-  test('Windows Terminal cmd launchers pipe 1 into Claude without changing launch args', () => {
+  test('Windows Terminal launchers use stdin auto-accept wrapper without changing launch args', () => {
     const launchCommand = buildWtLaunchCommand({ sessionName: 'kk-launch', model: undefined });
     const startCommand = buildWtStartCommand({
       sessionName: 'kk-start',
@@ -50,12 +64,15 @@ describe('ADR-014 Phase 2 K.K spawn stdin auto-accept', () => {
       model: 'opus',
       cwd: 'D:/workspace/test',
     });
-    const innerCmd = spawnArgs[spawnArgs.indexOf('--') + 3];
+    const innerCmd = decodePowerShellCommand(spawnArgs[spawnArgs.indexOf('--') + 5]);
+    const decodedStartCommand = decodePowerShellCommandFromHint(startCommand);
 
-    for (const cmd of [launchCommand, startCommand, innerCmd]) {
-      assert.match(cmd, /&&echo 1 \| ".*claude\.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc/);
+    for (const cmd of [launchCommand, decodedStartCommand, innerCmd]) {
+      assert.match(cmd, /claude-stdin-auto-accept\.mjs' '.*claude\.exe' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc/);
       assert.match(cmd, new RegExp(DEV_CHANNEL_FLAG));
     }
+    assert.match(wrapperSource, /child\.stdin\.end\('1\\n'\)/);
+    assert.match(wrapperSource, /stdio: \['pipe', 'pipe', 'pipe'\]/);
 
     const launchArgsSource = extractFunctionSource('buildClaudeLaunchArgs');
     assert.doesNotMatch(launchArgsSource, /echo 1 \||'1'\s*\|/);

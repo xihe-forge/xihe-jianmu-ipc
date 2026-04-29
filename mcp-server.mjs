@@ -492,7 +492,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
 function buildInteractiveCommand({ sessionName, model }) {
   const patchScript = join(PROJECT_DIR, 'bin', 'patch-channels.mjs').replace(/\\/g, '\\\\');
   const extraArgs = model ? ` --model ${model}` : '';
-  return `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
+  return `$env:IPC_NAME='${sessionName}'; node '${patchScript}'; '1' | claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`;
 }
 
 const DEFAULT_CLAUDE_BIN =
@@ -523,6 +523,24 @@ function escapeForCmdQuotedArgument(value) {
 
 function quoteForCmd(value) {
   return `"${escapeForCmdQuotedArgument(value)}"`;
+}
+
+function quoteForPowerShellSingle(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd = null }) {
+  const args = buildClaudeLaunchArgs({ model });
+  const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
+  const cwdSegment = normalizedCwd
+    ? `Set-Location -LiteralPath ${quoteForPowerShellSingle(normalizedCwd)}; `
+    : '';
+  const stdinAutoAcceptScript = join(PROJECT_DIR, 'bin', 'claude-stdin-auto-accept.mjs');
+  return `${cwdSegment}$env:IPC_NAME=${quoteForPowerShellSingle(sessionName)}; & ${quoteForPowerShellSingle(process.execPath)} ${quoteForPowerShellSingle(stdinAutoAcceptScript)} ${quoteForPowerShellSingle(claudeBin)} ${args}`;
+}
+
+function encodePowerShellCommand(command) {
+  return Buffer.from(command, 'utf16le').toString('base64');
 }
 
 function sleep(ms) {
@@ -804,26 +822,38 @@ export async function patchTrustForCwd(
 }
 
 export function buildWtLaunchCommand({ sessionName, model }) {
-  return `set "IPC_NAME=${sessionName}"&&${quoteForCmd(getClaudeBinPath())} ${buildClaudeLaunchArgs({ model })}`;
+  return buildPowerShellClaudeCommand({
+    sessionName,
+    model,
+    claudeBin: getClaudeBinPath(),
+  });
 }
 
 export function buildWtStartCommand({ sessionName, model, cwd }) {
   const claudeBin = getClaudeBinPath();
-  const args = buildClaudeLaunchArgs({ model });
+  const psCommand = buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd });
   // 去 `start ""` 包装（wt.exe 自身 detached）
   // 用 wt `--` 分隔符（wt 文档支持 wt new-tab [-d <dir>] -- <command>）替代 cmd /c 嵌套包装
-  // cmd /k （keep open）调试期 console window 留下看错误 · production 后续改 /c
-  return `wt.exe --window last new-tab --title ${quoteForCmd(sessionName)} --starting-directory ${quoteForCmd(cwd)} -- cmd /k "set "IPC_NAME=${sessionName}"&&${quoteForCmd(claudeBin)} ${args}"`;
+  // PowerShell 内 pipe stdin，避开 cmd.exe 管道 + quoted exe 组合在 WT 下卡 warning。
+  return `wt.exe --window last new-tab --title ${quoteForCmd(sessionName)} -- powershell.exe -NoExit -NoProfile -EncodedCommand ${encodePowerShellCommand(psCommand)}`;
 }
 
 export function buildWtSpawnArgs({ sessionName, model, cwd }) {
   const claudeBin = getClaudeBinPath();
-  const args = buildClaudeLaunchArgs({ model });
-  // ADR-010 mod 6 wiring v5 fix·atomic handoff 触发 wt 报 0x80070005·v4 cwd backslash normalize 不够·改用 cmd /k "cd /d <cwd> && ..." 嵌入 cwd 切换到 inner cmd·避开 wt --starting-directory + -- 分隔符 parser 问题（wt 把 cwd 与后续 arg 拼成单个 program path）
-  const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
-  const cdSegment = normalizedCwd ? `cd /d ${quoteForCmd(normalizedCwd)} && ` : '';
-  const innerCmd = `${cdSegment}set "IPC_NAME=${sessionName}"&&${quoteForCmd(claudeBin)} ${args}`;
-  return ['--window', 'last', 'new-tab', '--title', sessionName, '--', 'cmd', '/k', innerCmd];
+  const psCommand = buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd });
+  return [
+    '--window',
+    'last',
+    'new-tab',
+    '--title',
+    sessionName,
+    '--',
+    'powershell.exe',
+    '-NoExit',
+    '-NoProfile',
+    '-EncodedCommand',
+    encodePowerShellCommand(psCommand),
+  ];
 }
 
 export function buildCodexWtCommand({ sessionName, cwd }) {
@@ -1415,7 +1445,7 @@ export async function spawnSession({
           '\uFEFF', // UTF-8 BOM — prevents PowerShell from garbling non-ASCII
           `$env:IPC_NAME = '${sessionName}'`,
           `node '${patchScriptWin}'`,
-          `& '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`,
+          `'1' | & '${claudeCmd}' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc${extraArgs}`,
         ].join('\r\n');
         _wfs(tmpPs1Wsl, ps1Content, 'utf8');
 
@@ -1468,7 +1498,7 @@ export async function spawnSession({
                 '--',
                 'bash',
                 '-c',
-                `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`,
+                `IPC_NAME='${sessionName}' bash -c 'echo "1" | claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc'`,
               ],
               {
                 detached: true,
@@ -1487,7 +1517,7 @@ export async function spawnSession({
             'bash',
             [
               '-c',
-              `IPC_NAME='${sessionName}' claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`,
+              `IPC_NAME='${sessionName}' bash -c 'echo "1" | claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc'`,
             ],
             {
               detached: true,

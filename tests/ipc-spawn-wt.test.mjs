@@ -10,6 +10,16 @@ import * as mcpServer from '../mcp-server.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const buildWtSpawnArgs = mcpServer.buildWtSpawnArgs;
 
+function decodePowerShellCommand(encoded) {
+  return Buffer.from(encoded, 'base64').toString('utf16le');
+}
+
+function decodePowerShellCommandFromHint(commandHint) {
+  const match = commandHint.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+  assert.ok(match, `missing -EncodedCommand: ${commandHint}`);
+  return decodePowerShellCommand(match[1]);
+}
+
 describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
   test('AC-IPC-SPAWN-WT-001-a: buildWtStartCommand 不含 "start """ wrapper', () => {
     const cmd = buildWtStartCommand({ sessionName: 'test-spawn', model: undefined, cwd: 'D:/workspace/test' });
@@ -19,23 +29,27 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
   test('AC-IPC-SPAWN-WT-001-b: buildWtStartCommand 用 wt -- 分隔符（不嵌套 cmd /c）', () => {
     const cmd = buildWtStartCommand({ sessionName: 'test-spawn', model: undefined, cwd: 'D:/workspace/test' });
     assert.match(cmd, /wt\.exe\s+--window\s+last\s+new-tab.*\s--\s/, `should include --window last and -- separator: ${cmd}`);
+    assert.match(cmd, /--\s+powershell\.exe\s+-NoExit\s+-NoProfile\s+-EncodedCommand/);
   });
 
   test('AC-IPC-SPAWN-WT-001-c: buildWtStartCommand 含 IPC_NAME env injection', () => {
     const cmd = buildWtStartCommand({ sessionName: 'test-spawn-name', model: 'claude-opus-4-7', cwd: 'D:/workspace/test' });
-    assert.match(cmd, /set "IPC_NAME=test-spawn-name"&&/);
+    const psCommand = decodePowerShellCommandFromHint(cmd);
+    assert.match(psCommand, /\$env:IPC_NAME='test-spawn-name'/);
     assert.doesNotMatch(cmd, /set IPC_NAME=test-spawn-name\s+&&/);
   });
 
   test('AC-IPC-SPAWN-WT-001-d: buildWtStartCommand 含正确 claude.exe absolute path', () => {
     const cmd = buildWtStartCommand({ sessionName: 'test-spawn', model: undefined, cwd: 'D:/workspace/test' });
+    const psCommand = decodePowerShellCommandFromHint(cmd);
     // 默认 path C:/Users/jolen/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe
-    assert.match(cmd, /claude-code\\bin\\claude\.exe|claude-code\/bin\/claude\.exe/);
+    assert.match(psCommand, /claude-code\\bin\\claude\.exe|claude-code\/bin\/claude\.exe/);
   });
 
   test('AC-IPC-SPAWN-WT-001-e: model 选项注入 --model arg', () => {
     const cmd = buildWtStartCommand({ sessionName: 'test', model: 'claude-opus-4-7', cwd: 'D:/' });
-    assert.match(cmd, /--model claude-opus-4-7/);
+    const psCommand = decodePowerShellCommandFromHint(cmd);
+    assert.match(psCommand, /--model claude-opus-4-7/);
   });
 
   test('AC-IPC-SPAWN-WT-002-f: buildWtSpawnArgs 返回 args 数组形态正确', () => {
@@ -44,21 +58,24 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
     assert.ok(argv.includes('new-tab'));
     assert.ok(argv.includes('--title'));
     assert.ok(argv.includes('test-f'));
-    assert.ok(argv.includes('--'));  // wiring v5·removed --starting-directory·cwd 嵌入 cmd /k cd /d 内（避开 wt parser 0x80070005 BUG）
+    assert.ok(argv.includes('--'));  // wiring v5·removed --starting-directory·cwd 嵌入 command 内，避开 wt parser 0x80070005 BUG
 
     const dashIdx = argv.indexOf('--');
-    assert.equal(argv[dashIdx + 1], 'cmd');
-    assert.equal(argv[dashIdx + 2], '/k');
-    assert.match(argv[dashIdx + 3], /cd \/d "D:\\workspace\\test"/);  // cd /d normalize backslash + quoted
-    assert.match(argv[dashIdx + 3], /set "IPC_NAME=test-f"&&/);
-    assert.doesNotMatch(argv[dashIdx + 3], /set IPC_NAME=test-f\s+&&/);
-    assert.match(argv[dashIdx + 3], /claude\.exe/);
+    assert.equal(argv[dashIdx + 1], 'powershell.exe');
+    assert.equal(argv[dashIdx + 2], '-NoExit');
+    assert.equal(argv[dashIdx + 3], '-NoProfile');
+    assert.equal(argv[dashIdx + 4], '-EncodedCommand');
+    const psCommand = decodePowerShellCommand(argv[dashIdx + 5]);
+    assert.match(psCommand, /Set-Location -LiteralPath 'D:\\workspace\\test'/);
+    assert.match(psCommand, /\$env:IPC_NAME='test-f'/);
+    assert.match(psCommand, /claude-stdin-auto-accept\.mjs' '.*claude\.exe'/);
   });
 
   test('AC-IPC-SPAWN-WT-002-g: buildWtSpawnArgs inner cmd 含 model arg', () => {
     const argv = buildWtSpawnArgs({ sessionName: 'test-g', model: 'claude-opus-4-7', cwd: 'D:/' });
     const dashIdx = argv.indexOf('--');
-    assert.match(argv[dashIdx + 3], /--model claude-opus-4-7/);
+    const psCommand = decodePowerShellCommand(argv[dashIdx + 5]);
+    assert.match(psCommand, /--model claude-opus-4-7/);
   });
 
   test('AC-IPC-SPAWN-WT-002-h: buildWtSpawnArgs includes --window last', () => {
@@ -70,16 +87,16 @@ describe('AC-IPC-SPAWN-WT-001 ipc_spawn host=wt 命令构造修复', () => {
     assert.ok(windowIdx < newTabIdx, `--window must appear before new-tab: windowIdx=${windowIdx} newTabIdx=${newTabIdx}`);
   });
 
-  test('AC-IPC-SPAWN-WT-003-a: buildWtLaunchCommand uses quoted cmd set without trailing-space capture', () => {
+  test('AC-IPC-SPAWN-WT-003-a: buildWtLaunchCommand uses PowerShell env assignment without cmd set', () => {
     const cmd = buildWtLaunchCommand({ sessionName: 'test-launch', model: undefined });
-    assert.match(cmd, /^set "IPC_NAME=test-launch"&&/);
+    assert.match(cmd, /^\$env:IPC_NAME='test-launch'; & '.*node(\.exe)?' '.*claude-stdin-auto-accept\.mjs' '.*claude\.exe'/);
     assert.doesNotMatch(cmd, /set IPC_NAME=test-launch\s+&&/);
   });
 
-  test('AC-IPC-SPAWN-WT-003-b: buildWtSpawnArgs uses quoted cmd set with && tight to assignment', () => {
+  test('AC-IPC-SPAWN-WT-003-b: buildWtSpawnArgs uses PowerShell stdin pipe', () => {
     const argv = buildWtSpawnArgs({ sessionName: 'test-trim', model: undefined, cwd: 'D:/workspace/test' });
-    const innerCmd = argv[argv.indexOf('--') + 3];
-    assert.match(innerCmd, /set "IPC_NAME=test-trim"&&/);
+    const innerCmd = decodePowerShellCommand(argv[argv.indexOf('--') + 5]);
+    assert.match(innerCmd, /\$env:IPC_NAME='test-trim'; & '.*node(\.exe)?' '.*claude-stdin-auto-accept\.mjs' '.*claude\.exe'/);
     assert.doesNotMatch(innerCmd, /set IPC_NAME=test-trim\s+&&/);
   });
 

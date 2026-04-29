@@ -15,15 +15,52 @@ const child = spawn(claudeBin, claudeArgs, {
   stdio: ['pipe', 'pipe', 'pipe'],
 });
 
-child.stdout?.pipe(process.stdout);
-child.stderr?.pipe(process.stderr);
+const promptMarkers = [
+  'I am using this for local development',
+  'WARNING: Loading development channels',
+  'Channels: server:ipc',
+];
+
+const timeoutMs = Number.parseInt(
+  process.env.CLAUDE_STDIN_AUTO_ACCEPT_TIMEOUT_MS ?? '30000',
+  10,
+);
+
+let acceptSent = false;
+
+function forwardProcessStdin() {
+  process.stdin.pipe(child.stdin);
+}
+
+function sendAccept() {
+  if (acceptSent) return;
+  acceptSent = true;
+  child.stdin.write('1\n');
+  forwardProcessStdin();
+}
+
+function tryAccept(chunk) {
+  if (acceptSent) return;
+  const text = chunk.toString();
+  if (promptMarkers.some((marker) => text.includes(marker))) {
+    sendAccept();
+  }
+}
+
+child.stdout.on('data', (chunk) => {
+  process.stdout.write(chunk);
+  tryAccept(chunk);
+});
+
+child.stderr.on('data', (chunk) => {
+  process.stderr.write(chunk);
+  tryAccept(chunk);
+});
 
 child.once('error', (error) => {
   process.stderr.write(`[claude-stdin-auto-accept] spawn failed: ${error?.message ?? error}\n`);
   process.exit(1);
 });
-
-child.stdin.end('1\n');
 
 child.once('exit', (code, signal) => {
   if (signal) {
@@ -32,3 +69,10 @@ child.once('exit', (code, signal) => {
   }
   process.exit(code ?? 0);
 });
+
+setTimeout(() => {
+  if (!acceptSent && !child.killed) {
+    process.stderr.write('[claude-stdin-auto-accept] timeout 30s no prompt detected - force write 1\n');
+    sendAccept();
+  }
+}, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000);

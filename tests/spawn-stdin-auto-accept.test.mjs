@@ -71,7 +71,10 @@ describe('ADR-014 Phase 2 K.K spawn stdin auto-accept', () => {
       assert.match(cmd, /claude-stdin-auto-accept\.mjs' '.*claude\.exe' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc/);
       assert.match(cmd, new RegExp(DEV_CHANNEL_FLAG));
     }
-    assert.match(wrapperSource, /child\.stdin\.end\('1\\n'\)/);
+    assert.match(wrapperSource, /child\.stdout\.on\('data'/);
+    assert.match(wrapperSource, /child\.stderr\.on\('data'/);
+    assert.match(wrapperSource, /child\.stdin\.write\('1\\n'\)/);
+    assert.doesNotMatch(wrapperSource, /child\.stdin\.end\('1\\n'\)/);
     assert.match(wrapperSource, /stdio: \['pipe', 'pipe', 'pipe'\]/);
 
     const launchArgsSource = extractFunctionSource('buildClaudeLaunchArgs');

@@ -1,9 +1,69 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const installPs1 = readFileSync(new URL('../bin/install.ps1', import.meta.url), 'utf8');
+const installPs1Path = fileURLToPath(new URL('../bin/install.ps1', import.meta.url));
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+
+function stripBom(value) {
+  return value.replace(/^\uFEFF/, '');
+}
+
+function makeTempInstallEnv(tempRoot) {
+  const appData = join(tempRoot, 'AppData', 'Roaming');
+  const userProfile = join(tempRoot, 'Users', 'test-user');
+  mkdirSync(appData, { recursive: true });
+  mkdirSync(userProfile, { recursive: true });
+
+  return {
+    appData,
+    env: {
+      ...process.env,
+      APPDATA: appData,
+      USERPROFILE: userProfile,
+    },
+    settingsPath: join(appData, 'Code', 'User', 'settings.json'),
+  };
+}
+
+function runInstallPs1(env) {
+  const result = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installPs1Path],
+    { encoding: 'utf8', env },
+  );
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  return `${result.stdout}\n${result.stderr}`;
+}
+
+function readSettingsJson(settingsPath) {
+  return JSON.parse(stripBom(readFileSync(settingsPath, 'utf8')));
+}
+
+function withTempInstallEnv(fn) {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'jianmu-install-ps1-'));
+  try {
+    return fn(makeTempInstallEnv(tempRoot));
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
 
 test('install.ps1 defines ipcx codex session function', () => {
   assert.match(installPs1, /function ipcx\s*\{/);
@@ -92,4 +152,69 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
 test('install.ps1 reports selected profiles and detected shells', () => {
   assert.match(installPs1, /Write-Output "Installed to: \$\(\$profilesToInstall -join ', '\)"/);
   assert.match(installPs1, /Write-Output "Detected: PS5=\$\(\$shells\['PS5'\]\) PS7=\$\(\$shells\['PS7'\]\)"/);
+});
+
+test('install.ps1 patches VSCode tab settings without overwriting existing settings', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows PowerShell is required for install.ps1 behavior tests');
+    return;
+  }
+
+  withTempInstallEnv(({ env, settingsPath }) => {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ 'workbench.colorTheme': 'Default Dark Modern' }, null, 2),
+      'utf8',
+    );
+
+    const firstOutput = runInstallPs1(env);
+    const firstSettings = readSettingsJson(settingsPath);
+    assert.equal(firstSettings['workbench.colorTheme'], 'Default Dark Modern');
+    assert.equal(firstSettings['terminal.integrated.tabs.title'], '${sequence}');
+    assert.equal(firstSettings['terminal.integrated.tabs.description'], '${sequence}');
+    assert.match(firstOutput, /VSCode settings\.json patched/);
+
+    const secondOutput = runInstallPs1(env);
+    const secondSettings = readSettingsJson(settingsPath);
+    assert.deepEqual(secondSettings, firstSettings);
+    assert.match(secondOutput, /VSCode settings\.json already has tabs\.title \+ tabs\.description, skip/);
+  });
+
+  withTempInstallEnv(({ env, settingsPath }) => {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ 'terminal.integrated.tabs.title': '${cwd}' }, null, 2),
+      'utf8',
+    );
+
+    runInstallPs1(env);
+    const settings = readSettingsJson(settingsPath);
+    assert.equal(settings['terminal.integrated.tabs.title'], '${cwd}');
+    assert.equal(settings['terminal.integrated.tabs.description'], '${sequence}');
+  });
+});
+
+test('install.ps1 skips missing or unparsable VSCode settings without failing install', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows PowerShell is required for install.ps1 behavior tests');
+    return;
+  }
+
+  withTempInstallEnv(({ env, settingsPath }) => {
+    const output = runInstallPs1(env);
+    assert.match(output, /VSCode settings\.json not found at .+settings\.json, skip/);
+    assert.throws(() => readFileSync(settingsPath, 'utf8'));
+  });
+
+  withTempInstallEnv(({ env, settingsPath }) => {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    const invalidJson = '{\n  // VSCode JSONC comments are not rewritten by install.ps1\n  "workbench.colorTheme": "Default Dark Modern"\n}\n';
+    writeFileSync(settingsPath, invalidJson, 'utf8');
+
+    const output = runInstallPs1(env);
+    assert.match(output, /Could not parse VSCode settings\.json at .+settings\.json, skip/);
+    assert.equal(readFileSync(settingsPath, 'utf8'), invalidJson);
+  });
 });

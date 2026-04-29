@@ -1,0 +1,10 @@
+phase=phase2-ks-codex-cli-tab-title-cwd
+ts=2026-04-30T02:50:00+08:00
+agent=codex
+inner EXIT=0
+outer EXIT=0
+red_hash=0e11a58
+green_commit_subject=fix(install): K.S ipcx codex CLI title wrapper and cwd
+tests=RED install-ps1 EXIT=1 expected; RED codex-title-wrapper EXIT=1 expected; GREEN install-ps1 15/15 EXIT=0; GREEN codex-title-wrapper 4/4 EXIT=0; related K.Q/K.P/spawn/codex tests EXIT=0; pnpm test EXIT=0
+smoke=PS5/PS7 generated-function and live-profile PTY smokes from C:\Users\jolen recorded badTitleCount=0 during running phase, project directory true, Booting MCP jianmu-ipc true, no MCP warning false
+manual_visual=owner still needs WT/VSCode visual confirmation after profile reload

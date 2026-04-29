@@ -14,6 +14,7 @@
     "docs/",
     "bin/jianmu.mjs",
     "bin/claude-stdin-auto-accept.mjs",
+    "bin/codex-title-wrapper.mjs",
     "bin/network-watchdog.mjs",
     "bin/install.ps1",
     "bin/patch-channels.mjs",

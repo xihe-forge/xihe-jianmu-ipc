@@ -1,0 +1,68 @@
+[
+  {
+    "shell": "PS5",
+    "ipc": "test-ks-ps5",
+    "startCwd": "C:/Users/jolen",
+    "exitInfo": {
+      "exitCode": -1073741510
+    },
+    "rawLength": 11230,
+    "runningPhase": {
+      "titleCount": 1,
+      "badTitleCount": 0,
+      "escapedTitles": [
+        "<ESC>]0;test-ks-ps5<BEL>"
+      ],
+      "containsProjectDirectory": true,
+      "containsHomeDirectoryMarker": false,
+      "containsBootingMcp": true,
+      "containsNoMcpConfigured": false
+    },
+    "afterKill": {
+      "titleCount": 2,
+      "badTitleCount": 1,
+      "escapedTitles": [
+        "<ESC>]0;test-ks-ps5<BEL>",
+        "<ESC>]0;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe<BEL>"
+      ],
+      "containsProjectDirectory": true,
+      "containsHomeDirectoryMarker": false,
+      "containsBootingMcp": true,
+      "containsNoMcpConfigured": false
+    },
+    "rawSample": "<ESC>[?9001h<ESC>[?1004h<ESC>[?25l<ESC>[2J<ESC>[m<ESC>[H<ESC>]0;test-ks-ps5<BEL><ESC>[?25h<ESC>[?1004h<ESC>[2J<ESC>[?25l<ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<ESC>[H<ESC>[?25h<ESC>[?2004h<ESC>[?2026h<ESC>[?2026l<ESC>[?2026h<ESC>[?2026l<ESC>[?25l<ESC>[1C<ESC>[K<CR><LF><ESC>[K<ESC>[1m<CR><LF>›<ESC>[22m<ESC>[2m<ESC>[1CImprove documentation in @filename<ESC>[22m<ESC>[K<ESC>[4;2H<ESC>[K<ESC>[2m<CR><LF>  gpt-5.5 xhigh · D:\\workspace\\ai\\research\\xiheAi<ESC>[22m<ESC>[K<ESC>[?25h<ESC>[?25l<ESC>[1;2H<ESC>[K<CR><LF><ESC>[K<ESC>[3;37H<ESC>[K<ESC>[4;2H<ESC>[K<ESC>[5;50H<ESC>[K<ESC>[3;3H<ESC>[?25h<ESC>[?2026h<ESC>[?2026l<ESC>[?2026h<ESC>[?2026l<ESC>[?25l<ESC>[H<ESC>[K<ESC>[2m<CR><LF>╭───────────────────────────────────────────────╮<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│ >_ <ESC>[22m<ESC>[1mOpenAI Codex<ESC>[22m<ESC>[2m (v0.125.0)                    │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│                                               │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│ model:       <ESC>[22mgpt-5.5 xhigh<ESC>[2m   <ESC>[38;5;6m<ESC>[22m/model<ESC>[m<ESC>[2m to change │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│ directory:   <ESC>[22mD:\\workspace\\ai\\research\\xiheAi<ESC>[2m  │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│ permissions: <ESC>[38;5;5m<ESC>[22m<ESC>[1mYOLO mode<ESC>[m<ESC>[2m                        │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>╰───────────────────────────────────────────────╯<ESC>[22m<ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<ESC>[9;1H<ESC>[?25h<ESC>[?25l<ESC>[?2026h<ESC>[?2026l<ESC>[36;1H<LF><ESC>[9;1H  <ESC>[1mTip:<ESC>[22m <ESC>[3mNew<ESC>[23m Build faster with Codex.                                                                                     <CR><LF>                                                                                                                        <ESC>[38;2;128;128;128m<ESC>[1m<CR><LF>•<ESC>[m <ESC>[38;2;128;128;128m<ESC>[1mBooting MCP server: jianmu-ipc<ESC>[m <ESC>[2m(0s • esc to interrupt)<ESC>[22m                                                                <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <ESC>[1m<CR><LF>›<ESC>[22m <ESC>[2mImprove documentation in @filename<ESC>[22m                                                                                    <CR><LF>                                                                                                                        <ESC>[2m<CR><LF>  gpt-5.5 xhigh · D:\\workspace\\ai\\research\\xiheAi<ESC>[22m                                                                       <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                  "
+  },
+  {
+    "shell": "PS7",
+    "ipc": "test-ks-ps7",
+    "startCwd": "C:/Users/jolen",
+    "exitInfo": {
+      "exitCode": -1073741510
+    },
+    "rawLength": 15918,
+    "runningPhase": {
+      "titleCount": 1,
+      "badTitleCount": 0,
+      "escapedTitles": [
+        "<ESC>]0;test-ks-ps7<BEL>"
+      ],
+      "containsProjectDirectory": true,
+      "containsHomeDirectoryMarker": false,
+      "containsBootingMcp": true,
+      "containsNoMcpConfigured": false
+    },
+    "afterKill": {
+      "titleCount": 2,
+      "badTitleCount": 1,
+      "escapedTitles": [
+        "<ESC>]0;test-ks-ps7<BEL>",
+        "<ESC>]0;C:\\Program Files\\PowerShell\\7\\pwsh.exe<BEL>"
+      ],
+      "containsProjectDirectory": true,
+      "containsHomeDirectoryMarker": false,
+      "containsBootingMcp": true,
+      "containsNoMcpConfigured": false
+    },
+    "rawSample": "<ESC>[?9001h<ESC>[?1004h<ESC>[?25l<ESC>[2J<ESC>[m<ESC>[H<ESC>]0;test-ks-ps7<BEL><ESC>[?25h<ESC>[?1004h<ESC>[2J<ESC>[?25l<ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<ESC>[H<ESC>[?25h<ESC>[?2004h<ESC>[?2026h<ESC>[?2026l<ESC>[?25l<ESC>[K<ESC>[2m<CR><LF>╭───────────────────────────────────────────────╮<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│ >_ <ESC>[22m<ESC>[1mOpenAI Codex<ESC>[22m<ESC>[2m (v0.125.0)                    │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│                                               │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│ model:       <ESC>[22mgpt-5.5 xhigh<ESC>[2m   <ESC>[38;5;6m<ESC>[22m/model<ESC>[m<ESC>[2m to change │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│ directory:   <ESC>[22mD:\\workspace\\ai\\research\\xiheAi<ESC>[2m  │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>│ permissions: <ESC>[38;5;5m<ESC>[22m<ESC>[1mYOLO mode<ESC>[m<ESC>[2m                        │<ESC>[22m<ESC>[K<ESC>[2m<CR><LF>╰───────────────────────────────────────────────╯<ESC>[22m<ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<CR><LF><ESC>[K<ESC>[9;1H<ESC>[?25h<ESC>[?25l<ESC>[36;1H<LF><ESC>[9;1H  <ESC>[1mTip:<ESC>[22m When the composer is empty, press Esc to step back and edit your last message; Enter confirms.                   <CR><LF>                                                                                                                        <ESC>[38;2;128;128;128m<ESC>[1m<CR><LF>•<ESC>[m <ESC>[38;2;128;128;128m<ESC>[1mBooting MCP server: jianmu-ipc<ESC>[m <ESC>[2m(0s • esc to interrupt)<ESC>[22m                                                                <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <ESC>[1m<CR><LF>›<ESC>[22m <ESC>[2mSummarize recent commits<ESC>[22m                                                                                              <CR><LF>                                                                                                                        <ESC>[2m<CR><LF>  gpt-5.5 xhigh · D:\\workspace\\ai\\research\\xiheAi<ESC>[22m                                                                       <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                                        <CR><LF>                                                                                                             "
+  }
+]

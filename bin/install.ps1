@@ -44,7 +44,19 @@ function ipc {
 $ipcxFuncCode = @"
 function ipcx {
     param([Parameter(Mandatory)][string]`$Name)
-    codex --dangerously-bypass-approvals-and-sandbox -c "mcp_servers.jianmu-ipc.env.IPC_NAME=``"`$Name``""
+    `$env:IPC_NAME = `$Name
+
+    `$node = 'D:\software\ide\nodejs\node.exe'
+    `$wrapper = 'D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\codex-title-wrapper.mjs'
+    `$codexBin = "`$env:APPDATA\npm\codex.cmd"
+    `$projectRoot = 'D:\workspace\ai\research\xiheAi'
+
+    Push-Location `$projectRoot
+    try {
+        & `$node `$wrapper `$codexBin --dangerously-bypass-approvals-and-sandbox -c "mcp_servers.jianmu-ipc.env.IPC_NAME=``"`$Name``""
+    } finally {
+        Pop-Location
+    }
 }
 "@
 

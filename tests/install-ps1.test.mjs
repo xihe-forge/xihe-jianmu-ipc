@@ -73,7 +73,8 @@ function withTempInstallEnv(fn) {
 
 test('install.ps1 defines ipcx codex session function', () => {
   assert.match(installPs1, /function ipcx\s*\{/);
-  assert.match(installPs1, /codex --dangerously-bypass-approvals-and-sandbox/);
+  assert.match(installPs1, /codex-title-wrapper\.mjs/);
+  assert.match(installPs1, /--dangerously-bypass-approvals-and-sandbox/);
   assert.match(installPs1, /mcp_servers\.jianmu-ipc\.env\.IPC_NAME/);
 });
 

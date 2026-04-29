@@ -24,10 +24,14 @@ try {
 
 const ANSI_ESCAPE_PATTERN = /(?:\x1B\][^\x07]*(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[@-Z\\-_])/g;
 const AUTO_ACCEPT_DATA = '\r';
-let terminalTextTail = '';
 let terminalCompactTextTail = '';
 let autoAcceptScheduled = false;
 let earlyAutoAcceptTimer;
+let seenDevelopmentWarning = false;
+let seenDevelopmentChannel = false;
+let seenDefaultConfirm = false;
+let seenEnterConfirm = false;
+let seenListeningReady = false;
 
 function debug(message) {
   if (process.env.CLAUDE_STDIN_AUTO_ACCEPT_DEBUG !== '1') return;
@@ -84,21 +88,30 @@ function markReadySeen() {
 }
 
 function maybeConfirmDevelopmentChannelPrompt(data) {
-  terminalTextTail = `${terminalTextTail}${normalizeTerminalText(data)}`.slice(-4096);
-  terminalCompactTextTail = `${terminalCompactTextTail}${compactTerminalText(data)}`.slice(-4096);
+  const compact = compactTerminalText(data);
+  terminalCompactTextTail = `${terminalCompactTextTail}${compact}`.slice(-8192);
 
-  if (terminalCompactTextTail.includes('listeningforchannelmessagesfrom:server:ipc')) {
+  if (!seenListeningReady && terminalCompactTextTail.includes('listeningforchannelmessagesfrom:server:ipc')) {
+    seenListeningReady = true;
     markReadySeen();
     return;
   }
 
-  const hasDevelopmentWarning = terminalCompactTextTail.includes('warning:loadingdevelopmentchannels');
-  const hasDevelopmentChannel = terminalCompactTextTail.includes('channels:server:ipc');
-  const hasDefaultConfirm = terminalCompactTextTail.includes('iamusingthisforlocaldevelopment');
-  const hasEnterConfirm = terminalCompactTextTail.includes('entertoconfirm');
+  if (!seenDevelopmentWarning && compact.includes('warning:loadingdevelopmentchannels')) {
+    seenDevelopmentWarning = true;
+  }
+  if (!seenDevelopmentChannel && compact.includes('channels:server:ipc')) {
+    seenDevelopmentChannel = true;
+  }
+  if (!seenDefaultConfirm && compact.includes('iamusingthisforlocaldevelopment')) {
+    seenDefaultConfirm = true;
+  }
+  if (!seenEnterConfirm && compact.includes('entertoconfirm')) {
+    seenEnterConfirm = true;
+  }
 
-  if (hasDevelopmentWarning && hasDevelopmentChannel && hasDefaultConfirm && hasEnterConfirm) {
-    debug('development-channel prompt detected');
+  if (seenDevelopmentWarning && seenDevelopmentChannel && seenDefaultConfirm && seenEnterConfirm) {
+    debug('development-channel prompt detected (persistent flags)');
     schedulePromptConfirm();
   }
 }

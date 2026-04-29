@@ -229,7 +229,7 @@ describe('ADR-014 Phase 2 K.M stdin auto-accept real PTY behavior', () => {
       args: ['-e', 'setTimeout(() => process.exit(0), 1000);'],
       env: {
         CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS: '5000',
-        PTY_MOCK_EMIT_DATA: 'WARNING: Loading development channels\nEnter to confirm',
+        PTY_MOCK_EMIT_DATA: 'WARNING: Loading development channels\nChannels: server:ipc\nI am using this for local development\nEnter to confirm',
         PTY_MOCK_EXIT_ON_WRITE: '1',
       },
       timeoutMs: 1500,

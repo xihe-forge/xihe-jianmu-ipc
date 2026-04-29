@@ -23,8 +23,11 @@ try {
 }
 
 const ANSI_ESCAPE_PATTERN = /(?:\x1B\][^\x07]*(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[@-Z\\-_])/g;
+const AUTO_ACCEPT_DATA = '\r';
 let terminalTextTail = '';
-let promptConfirmScheduled = false;
+let terminalCompactTextTail = '';
+let autoAcceptScheduled = false;
+let earlyAutoAcceptTimer;
 
 function debug(message) {
   if (process.env.CLAUDE_STDIN_AUTO_ACCEPT_DEBUG !== '1') return;
@@ -38,36 +41,63 @@ function normalizeTerminalText(data) {
     .replace(/\s+/g, ' ');
 }
 
-function writeAutoAccept(data, delayMs = 0) {
-  debug(`auto accept scheduled data=${JSON.stringify(data)} delay_ms=${delayMs}`);
+function compactTerminalText(data) {
+  return normalizeTerminalText(data).replace(/\s+/g, '').toLowerCase();
+}
+
+function clearEarlyAutoAcceptTimer() {
+  if (!earlyAutoAcceptTimer) return;
+  clearTimeout(earlyAutoAcceptTimer);
+  earlyAutoAcceptTimer = undefined;
+}
+
+function trySendAutoAccept(reason, delayMs = 0) {
+  if (autoAcceptScheduled) {
+    debug(`auto accept skipped reason=${reason}`);
+    return false;
+  }
+
+  autoAcceptScheduled = true;
+  clearEarlyAutoAcceptTimer();
+  debug(`auto accept scheduled reason=${reason} data=${JSON.stringify(AUTO_ACCEPT_DATA)} delay_ms=${delayMs}`);
   setTimeout(() => {
-    debug(`auto accept write data=${JSON.stringify(data)}`);
-    child.write(data);
+    debug(`auto accept write reason=${reason} data=${JSON.stringify(AUTO_ACCEPT_DATA)}`);
+    child.write(AUTO_ACCEPT_DATA);
   }, delayMs);
+
+  return true;
 }
 
 function writeEarlyAutoAccept() {
-  if (promptConfirmScheduled) return;
-  writeAutoAccept('1\r');
+  trySendAutoAccept('fallback');
 }
 
 function schedulePromptConfirm() {
-  if (promptConfirmScheduled) return;
-  promptConfirmScheduled = true;
-  writeAutoAccept('\r', 100);
+  trySendAutoAccept('prompt-detected', 100);
+}
+
+function markReadySeen() {
+  if (autoAcceptScheduled) return;
+  autoAcceptScheduled = true;
+  clearEarlyAutoAcceptTimer();
+  debug('claude channel listener ready before auto accept fallback');
 }
 
 function maybeConfirmDevelopmentChannelPrompt(data) {
   terminalTextTail = `${terminalTextTail}${normalizeTerminalText(data)}`.slice(-4096);
-  const hasDevelopmentWarning =
-    terminalTextTail.includes('WARNING: Loading development channels') ||
-    terminalTextTail.includes('I am using this for local development') ||
-    terminalTextTail.includes('Channels: server:ipc');
-  const hasDefaultConfirm =
-    terminalTextTail.includes('Enter to confirm') ||
-    terminalTextTail.includes('I am using this for local development');
+  terminalCompactTextTail = `${terminalCompactTextTail}${compactTerminalText(data)}`.slice(-4096);
 
-  if (hasDevelopmentWarning && hasDefaultConfirm) {
+  if (terminalCompactTextTail.includes('listeningforchannelmessagesfrom:server:ipc')) {
+    markReadySeen();
+    return;
+  }
+
+  const hasDevelopmentWarning = terminalCompactTextTail.includes('warning:loadingdevelopmentchannels');
+  const hasDevelopmentChannel = terminalCompactTextTail.includes('channels:server:ipc');
+  const hasDefaultConfirm = terminalCompactTextTail.includes('iamusingthisforlocaldevelopment');
+  const hasEnterConfirm = terminalCompactTextTail.includes('entertoconfirm');
+
+  if (hasDevelopmentWarning && hasDevelopmentChannel && hasDefaultConfirm && hasEnterConfirm) {
     debug('development-channel prompt detected');
     schedulePromptConfirm();
   }
@@ -83,13 +113,13 @@ child.onExit(({ exitCode }) => {
 });
 
 const earlyWriteMs = Number.parseInt(
-  process.env.CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS ?? '1500',
+  process.env.CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS ?? '7000',
   10,
 );
 
-setTimeout(() => {
+earlyAutoAcceptTimer = setTimeout(() => {
   writeEarlyAutoAccept();
-}, Number.isFinite(earlyWriteMs) && earlyWriteMs > 0 ? earlyWriteMs : 1500);
+}, Number.isFinite(earlyWriteMs) && earlyWriteMs > 0 ? earlyWriteMs : 7000);
 
 process.stdin.setRawMode?.(true);
 process.stdin.resume();

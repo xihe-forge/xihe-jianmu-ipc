@@ -1,0 +1,22 @@
+phase=phase2-kr-install-vscode-settings-patch
+task=ADR-014 Phase 2 K.R install.ps1 auto patches VSCode terminal tab title settings
+red_commit=3f412e1 test(install): cover VSCode tab settings patch
+green_commit=fix(install): auto patch VSCode terminal tab settings
+vscode_title_limitation=VSCode 1.110.1 default terminal.integrated.tabs.title=${process} does not honor child OSC; ${sequence} is the installed recommendation
+fix=Install-VSCodeTerminalTabTitle reads $env:APPDATA\Code\User\settings.json and adds missing terminal.integrated.tabs.title/description=${sequence}
+idempotent=existing terminal.integrated.tabs.title or terminal.integrated.tabs.description values are not overwritten
+skip_missing=missing VSCode settings.json writes skip message and exits 0
+parse_fail=ConvertFrom-Json/read/write failures warn and skip with exit 0
+encoding=UTF-8 BOM/no-BOM state preserved by byte read/write
+ps_compat=uses PSCustomObject properties and Add-Member; no ConvertFrom-Json -AsHashtable dependency
+tests_red=node --test tests/install-ps1.test.mjs EXIT=1 10/12 before implementation
+tests_install=node --test tests/install-ps1.test.mjs EXIT=0 12/12
+tests_kq=node --test tests/claude-stdin-auto-accept-q1q2-fix.test.mjs EXIT=0 5/5
+tests_full=pnpm test EXIT=0
+smoke=temp APPDATA/USERPROFILE install.ps1 fresh patch preserves workbench.colorTheme and sets title/description=${sequence}
+smoke_idempotent=temp APPDATA/USERPROFILE install.ps1 second run reports already has tabs.title + tabs.description, skip
+smoke_missing=temp APPDATA/USERPROFILE missing settings.json reports not found skip and exits 0
+smoke_encoding=temp settings.json UTF-8 BOM state preserved across patch
+manual_visual=pending boss VSCode terminal: new terminal run ipc test-kr and verify tab title=test-kr
+inner_EXIT=0
+outer_EXIT=0

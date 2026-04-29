@@ -214,7 +214,7 @@ test('install.ps1 skips missing or unparsable VSCode settings without failing in
     writeFileSync(settingsPath, invalidJson, 'utf8');
 
     const output = runInstallPs1(env);
-    assert.match(output, /Could not parse VSCode settings\.json at .+settings\.json, skip/);
+    assert.match(output, /Could not parse VSCode settings\.json at[\s\S]+settings\.json, skip/);
     assert.equal(readFileSync(settingsPath, 'utf8'), invalidJson);
   });
 });

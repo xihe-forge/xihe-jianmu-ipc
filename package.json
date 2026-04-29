@@ -56,6 +56,7 @@
     "@ccusage/codex": "18.0.11",
     "@ccusage/mcp": "18.0.11",
     "@larksuiteoapi/node-sdk": "^1.60.0",
+    "@lydell/node-pty": "1.2.0-beta.12",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "async-mutex": "^0.5.0",
     "better-sqlite3": "^12.8.0",

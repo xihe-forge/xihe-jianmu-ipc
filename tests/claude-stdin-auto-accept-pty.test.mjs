@@ -224,6 +224,24 @@ describe('ADR-014 Phase 2 K.M stdin auto-accept real PTY behavior', () => {
     assert.equal(result.stdout, 'hello from pty');
   });
 
+  test('development-channel prompt output confirms the selected default option with Enter', async () => {
+    const result = await runWrapper({
+      args: ['-e', 'setTimeout(() => process.exit(0), 1000);'],
+      env: {
+        CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS: '5000',
+        PTY_MOCK_EMIT_DATA: 'WARNING: Loading development channels\nEnter to confirm',
+        PTY_MOCK_EXIT_ON_WRITE: '1',
+      },
+      timeoutMs: 1500,
+    });
+
+    assert.equal(result.code, 0);
+    assert.ok(
+      result.events.some((event) => event.event === 'write' && event.data === '\r'),
+      `missing prompt confirmation write: ${JSON.stringify(result.events)}`,
+    );
+  });
+
   test('process stdin data is forwarded to child.write for interactive input', async () => {
     const result = await runWrapper({
       args: ['-e', 'setTimeout(() => process.exit(0), 1000);'],

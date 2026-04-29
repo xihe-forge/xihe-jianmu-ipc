@@ -38,7 +38,7 @@ function decodePowerShellCommandFromHint(commandHint) {
   return decodePowerShellCommand(match[1]);
 }
 
-describe('ADR-014 Phase 2 K.K spawn stdin auto-accept', () => {
+describe('ADR-014 Phase 2 K.M spawn stdin auto-accept', () => {
   test('PowerShell spawn commands pipe 1 into Claude and keep the dev channel flag', () => {
     const interactiveCommandSource = extractFunctionSource('buildInteractiveCommand');
     const wslScriptSource = serverSource.slice(
@@ -71,11 +71,15 @@ describe('ADR-014 Phase 2 K.K spawn stdin auto-accept', () => {
       assert.match(cmd, /claude-stdin-auto-accept\.mjs' '.*claude\.exe' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc/);
       assert.match(cmd, new RegExp(DEV_CHANNEL_FLAG));
     }
-    assert.match(wrapperSource, /child\.stdout\.on\('data'/);
-    assert.match(wrapperSource, /child\.stderr\.on\('data'/);
-    assert.match(wrapperSource, /child\.stdin\.write\('1\\n'\)/);
-    assert.doesNotMatch(wrapperSource, /child\.stdin\.end\('1\\n'\)/);
-    assert.match(wrapperSource, /stdio: \['pipe', 'pipe', 'pipe'\]/);
+    assert.match(wrapperSource, /from '@lydell\/node-pty'|from 'node-pty-prebuilt-multiarch'/);
+    assert.match(wrapperSource, /pty\.spawn\(claudeBin, claudeArgs/);
+    assert.match(wrapperSource, /child\.onData\(\(data\) =>/);
+    assert.match(wrapperSource, /writeAutoAccept\('1\\r'\)/);
+    assert.match(wrapperSource, /maybeConfirmDevelopmentChannelPrompt\(data\)/);
+    assert.match(wrapperSource, /process\.stdin\.on\('data'/);
+    assert.doesNotMatch(wrapperSource, /from 'node:child_process'/);
+    assert.doesNotMatch(wrapperSource, /stdio: \['pipe', 'pipe', 'pipe'\]/);
+    assert.doesNotMatch(wrapperSource, /child\.stdin\.write\('1\\n'\)/);
 
     const launchArgsSource = extractFunctionSource('buildClaudeLaunchArgs');
     assert.doesNotMatch(launchArgsSource, /echo 1 \||'1'\s*\|/);

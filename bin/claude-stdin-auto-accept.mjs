@@ -24,13 +24,43 @@ try {
 
 const ANSI_ESCAPE_PATTERN = /(?:\x1B\][^\x07]*(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[@-Z\\-_])/g;
 const AUTO_ACCEPT_DATA = '\r';
+const READY_MARKER = 'listeningforchannelmessagesfrom:server:ipc';
+const PROMPTS = [
+  {
+    key: 'workspaceTrust',
+    markers: [
+      'quicksafetycheck',
+      'isthisaprojectyoucreated',
+      'oneyoutrust',
+      "claudecode'llbeabletoread",
+      'executefileshere',
+      'yes,itrustthisfolder',
+      'entertoconfirm',
+    ],
+    minMatches: 2,
+    send: AUTO_ACCEPT_DATA,
+    delayMs: 100,
+    seen: new Set(),
+    accepted: false,
+  },
+  {
+    key: 'devChannels',
+    markers: [
+      'warning:loadingdevelopmentchannels',
+      'channels:server:ipc',
+      'iamusingthisforlocaldevelopment',
+      'entertoconfirm',
+    ],
+    minMatches: 4,
+    send: AUTO_ACCEPT_DATA,
+    delayMs: 100,
+    seen: new Set(),
+    accepted: false,
+  },
+];
 let terminalCompactTextTail = '';
-let autoAcceptScheduled = false;
 let earlyAutoAcceptTimer;
-let seenDevelopmentWarning = false;
-let seenDevelopmentChannel = false;
-let seenDefaultConfirm = false;
-let seenEnterConfirm = false;
+let fallbackAccepted = false;
 let seenListeningReady = false;
 
 function debug(message) {
@@ -55,70 +85,77 @@ function clearEarlyAutoAcceptTimer() {
   earlyAutoAcceptTimer = undefined;
 }
 
-function trySendAutoAccept(reason, delayMs = 0) {
-  if (autoAcceptScheduled) {
-    debug(`auto accept skipped reason=${reason}`);
+function trySendAutoAccept(reason, { key = 'fallback', data = AUTO_ACCEPT_DATA, delayMs = 0 } = {}) {
+  if (seenListeningReady) {
+    debug(`auto accept skipped reason=${reason} key=${key} ready_seen=true`);
     return false;
   }
 
-  autoAcceptScheduled = true;
   clearEarlyAutoAcceptTimer();
-  debug(`auto accept scheduled reason=${reason} data=${JSON.stringify(AUTO_ACCEPT_DATA)} delay_ms=${delayMs}`);
+  debug(`auto accept scheduled reason=${reason} key=${key} data=${JSON.stringify(data)} delay_ms=${delayMs}`);
   setTimeout(() => {
-    debug(`auto accept write reason=${reason} data=${JSON.stringify(AUTO_ACCEPT_DATA)}`);
-    child.write(AUTO_ACCEPT_DATA);
+    if (seenListeningReady) {
+      debug(`auto accept write skipped reason=${reason} key=${key} ready_seen=true`);
+      return;
+    }
+    debug(`auto accept write reason=${reason} key=${key} data=${JSON.stringify(data)}`);
+    child.write(data);
   }, delayMs);
 
   return true;
 }
 
 function writeEarlyAutoAccept() {
-  trySendAutoAccept('fallback');
+  if (fallbackAccepted) return false;
+  fallbackAccepted = true;
+  return trySendAutoAccept('fallback', { key: 'fallback', data: AUTO_ACCEPT_DATA });
 }
 
-function schedulePromptConfirm() {
-  trySendAutoAccept('prompt-detected', 100);
+function schedulePromptConfirm(key, data, delayMs) {
+  trySendAutoAccept('prompt-detected', { key, data, delayMs });
 }
 
 function markReadySeen() {
-  if (autoAcceptScheduled) return;
-  autoAcceptScheduled = true;
   clearEarlyAutoAcceptTimer();
   debug('claude channel listener ready before auto accept fallback');
 }
 
-function maybeConfirmDevelopmentChannelPrompt(data) {
+function includesMarker(compact, marker) {
+  return compact.includes(marker) || terminalCompactTextTail.includes(marker);
+}
+
+function maybeConfirmPrompt(data) {
   const compact = compactTerminalText(data);
   terminalCompactTextTail = `${terminalCompactTextTail}${compact}`.slice(-8192);
 
-  if (!seenListeningReady && terminalCompactTextTail.includes('listeningforchannelmessagesfrom:server:ipc')) {
+  if (!seenListeningReady && includesMarker(compact, READY_MARKER)) {
     seenListeningReady = true;
     markReadySeen();
     return;
   }
 
-  if (!seenDevelopmentWarning && compact.includes('warning:loadingdevelopmentchannels')) {
-    seenDevelopmentWarning = true;
-  }
-  if (!seenDevelopmentChannel && compact.includes('channels:server:ipc')) {
-    seenDevelopmentChannel = true;
-  }
-  if (!seenDefaultConfirm && compact.includes('iamusingthisforlocaldevelopment')) {
-    seenDefaultConfirm = true;
-  }
-  if (!seenEnterConfirm && compact.includes('entertoconfirm')) {
-    seenEnterConfirm = true;
-  }
+  if (seenListeningReady) return;
 
-  if (seenDevelopmentWarning && seenDevelopmentChannel && seenDefaultConfirm && seenEnterConfirm) {
-    debug('development-channel prompt detected (persistent flags)');
-    schedulePromptConfirm();
+  for (const prompt of PROMPTS) {
+    if (prompt.accepted) continue;
+
+    for (const marker of prompt.markers) {
+      if (!prompt.seen.has(marker) && includesMarker(compact, marker)) {
+        prompt.seen.add(marker);
+      }
+    }
+
+    if (prompt.seen.size >= prompt.minMatches) {
+      prompt.accepted = true;
+      debug(`prompt ${prompt.key} detected (${prompt.seen.size}/${prompt.markers.length} markers)`);
+      schedulePromptConfirm(prompt.key, prompt.send, prompt.delayMs);
+    }
   }
 }
 
 child.onData((data) => {
   process.stdout.write(data);
-  maybeConfirmDevelopmentChannelPrompt(data);
+  maybeConfirmPrompt(data);
 });
 
 child.onExit(({ exitCode }) => {

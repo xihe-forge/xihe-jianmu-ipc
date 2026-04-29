@@ -25,14 +25,14 @@ describe('ADR-014 Phase 2 K.M stdin auto-accept legacy expect removal', () => {
     assert.match(wrapperSource, /CLAUDE_STDIN_AUTO_ACCEPT_EARLY_MS \?\? '7000'/);
     assert.match(wrapperSource, /setTimeout\(\(\) => \{\s*writeEarlyAutoAccept\(\);/s);
     assert.match(wrapperSource, /const AUTO_ACCEPT_DATA = '\\r'/);
-    assert.match(wrapperSource, /trySendAutoAccept\('fallback'\)/);
+    assert.match(wrapperSource, /trySendAutoAccept\('fallback', \{ key: 'fallback', data: AUTO_ACCEPT_DATA \}\)/);
     assert.match(wrapperSource, /\? earlyWriteMs : 7000\)/);
   });
 
   test('PTY output, parent stdin, and terminal resize are forwarded', () => {
     assert.match(wrapperSource, /child\.onData\(\(data\) => \{\s*process\.stdout\.write\(data\);/s);
-    assert.match(wrapperSource, /maybeConfirmDevelopmentChannelPrompt\(data\)/);
-    assert.match(wrapperSource, /trySendAutoAccept\('prompt-detected', 100\)/);
+    assert.match(wrapperSource, /maybeConfirmPrompt\(data\)/);
+    assert.match(wrapperSource, /trySendAutoAccept\('prompt-detected', \{ key, data, delayMs \}\)/);
     assert.match(wrapperSource, /process\.stdin\.setRawMode\?\.\(true\)/);
     assert.match(wrapperSource, /process\.stdin\.on\('data', \(data\) => \{\s*child\.write\(data\);/s);
     assert.match(wrapperSource, /process\.stdout\.on\('resize', \(\) => \{\s*child\.resize\(/s);

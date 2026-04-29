@@ -75,8 +75,8 @@ describe('ADR-014 Phase 2 K.M spawn stdin auto-accept', () => {
     assert.match(wrapperSource, /pty\.spawn\(claudeBin, claudeArgs/);
     assert.match(wrapperSource, /child\.onData\(\(data\) =>/);
     assert.match(wrapperSource, /const AUTO_ACCEPT_DATA = '\\r'/);
-    assert.match(wrapperSource, /trySendAutoAccept\('fallback'\)/);
-    assert.match(wrapperSource, /maybeConfirmDevelopmentChannelPrompt\(data\)/);
+    assert.match(wrapperSource, /trySendAutoAccept\('fallback', \{ key: 'fallback', data: AUTO_ACCEPT_DATA \}\)/);
+    assert.match(wrapperSource, /maybeConfirmPrompt\(data\)/);
     assert.match(wrapperSource, /process\.stdin\.on\('data'/);
     assert.doesNotMatch(wrapperSource, /from 'node:child_process'/);
     assert.doesNotMatch(wrapperSource, /stdio: \['pipe', 'pipe', 'pipe'\]/);

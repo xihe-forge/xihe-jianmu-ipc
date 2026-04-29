@@ -131,6 +131,22 @@ npm install
 
 After `jianmu-ipc` is installed, npm `postinstall` automatically detects and writes both Windows PowerShell 5 and pwsh 7 `$PROFILE` files. Open a new PowerShell window, then run `ipc <name>` for Claude or `ipcx <name>` for Codex. If you install another PowerShell version later, rerun `bin/install.ps1`.
 
+`ipc <name>` 函数自动处理三件事，保证 Claude Code 干净启动：
+
+1. **跳过两个 startup prompt**：通过 `bin/claude-stdin-auto-accept.mjs` 用 `node-pty` 真 PTY spawn Claude，detect 并自动 confirm `workspace trust`（cwd 未信任时）和 `dev-channels server:ipc warning`，user 不再手动按 1 / Enter。
+2. **VSCode terminal 兼容**：sanitize Claude inquirer UI 在 xterm.js 渲染的大量 cursor positioning + padding 空白行（ConPTY 不显但 xterm.js 会刷一片空白），并 rewrite OSC 0 title sequence 为 `IPC_NAME`。
+3. **MCP server lookup 修复**：`ipc` function 自动 `Push-Location` 到 `D:\workspace\ai\research\xiheAi`（默认 hardcoded，TODO: dynamic detect），让 Claude 启动时找到 project-local `.mcp.json` 注册的 jianmu-ipc，避免 `server:ipc · no MCP server configured with that name` warning。
+
+`install.ps1` 还会自动 patch VSCode user `settings.json`，加 `terminal.integrated.tabs.title = ${sequence}` 让 VSCode tab title 跟随 child OSC（VSCode 1.110.x 默认 `${process}` 不 honor child OSC）。idempotent：已 set 不覆盖，路径不存在 skip。
+
+The `ipc <name>` function automatically handles three things to keep Claude Code launches clean:
+
+1. **Skips two startup prompts** — `bin/claude-stdin-auto-accept.mjs` spawns Claude through real `node-pty` PTY, detects and auto-confirms `workspace trust` (untrusted cwd) and `dev-channels server:ipc warning`, so users no longer have to press 1 / Enter manually.
+2. **VSCode terminal compatibility** — sanitizes the large cursor-positioning + padding blank-fill that Claude inquirer UI emits (invisible in ConPTY, blanks half the screen in xterm.js), and rewrites OSC 0 title sequences to `IPC_NAME`.
+3. **MCP server lookup fix** — `ipc` automatically `Push-Location` to the project root (`D:\workspace\ai\research\xiheAi`, hardcoded for now — TODO: dynamic detect) so Claude can find the project-local `.mcp.json` jianmu-ipc registration and avoid the `server:ipc · no MCP server configured with that name` warning.
+
+`install.ps1` also patches VSCode user `settings.json` to set `terminal.integrated.tabs.title = ${sequence}`, making VSCode honor child OSC for tab titles (default `${process}` ignores it). Idempotent: already-set values are not overwritten, and missing settings.json paths are skipped.
+
 **2. 在项目 `.mcp.json` 中添加配置 / Add to `.mcp.json` in your project**
 
 Session 1 (main):

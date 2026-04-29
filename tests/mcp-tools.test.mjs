@@ -575,8 +575,14 @@ test(
       assert.match(psCommand, /\$env:IPC_NAME='worker-b'/);
       assert.match(
         psCommand,
+        /\$env:IPC_SPAWN_TASK_FILE='.*jianmu-ipc-spawn-worker-b-.*\.prompt\.txt'/,
+      );
+      assert.match(
+        psCommand,
         /claude-stdin-auto-accept\.mjs' 'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude\.exe' --dangerously-skip-permissions --dangerously-load-development-channels server:ipc --model opus$/,
       );
+      assert.equal(payload.task_injection.mechanism, 'claude-positional-prompt-file');
+      assert.match(payload.task_injection.prompt_file_hint, /jianmu-ipc-spawn-worker-b-/);
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

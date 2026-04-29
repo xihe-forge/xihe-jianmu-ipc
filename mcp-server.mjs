@@ -44,6 +44,7 @@ import {
 import { execFileSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { tmpdir } from 'os';
 import http from 'http';
 
 // ---------------------------------------------------------------------------
@@ -499,6 +500,7 @@ const DEFAULT_CLAUDE_BIN =
   'C:\\Users\\jolen\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
 const DEFAULT_SPAWN_FALLBACK_CWD = 'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness';
 const VSCODE_URI_BRIEF_LIMIT_BYTES = 5 * 1024;
+const SPAWN_TASK_PROMPT_DIR = join(tmpdir(), 'jianmu-ipc-spawn-prompts');
 
 function getClaudeBinPath() {
   return process.env.CLAUDE_CLI_PATH || DEFAULT_CLAUDE_BIN;
@@ -529,14 +531,61 @@ function quoteForPowerShellSingle(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd = null }) {
+function safePromptFileNamePart(value) {
+  return String(value || 'session')
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .slice(0, 80) || 'session';
+}
+
+function buildSpawnTaskPromptFilePath({
+  sessionName,
+  dir = SPAWN_TASK_PROMPT_DIR,
+  now = Date.now,
+} = {}) {
+  const ts = typeof now === 'function' ? now() : now;
+  return join(dir, `jianmu-ipc-spawn-${safePromptFileNamePart(sessionName)}-${process.pid}-${ts}.prompt.txt`);
+}
+
+export function writeSpawnTaskPromptFile({
+  sessionName,
+  prompt,
+  dir = SPAWN_TASK_PROMPT_DIR,
+  now = Date.now,
+} = {}) {
+  const path = buildSpawnTaskPromptFilePath({ sessionName, dir, now });
+  const content = String(prompt ?? '');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path, content, 'utf8');
+  return {
+    path,
+    byteLength: Buffer.byteLength(content, 'utf8'),
+  };
+}
+
+function buildSpawnTaskInjectionMetadata({ prompt, promptFile, dryRun }) {
+  const metadata = {
+    mechanism: 'claude-positional-prompt-file',
+    prompt_byte_length: Buffer.byteLength(String(prompt ?? ''), 'utf8'),
+  };
+  if (dryRun) {
+    metadata.prompt_file_hint = normalizeDisplayPath(promptFile);
+  } else {
+    metadata.prompt_file = normalizeDisplayPath(promptFile);
+  }
+  return metadata;
+}
+
+function buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd = null, taskPromptFile = null }) {
   const args = buildClaudeLaunchArgs({ model });
   const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
   const cwdSegment = normalizedCwd
     ? `Set-Location -LiteralPath ${quoteForPowerShellSingle(normalizedCwd)}; `
     : '';
+  const promptFileEnvSegment = taskPromptFile
+    ? `$env:IPC_SPAWN_TASK_FILE=${quoteForPowerShellSingle(taskPromptFile)}; `
+    : '';
   const stdinAutoAcceptScript = join(PROJECT_DIR, 'bin', 'claude-stdin-auto-accept.mjs');
-  return `${cwdSegment}$env:IPC_NAME=${quoteForPowerShellSingle(sessionName)}; & ${quoteForPowerShellSingle(process.execPath)} ${quoteForPowerShellSingle(stdinAutoAcceptScript)} ${quoteForPowerShellSingle(claudeBin)} ${args}`;
+  return `${cwdSegment}$env:IPC_NAME=${quoteForPowerShellSingle(sessionName)}; ${promptFileEnvSegment}& ${quoteForPowerShellSingle(process.execPath)} ${quoteForPowerShellSingle(stdinAutoAcceptScript)} ${quoteForPowerShellSingle(claudeBin)} ${args}`;
 }
 
 function encodePowerShellCommand(command) {
@@ -821,26 +870,27 @@ export async function patchTrustForCwd(
   }
 }
 
-export function buildWtLaunchCommand({ sessionName, model }) {
+export function buildWtLaunchCommand({ sessionName, model, taskPromptFile = null }) {
   return buildPowerShellClaudeCommand({
     sessionName,
     model,
     claudeBin: getClaudeBinPath(),
+    taskPromptFile,
   });
 }
 
-export function buildWtStartCommand({ sessionName, model, cwd }) {
+export function buildWtStartCommand({ sessionName, model, cwd, taskPromptFile = null }) {
   const claudeBin = getClaudeBinPath();
-  const psCommand = buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd });
+  const psCommand = buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd, taskPromptFile });
   // 去 `start ""` 包装（wt.exe 自身 detached）
   // 用 wt `--` 分隔符（wt 文档支持 wt new-tab [-d <dir>] -- <command>）替代 cmd /c 嵌套包装
   // PowerShell 内 pipe stdin，避开 cmd.exe 管道 + quoted exe 组合在 WT 下卡 warning。
   return `wt.exe --window last new-tab --title ${quoteForCmd(sessionName)} -- powershell.exe -NoExit -NoProfile -EncodedCommand ${encodePowerShellCommand(psCommand)}`;
 }
 
-export function buildWtSpawnArgs({ sessionName, model, cwd }) {
+export function buildWtSpawnArgs({ sessionName, model, cwd, taskPromptFile = null }) {
   const claudeBin = getClaudeBinPath();
-  const psCommand = buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd });
+  const psCommand = buildPowerShellClaudeCommand({ sessionName, model, claudeBin, cwd, taskPromptFile });
   return [
     '--window',
     'last',
@@ -1235,7 +1285,15 @@ export async function spawnSession({
     }
 
     await patchTrustForCwd(spawnCwd);
-    const wtArgs = buildWtSpawnArgs({ sessionName, model, cwd: spawnCwd });
+    const taskPromptFile = dryRun
+      ? buildSpawnTaskPromptFilePath({ sessionName, now: '<timestamp>' })
+      : writeSpawnTaskPromptFile({ sessionName, prompt: fullPrompt }).path;
+    const taskInjection = buildSpawnTaskInjectionMetadata({
+      prompt: fullPrompt,
+      promptFile: taskPromptFile,
+      dryRun,
+    });
+    const wtArgs = buildWtSpawnArgs({ sessionName, model, cwd: spawnCwd, taskPromptFile });
     const commandHint = `wt.exe ${wtArgs.join(' ')}`;
     if (dryRun) {
       return {
@@ -1244,6 +1302,7 @@ export async function spawnSession({
         dryRun: true,
         command_hint: commandHint,
         cwd: normalizeDisplayPath(spawnCwd),
+        task_injection: taskInjection,
       };
     }
 
@@ -1260,7 +1319,14 @@ export async function spawnSession({
     child.unref();
     scheduleWtSilentFailureProbe({ baselineCount: baselineTerminalCount });
     process.stderr.write(`[ipc] spawned wt session "${sessionName}"\n`);
-    return { name: sessionName, host: 'wt', spawned: true, status: 'spawned', pid: child.pid };
+    return {
+      name: sessionName,
+      host: 'wt',
+      spawned: true,
+      status: 'spawned',
+      pid: child.pid,
+      task_injection: taskInjection,
+    };
   }
 
   if (requestedHost === 'vscode-terminal') {

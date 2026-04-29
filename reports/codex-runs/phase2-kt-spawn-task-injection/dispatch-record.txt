@@ -1,0 +1,32 @@
+Phase 2 K.T spawn task injection dispatch record
+
+01 root probe: mcp-server.mjs already builds fullPrompt from ipcInstruction + task for ipc_spawn.
+02 root probe: background Claude path uses claude -p/fullPrompt; vscode-uri uses prompt=fullPrompt.
+03 root probe: WT interactive path only launched claude.exe --dangerously-skip-permissions --dangerously-load-development-channels server:ipc.
+04 root cause: host=wt never passed fullPrompt to Claude, so spawned sessions registered/started idle until external IPC arrived.
+05 CC CLI probe: claude --help exposes positional [prompt]; -p/--print is non-interactive.
+06 selected mechanism: keep WT spawn flow and inject fullPrompt as Claude positional prompt.
+07 implementation detail: mcp-server.mjs writes fullPrompt to a temp prompt file under %TEMP%/jianmu-ipc-spawn-prompts.
+08 implementation detail: WT PowerShell command exports IPC_SPAWN_TASK_FILE instead of embedding prompt text in PowerShell args.
+09 implementation detail: bin/claude-stdin-auto-accept.mjs reads IPC_SPAWN_TASK_FILE inside Node.
+10 implementation detail: wrapper appends "--" and then the exact prompt text to claudeArgs for pty.spawn.
+11 why "--": raw PTY failure showed Claude parsed the prompt as another --dangerously-load-development-channels entry without it.
+12 failed smoke evidence: raw log C:/Users/jolen/AppData/Local/Temp/kt-injection-raw-2.log contained "entries must be tagged" followed by the prompt.
+13 fixed smoke command: host=wt name=test-kt-injection cwd=D:/workspace/ai/research/xiheAi.
+14 fixed smoke sentinel: KT_INJECTION_OK_1777489869024_53101766d18758.
+15 fixed smoke result: Hub registration observed at 6.6s, cwd=D:\workspace\ai\research\xiheAi.
+16 fixed smoke result: IPC report delivered to jianmu-pm with sentinel at 31.5s without caller trigger.
+17 timing note: self-drive proved real; report latency exceeded requested 5-15s due Claude startup/thinking/tool latency.
+18 cleanup: stopped WT/PowerShell/node/claude process tree rooted at WindowsTerminal.exe pid 111300.
+19 cleanup: post-check found no test-kt-injection session and no process matching the smoke sentinel/prompt file.
+20 tests: node --test tests\spawn-task-injection.test.mjs PASS.
+21 tests: node --test tests\claude-stdin-auto-accept-pty.test.mjs PASS.
+22 tests: node --test tests\mcp-tools.test.mjs PASS in prior targeted run.
+23 tests: node --test tests\ipc-spawn-wt.test.mjs tests\spawn-stdin-auto-accept.test.mjs tests\integration\ipc-spawn-host.test.mjs PASS in prior targeted run.
+24 tests: final pnpm test PASS after the "--" fix.
+25 RED commits: 3879b9d original; 2b737bb active reapply after 509cee8 revert.
+26 GREEN commit: this commit; exact hash recorded in git log/final response after commit creation.
+27 regression scope: K.A-K.S WT command shape preserved; only IPC_SPAWN_TASK_FILE env and wrapper prompt append added.
+28 manual visual: pending owner confirmation in real WT tab; raw PTY and Hub evidence confirm self-drive path.
+29 rollback: revert GREEN commit to restore previous WT idle behavior.
+30 final status before commit: implementation/tests/smoke cleanup complete, one timing caveat documented.

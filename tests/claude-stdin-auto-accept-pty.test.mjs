@@ -199,6 +199,31 @@ describe('ADR-014 Phase 2 K.M stdin auto-accept real PTY behavior', () => {
     assert.equal(spawnEvents[0].options.ipcName, 'km-unit');
   });
 
+  test('IPC_SPAWN_TASK_FILE is appended as a positional Claude prompt', async () => {
+    const promptPath = join(tempDir, 'spawn-task-prompt.txt');
+    const prompt = 'spawn task prompt with "quoted words" and spaces\nline two';
+    await writeFile(promptPath, prompt, 'utf8');
+
+    const result = await runWrapper({
+      args: ['--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:ipc'],
+      env: {
+        IPC_SPAWN_TASK_FILE: promptPath,
+        PTY_MOCK_EXIT_MS: '10',
+      },
+    });
+
+    assert.equal(result.code, 0);
+    const spawnEvent = result.events.find((event) => event.event === 'spawn');
+    assert.ok(spawnEvent, `missing spawn event: ${JSON.stringify(result.events)}`);
+    assert.deepEqual(spawnEvent.args, [
+      '--dangerously-skip-permissions',
+      '--dangerously-load-development-channels',
+      'server:ipc',
+      '--',
+      prompt,
+    ]);
+  });
+
   test("configured fallback accept writes Enter to the PTY child after the guard", async () => {
     const result = await runWrapper({
       args: ['-e', 'setTimeout(() => process.exit(0), 2000);'],

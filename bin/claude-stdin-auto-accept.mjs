@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, readFileSync } from 'node:fs';
 import * as pty from '@lydell/node-pty';
 
 const [, , claudeBin, ...claudeArgs] = process.argv;
@@ -7,6 +7,18 @@ const [, , claudeBin, ...claudeArgs] = process.argv;
 if (!claudeBin) {
   process.stderr.write('usage: claude-stdin-auto-accept.mjs <claude-bin> [...args]\n');
   process.exit(2);
+}
+
+const spawnTaskFile = process.env.IPC_SPAWN_TASK_FILE?.trim();
+if (spawnTaskFile) {
+  try {
+    claudeArgs.push('--', readFileSync(spawnTaskFile, 'utf8'));
+  } catch (error) {
+    process.stderr.write(
+      `[claude-stdin-auto-accept] failed to read IPC_SPAWN_TASK_FILE: ${error?.message ?? error}\n`,
+    );
+    process.exit(1);
+  }
 }
 
 let child;

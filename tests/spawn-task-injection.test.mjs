@@ -50,7 +50,7 @@ test('spawn task injection: prompt file persists the exact full prompt', () => {
   }
 });
 
-test('spawn task injection: wt command reads prompt file and passes it as Claude positional prompt', () => {
+test('spawn task injection: wt command passes prompt file path to the PTY wrapper', () => {
   const argv = buildWtSpawnArgs({
     sessionName: 'kt-cmd',
     model: 'opus',
@@ -61,9 +61,9 @@ test('spawn task injection: wt command reads prompt file and passes it as Claude
 
   assert.match(
     decoded,
-    /\$spawnTaskPrompt = Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\/Temp\/jianmu-ipc-spawn-kt-cmd\.prompt\.txt'/,
+    /\$env:IPC_SPAWN_TASK_FILE='C:\/Temp\/jianmu-ipc-spawn-kt-cmd\.prompt\.txt'/,
   );
-  assert.match(decoded, /server:ipc --model opus \$spawnTaskPrompt$/);
+  assert.match(decoded, /server:ipc --model opus$/);
   assert.doesNotMatch(decoded, /IPC task injection sentinel/);
 });
 
@@ -88,7 +88,7 @@ test('spawn task injection: host=wt dryRun exposes prompt-file injection metadat
     const match = result.command_hint.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
     assert.ok(match, `missing encoded PowerShell command: ${result.command_hint}`);
     const decoded = decodePowerShellCommand(match[1]);
-    assert.match(decoded, /Get-Content -Raw -Encoding UTF8 -LiteralPath/);
-    assert.match(decoded, /server:ipc \$spawnTaskPrompt$/);
+    assert.match(decoded, /\$env:IPC_SPAWN_TASK_FILE=/);
+    assert.match(decoded, /server:ipc$/);
   });
 });

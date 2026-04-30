@@ -134,8 +134,8 @@ test('K.E sessions Map race: concurrent different names are protected by indepen
   assertHubUsesPerNameMutex();
 
   const hub = await startHub({ prefix: 'sessions-map-race-per-name' });
-  const nameA = uniqueName('ke-A');
-  const nameB = uniqueName('ke-B');
+  const nameA = uniqueName('ke-a');
+  const nameB = uniqueName('ke-b');
   let seedA = null;
   let seedB = null;
   const clientsA = [];

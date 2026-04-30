@@ -60,3 +60,56 @@ test('mcp-server: client context usage push sends update message', async () => {
   }
 });
 
+test('mcp-server: startup name validation rejects PID fallback unless transient debug is enabled', async () => {
+  const originalName = process.env.IPC_NAME;
+  process.env.IPC_NAME = 'startup-validation-test';
+
+  try {
+    const url = pathToFileURL(resolve('mcp-server.mjs'));
+    const mod = await import(`${url.href}?startupValidation=${Date.now()}`);
+
+    assert.deepEqual(
+      mod.validateMcpStartupSessionName({
+        name: 'session-123456',
+        isFallback: true,
+        env: {},
+      }),
+      {
+        ok: false,
+        error: 'PID-based session names are not allowed',
+      },
+    );
+
+    assert.deepEqual(
+      mod.validateMcpStartupSessionName({
+        name: 'worker_1',
+        isFallback: false,
+        env: {},
+      }),
+      {
+        ok: false,
+        error: 'session name must match [a-z0-9-]+',
+      },
+    );
+
+    assert.deepEqual(
+      mod.validateMcpStartupSessionName({
+        name: 'session-123456',
+        isFallback: true,
+        env: { IPC_ALLOW_TRANSIENT_DEBUG_NAME: '1' },
+      }),
+      {
+        ok: true,
+        name: 'session-123456',
+        startupSource: 'transient-debug',
+      },
+    );
+  } finally {
+    if (originalName === undefined) {
+      delete process.env.IPC_NAME;
+    } else {
+      process.env.IPC_NAME = originalName;
+    }
+  }
+});
+

@@ -24,6 +24,7 @@ import { createMcpTools } from './lib/mcp-tools.mjs';
 import { estimateContextPctFromTranscript } from './lib/context-usage-auto-handover.mjs';
 import { getClaudeDir, getHomeDir } from './lib/claude-paths.mjs';
 import { createRegisterMessage } from './lib/protocol.mjs';
+import { allowsTransientDebugName, validateSessionName } from './lib/session-names.mjs';
 import {
   DEFAULT_PORT,
   HUB_AUTOSTART_TIMEOUT,
@@ -95,8 +96,45 @@ function mcpTrace(event, detail = {}) {
 const IPC_NAME_FROM_ENV = Boolean(process.env.IPC_NAME || process.env.IPC_DEFAULT_NAME);
 let IPC_NAME = process.env.IPC_NAME || process.env.IPC_DEFAULT_NAME || `session-${process.pid}`;
 let IPC_NAME_IS_FALLBACK = !IPC_NAME_FROM_ENV;
+const MCP_STARTED_AT = Date.now();
 if (IPC_NAME_IS_FALLBACK) {
   process.stderr.write(`[ipc] IPC_NAME not set, using auto-generated: ${IPC_NAME} (subprocess fallback)\n`);
+}
+
+function resolveStartupSource({
+  env = process.env,
+  isFallback = IPC_NAME_IS_FALLBACK,
+} = {}) {
+  if (allowsTransientDebugName(env)) return 'transient-debug';
+  if (isFallback) return 'pid-fallback';
+  if (env.IPC_NAME) return 'explicit-env';
+  if (env.IPC_DEFAULT_NAME) return 'default-env';
+  return 'unknown';
+}
+
+export function validateMcpStartupSessionName({
+  name = IPC_NAME,
+  isFallback = IPC_NAME_IS_FALLBACK,
+  env = process.env,
+} = {}) {
+  const allowPid = allowsTransientDebugName(env);
+  const validation = validateSessionName(name, { allowPid });
+  if (!validation.ok) {
+    return validation;
+  }
+
+  if (isFallback && !allowPid) {
+    return {
+      ok: false,
+      error: 'PID-based session names are not allowed',
+    };
+  }
+
+  return {
+    ok: true,
+    name: validation.name,
+    startupSource: resolveStartupSource({ env, isFallback }),
+  };
 }
 
 let IPC_PORT = parseInt(process.env.IPC_PORT ?? String(DEFAULT_PORT), 10);
@@ -373,6 +411,9 @@ function createCurrentRegisterMessage() {
     runtime,
     subprocess: IPC_NAME_IS_FALLBACK,
     appServerThreadId: localAppServerThreadId,
+    startedAt: MCP_STARTED_AT,
+    startupSource: resolveStartupSource(),
+    label: IPC_NAME,
   };
 }
 
@@ -2297,6 +2338,13 @@ function wsSend(payload) {
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
+  const nameValidation = validateMcpStartupSessionName();
+  if (!nameValidation.ok) {
+    throw new Error(
+      `${nameValidation.error}. Set IPC_NAME to a stable [a-z0-9-]+ session name, or set IPC_ALLOW_TRANSIENT_DEBUG_NAME=1 for short-lived debug processes.`,
+    );
+  }
+
   process.stderr.write(`[ipc] starting MCP server as "${IPC_NAME}"\n`);
 
   // Start MCP transport FIRST so Claude Code handshake doesn't timeout

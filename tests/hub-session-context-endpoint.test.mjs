@@ -105,6 +105,9 @@ test('POST /session/context updates registered session and /sessions exposes tru
     assert.deepEqual(sessions[0], {
       name: 'harness',
       connectedAt: 1000,
+      startedAt: 1000,
+      startupSource: 'unknown',
+      label: 'harness',
       lastAliveProbe: null,
       topics: ['critique'],
       pid: 1234,

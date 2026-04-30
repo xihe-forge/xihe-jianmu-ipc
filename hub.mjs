@@ -48,6 +48,7 @@ import {
 } from './lib/openclaw-adapter.mjs';
 import { createRegistryMaintainer } from './lib/session-registry.mjs';
 import { getTokenStatus } from './lib/ccusage-adapter.mjs';
+import { normalizeSessionName, validateSessionNameForHub } from './lib/session-names.mjs';
 
 // 从项目根目录加载.env
 try {
@@ -154,6 +155,17 @@ function normalizeAppServerThreadId(value) {
   if (typeof value !== 'string') return null;
   const threadId = value.trim();
   return threadId === '' ? null : threadId;
+}
+
+function normalizeOptionalString(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function normalizeStartedAt(value) {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.trunc(value);
 }
 
 /** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null, gracefulReleasing?:boolean}>} */
@@ -542,17 +554,30 @@ const wss = new WebSocketServer({
 
 wss.on('connection', async (ws, req) => {
   const url = new URL(req.url, `http://localhost`);
-  const name = url.searchParams.get('name');
+  const rawName = url.searchParams.get('name');
   const token = url.searchParams.get('token');
   const forceRebind = url.searchParams.get('force') === '1';
 
-  if (!checkAuth(token, name)) {
-    audit('ws_auth_fail', { name: name || '<none>', ip: req.socket.remoteAddress });
-    ws.close(4003, 'unauthorized');
+  if (!rawName) {
+    ws.close(4000, 'name query param required');
     return;
   }
-  if (!name) {
-    ws.close(4000, 'name query param required');
+
+  const nameValidation = validateSessionNameForHub(rawName);
+  if (!nameValidation.ok) {
+    audit('ws_invalid_name', {
+      name: rawName || '<none>',
+      error: nameValidation.error,
+      ip: req.socket.remoteAddress,
+    });
+    ws.close(4000, nameValidation.error);
+    return;
+  }
+
+  const name = nameValidation.name;
+  if (!checkAuth(token, nameValidation.name)) {
+    audit('ws_auth_fail', { name, ip: req.socket.remoteAddress });
+    ws.close(4003, 'unauthorized');
     return;
   }
 
@@ -612,10 +637,11 @@ wss.on('connection', async (ws, req) => {
       clearTimeout(existing.inboxExpiry);
       existing.inboxExpiry = null;
     }
+    const connectedAt = Date.now();
     session = existing ?? {
       name,
       ws: null,
-      connectedAt: Date.now(),
+      connectedAt,
       topics: new Set(),
       inbox: [],
       inboxExpiry: null,
@@ -635,9 +661,16 @@ wss.on('connection', async (ws, req) => {
       runtime: 'unknown',
       appServerPid: null,
       appServerThreadId: null,
+      startedAt: connectedAt,
+      startupSource: 'ws',
+      label: name,
     };
+    session.startedAt =
+      Number.isFinite(session.startedAt) && session.startedAt > 0 ? session.startedAt : connectedAt;
+    session.startupSource = session.startupSource ?? 'ws';
+    session.label = session.label ?? session.name;
     session.ws = ws;
-    session.connectedAt = Date.now();
+    session.connectedAt = connectedAt;
     session.gracefulReleasing = false;
     if (pendingRebind) {
       session.topics = new Set(pendingRebind.lastTopics);
@@ -694,6 +727,32 @@ wss.on('connection', async (ws, req) => {
         send(ws, { type: 'pong' });
         break;
       case 'register':
+        {
+          const declaredName = normalizeSessionName(msg.name);
+          const declaredValidation = validateSessionNameForHub(declaredName);
+          if (!declaredValidation.ok) {
+            audit('register_invalid_name', {
+              name: declaredName || '<none>',
+              connected_as: session.name,
+              error: declaredValidation.error,
+            });
+            send(ws, { type: 'error', error: declaredValidation.error });
+            ws.close(4000, declaredValidation.error);
+            return;
+          }
+          if (declaredValidation.name !== session.name) {
+            audit('register_name_mismatch', {
+              declared: declaredValidation.name,
+              connected_as: session.name,
+            });
+            send(ws, {
+              type: 'error',
+              error: 'register name must match WebSocket session name',
+            });
+            ws.close(4000, 'register name mismatch');
+            return;
+          }
+        }
         session.channelPort = msg.channelPort ?? null;
         session.pid = normalizePid(msg.pid);
         session.cwd = normalizeCwd(msg.cwd);
@@ -703,6 +762,11 @@ wss.on('connection', async (ws, req) => {
         session.runtime = normalizeRuntime(msg.runtime);
         session.appServerPid = normalizePid(msg.appServerPid);
         session.appServerThreadId = normalizeAppServerThreadId(msg.appServerThreadId);
+        session.startedAt = normalizeStartedAt(msg.startedAt) ?? session.startedAt ?? session.connectedAt;
+        session.startupSource =
+          normalizeOptionalString(msg.startupSource) ??
+          (msg.subprocess === true ? 'pid-fallback' : session.startupSource ?? 'unknown');
+        session.label = normalizeOptionalString(msg.label) ?? session.label ?? session.name;
         send(ws, {
           type: 'registered',
           name: session.name,

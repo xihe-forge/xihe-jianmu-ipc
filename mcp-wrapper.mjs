@@ -23,6 +23,7 @@ const POLL_INTERVAL = 10_000; // 10s
 export const RESTART_BACKOFF_BASE_MS = 500;
 export const RESTART_BACKOFF_MAX_MS = 16_000;
 export const STABILITY_WINDOW_MS = 60_000;
+export const WRAPPER_SHUTDOWN_TIMEOUT_MS = 4_500;
 
 // ---------------------------------------------------------------------------
 // Wrapper lifecycle
@@ -33,19 +34,31 @@ export function createMcpWrapper(options = {}) {
   const spawnFn = options.spawnFn ?? spawn;
   const statFn = options.statFn ?? statSync;
   const setTimeoutFn = options.setTimeoutFn ?? setTimeout;
+  const clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
   const setIntervalFn = options.setIntervalFn ?? setInterval;
+  const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
   const nowFn = options.nowFn ?? Date.now;
   const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const env = options.env ?? process.env;
+  const processLike = options.processLike ?? process;
+  const exitFn = options.exitFn ?? ((code) => process.exit(code));
+  const shutdownTimeoutMs = options.shutdownTimeoutMs ?? WRAPPER_SHUTDOWN_TIMEOUT_MS;
 
   let child = null;
   let lastMtime = 0;
   let stdinHandler = null;
+  let stdinEndHandler = null;
+  let stdinCloseHandler = null;
+  let pollInterval = null;
+  let shutdownTimer = null;
   let restartBackoffMs = RESTART_BACKOFF_BASE_MS;
   let childStartTs = 0;
   let intentionalRestart = false;
+  let isShuttingDown = false;
+  let didExit = false;
+  const signalHandlers = new Map();
 
   function getMtime() {
     try {
@@ -66,13 +79,91 @@ export function createMcpWrapper(options = {}) {
     }
   }
 
+  function removeStdinLifecycleHandlers() {
+    if (stdinEndHandler) {
+      stdin.removeListener('end', stdinEndHandler);
+      stdinEndHandler = null;
+    }
+    if (stdinCloseHandler) {
+      stdin.removeListener('close', stdinCloseHandler);
+      stdinCloseHandler = null;
+    }
+  }
+
+  function installStdinLifecycleHandlers() {
+    removeStdinLifecycleHandlers();
+    stdinEndHandler = () => shutdown('stdin-end');
+    stdinCloseHandler = () => shutdown('stdin-close');
+    stdin.once('end', stdinEndHandler);
+    stdin.once('close', stdinCloseHandler);
+    stdin.resume?.();
+  }
+
+  function removeProcessSignalHandlers() {
+    for (const [signal, handler] of signalHandlers) {
+      processLike.removeListener(signal, handler);
+    }
+    signalHandlers.clear();
+  }
+
+  function installProcessSignalHandlers() {
+    removeProcessSignalHandlers();
+    for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+      const handler = () => shutdown(signal);
+      signalHandlers.set(signal, handler);
+      processLike.once(signal, handler);
+    }
+  }
+
+  function closeChildStdin(target) {
+    const targetStdin = target?.stdin;
+    if (!targetStdin) return;
+
+    try {
+      if (typeof targetStdin.end === 'function' && targetStdin.writable !== false && !targetStdin.destroyed) {
+        targetStdin.end();
+        return;
+      }
+    } catch (err) {
+      log(`child stdin end error: ${err.message}`);
+    }
+
+    try {
+      targetStdin.destroy?.();
+    } catch (err) {
+      log(`child stdin destroy error: ${err.message}`);
+    }
+  }
+
+  function finishShutdown(code = 0) {
+    if (didExit) return;
+    didExit = true;
+
+    removeStdinHandler();
+    removeStdinLifecycleHandlers();
+    removeProcessSignalHandlers();
+
+    if (pollInterval) {
+      clearIntervalFn(pollInterval);
+      pollInterval = null;
+    }
+    if (shutdownTimer) {
+      clearTimeoutFn(shutdownTimer);
+      shutdownTimer = null;
+    }
+
+    exitFn(code);
+  }
+
   function scheduleStart(delayMs) {
     return setTimeoutFn(() => {
+      if (isShuttingDown) return;
       if (!child || child.killed) startChild();
     }, delayMs);
   }
 
   function startChild() {
+    if (isShuttingDown) return null;
     removeStdinHandler();
 
     child = spawnFn('node', [serverPath], {
@@ -84,10 +175,18 @@ export function createMcpWrapper(options = {}) {
 
     stdinHandler = (data) => {
       if (child && child.stdin.writable) {
-        child.stdin.write(data);
+        try {
+          child.stdin.write(data);
+        } catch (err) {
+          log(`child stdin write error: ${err.message}`);
+        }
       }
     };
     stdin.on('data', stdinHandler);
+
+    child.stdin?.on?.('error', (err) => {
+      log(`child stdin error: ${err.message}`);
+    });
 
     child.stdout.on('data', (data) => {
       stdout.write(data);
@@ -100,6 +199,11 @@ export function createMcpWrapper(options = {}) {
       if (child === startedChild) {
         removeStdinHandler();
         child = null;
+      }
+
+      if (isShuttingDown) {
+        finishShutdown(0);
+        return;
       }
 
       if (aliveMs >= STABILITY_WINDOW_MS) {
@@ -133,8 +237,8 @@ export function createMcpWrapper(options = {}) {
 
     if (child) {
       intentionalRestart = true;
+      closeChildStdin(child);
       child.kill('SIGTERM');
-      child = null;
     }
 
     scheduleStart(RESTART_BACKOFF_BASE_MS);
@@ -149,17 +253,47 @@ export function createMcpWrapper(options = {}) {
   }
 
   function shutdown(signal) {
+    if (isShuttingDown) return false;
+    isShuttingDown = true;
+
     log(`received ${signal}, shutting down`);
     removeStdinHandler();
-    if (child) child.kill('SIGTERM');
-    process.exit(0);
+    removeStdinLifecycleHandlers();
+    removeProcessSignalHandlers();
+    if (pollInterval) {
+      clearIntervalFn(pollInterval);
+      pollInterval = null;
+    }
+
+    if (!child) {
+      finishShutdown(0);
+      return true;
+    }
+
+    const childToStop = child;
+    closeChildStdin(childToStop);
+    childToStop.kill('SIGTERM');
+
+    shutdownTimer = setTimeoutFn(() => {
+      log(`child did not exit within ${shutdownTimeoutMs}ms, forcing wrapper exit`);
+      try {
+        childToStop.kill('SIGKILL');
+      } catch (err) {
+        log(`child SIGKILL error: ${err.message}`);
+      }
+      finishShutdown(0);
+    }, shutdownTimeoutMs);
+    shutdownTimer.unref?.();
+
+    return true;
   }
 
   function start() {
+    installProcessSignalHandlers();
     startChild();
-    setIntervalFn(pollForChange, POLL_INTERVAL);
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
+    installStdinLifecycleHandlers();
+    pollInterval = setIntervalFn(pollForChange, POLL_INTERVAL);
+    pollInterval.unref?.();
   }
 
   return {
@@ -174,6 +308,7 @@ export function createMcpWrapper(options = {}) {
       restartBackoffMs,
       childStartTs,
       intentionalRestart,
+      isShuttingDown,
     }),
   };
 }

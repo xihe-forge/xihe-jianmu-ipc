@@ -90,6 +90,7 @@ async function readTraceEvents(tracePath) {
 const sampleMessage = {
   id: 'msg-idle-wake',
   from: 'jianmu-pm',
+  ts: '2026-04-30T10:25:00.123Z',
   content: 'idle wake marker',
 };
 
@@ -104,12 +105,21 @@ test('idle codex IPC injects history, starts a wake turn, and emits wake trace',
     const pushed = await harness.api.pushLocalCodexInboundViaAppServer(sampleMessage);
 
     assert.equal(pushed, true);
-    assert.equal(calls.filter((call) => call.method === 'threadInjectItems').length, 1);
+    const injectCalls = calls.filter((call) => call.method === 'threadInjectItems');
+    assert.equal(injectCalls.length, 1);
+    const injectedText = injectCalls[0].items[0].content[0].text;
+    assert.match(
+      injectedText,
+      /^← ipc: \[2026-04-30 10:25:00\+00:00 from: jianmu-pm\] idle wake marker/,
+    );
+    assert.match(injectedText, /\n\n\[IPC-INBOUND from jianmu-pm\] idle wake marker$/);
+
     const turnStartCalls = calls.filter((call) => call.method === 'turnStart');
     assert.equal(turnStartCalls.length, 1);
     assert.equal(turnStartCalls[0].threadId, 'thread-idle');
-    assert.match(turnStartCalls[0].input, /← ipc:/);
-    assert.match(turnStartCalls[0].input, /回显到 reply 第一行/);
+    assert.match(turnStartCalls[0].input, /user 已能看到 ← ipc 行/);
+    assert.match(turnStartCalls[0].input, /无需主动 echo/);
+    assert.doesNotMatch(turnStartCalls[0].input, /回显到 reply 第一行/);
 
     const events = await readTraceEvents(harness.tracePath);
     assert.equal(

@@ -75,10 +75,17 @@ function createMockAppServerClient({ statuses = [{ activeTurnId: null }] } = {})
 const sampleMessage = {
   id: 'msg-ui-echo',
   from: 'jianmu-pm',
+  ts: '2026-04-30T10:25:00.123Z',
   content: 'codex UI echo marker',
 };
 
-test('idle codex IPC wake turnStart input instructs UI echo first', async () => {
+function firstInjectedText(calls) {
+  const injectCalls = calls.filter((call) => call.method === 'threadInjectItems');
+  assert.equal(injectCalls.length, 1);
+  return injectCalls[0].items[0].content[0].text;
+}
+
+test('idle codex IPC inject content carries UI-visible ipc line', async () => {
   const harness = await importMcpServerWithLocalAppServerHook('idle');
   try {
     const { client, calls } = createMockAppServerClient({
@@ -89,17 +96,25 @@ test('idle codex IPC wake turnStart input instructs UI echo first', async () => 
     const pushed = await harness.api.pushLocalCodexInboundViaAppServer(sampleMessage);
 
     assert.equal(pushed, true);
+    const injectedText = firstInjectedText(calls);
+    assert.match(
+      injectedText,
+      /^← ipc: \[2026-04-30 10:25:00\+00:00 from: jianmu-pm\] codex UI echo marker/,
+    );
+    assert.match(injectedText, /\n\n\[IPC-INBOUND from jianmu-pm\] codex UI echo marker$/);
+
     const turnStartCalls = calls.filter((call) => call.method === 'turnStart');
     assert.equal(turnStartCalls.length, 1);
     assert.equal(turnStartCalls[0].threadId, 'thread-idle');
-    assert.match(turnStartCalls[0].input, /← ipc:/);
-    assert.match(turnStartCalls[0].input, /回显到 reply 第一行/);
+    assert.match(turnStartCalls[0].input, /user 已能看到 ← ipc 行/);
+    assert.match(turnStartCalls[0].input, /无需主动 echo/);
+    assert.doesNotMatch(turnStartCalls[0].input, /回显到 reply 第一行/);
   } finally {
     await harness.cleanup();
   }
 });
 
-test('active turn codex IPC keeps turnSteer content free of UI echo instruction', async () => {
+test('active turn codex IPC turnSteer content carries ipc line without echo instruction', async () => {
   const harness = await importMcpServerWithLocalAppServerHook('active');
   try {
     const { client, calls } = createMockAppServerClient({
@@ -114,8 +129,11 @@ test('active turn codex IPC keeps turnSteer content free of UI echo instruction'
     assert.equal(turnSteerCalls.length, 1);
     assert.equal(turnSteerCalls[0].threadId, 'thread-active');
     assert.equal(turnSteerCalls[0].turnId, 'active-turn-1');
+    assert.match(
+      turnSteerCalls[0].input,
+      /^← ipc: \[2026-04-30 10:25:00\+00:00 from: jianmu-pm\] codex UI echo marker/,
+    );
     assert.match(turnSteerCalls[0].input, /\[IPC-INBOUND from jianmu-pm\]/);
-    assert.doesNotMatch(turnSteerCalls[0].input, /← ipc:/);
     assert.doesNotMatch(turnSteerCalls[0].input, /回显到 reply 第一行/);
   } finally {
     await harness.cleanup();

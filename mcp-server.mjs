@@ -783,7 +783,12 @@ function buildAppServerEnv(env = process.env) {
 function formatInboundIpcContent(msg) {
   const content =
     typeof msg?.content === 'string' ? msg.content : JSON.stringify(msg?.content ?? '');
-  return `[IPC-INBOUND from ${msg?.from ?? 'unknown'}] ${content}`;
+  const from = msg?.from ?? 'unknown';
+  const ts = new Date(msg?.ts ?? Date.now())
+    .toISOString()
+    .replace(/T/, ' ')
+    .replace(/\.\d+Z$/, '+00:00');
+  return `← ipc: [${ts} from: ${from}] ${content}\n\n[IPC-INBOUND from ${from}] ${content}`;
 }
 
 async function startCodexAppServerBridge({ sessionName, cwd }) {
@@ -976,7 +981,7 @@ async function pushLocalCodexInboundViaAppServer(msg) {
         try {
           const wakeResult = await localAppServerClient.turnStart(
             localAppServerThreadId,
-            '上方 history 刚 inject 一条 IPC 消息（格式 `[IPC-INBOUND from <发送方>] <内容>`）。请你做两步：第一·把这条 IPC 用 `← ipc: [<时间> from: <发送方>] <内容>` 格式直接回显到 reply 第一行·让用户在 codex CLI UI 看到 IPC 抵达；第二·正常处理这条 IPC（如需 reply 给发送方·用 ipc_send 工具）。',
+            '上方 history 已 inject IPC 消息·user 已能看到 ← ipc 行。请你正常处理这条 IPC（如需 reply 用 ipc_send）。无需主动 echo·已自动可见。',
           );
           mcpTrace('codex_app_server_idle_wake_ok', {
             msg_id: msg.id,

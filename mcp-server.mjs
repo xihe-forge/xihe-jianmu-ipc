@@ -410,6 +410,8 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = Infinity; // never give up
 const RECONNECT_BASE_DELAY = 3000;
 const RECONNECT_MAX_DELAY = 60000;
+let isShuttingDown = false;
+const reconnectTimers = new Set();
 
 const outgoingQueue = []; // queued while disconnected
 
@@ -421,9 +423,131 @@ function disconnectWs() {
   ws = null;
 }
 
+function closeHubWs(timeoutMs = 500) {
+  const socket = ws;
+  if (!socket) return Promise.resolve();
+  ws = null;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(finish, timeoutMs);
+    timer.unref?.();
+
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    }
+
+    try {
+      socket.addEventListener?.('close', finish, { once: true });
+      socket.addEventListener?.('error', finish, { once: true });
+      if (socket.readyState === 3 /* CLOSED */) {
+        finish();
+        return;
+      }
+      socket.close();
+    } catch {
+      finish();
+    }
+  });
+}
+
 function reconnectHub() {
+  if (isShuttingDown) return;
   reconnectAttempts = 0;
   connect();
+}
+
+function clearContextUsagePctTimer() {
+  if (!contextUsagePctTimer) return;
+  clearInterval(contextUsagePctTimer);
+  contextUsagePctTimer = null;
+}
+
+function clearReconnectTimers() {
+  for (const timer of reconnectTimers) {
+    clearTimeout(timer);
+  }
+  reconnectTimers.clear();
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function closeAppServerClients() {
+  const closePromises = [];
+
+  if (localAppServerClient) {
+    closePromises.push(Promise.resolve(localAppServerClient.close?.()).catch(() => {}));
+    localAppServerClient = null;
+    localAppServerThreadId = null;
+    localAppServerPid = null;
+  }
+
+  for (const [sessionName, bridge] of spawnedAppServerClients) {
+    stopCodexThreadKeepalive(sessionName, 'mcp-server-shutdown');
+    closePromises.push(Promise.resolve(bridge?.client?.close?.()).catch(() => {}));
+  }
+  spawnedAppServerClients.clear();
+
+  await Promise.allSettled(closePromises);
+}
+
+export async function gracefulShutdown(
+  reason,
+  {
+    exitFn = (code) => process.exit(code),
+    timeoutMs = 1_500,
+  } = {},
+) {
+  if (isShuttingDown) return { started: false, reason };
+  isShuttingDown = true;
+
+  process.stderr.write(`[ipc] mcp-server graceful shutdown: ${reason}\n`);
+  mcpTrace('mcp_server_graceful_shutdown', { reason });
+
+  const forceExitTimer = setTimeout(() => {
+    exitFn(0);
+  }, timeoutMs);
+  forceExitTimer.unref?.();
+
+  try {
+    clearContextUsagePctTimer();
+    clearReconnectTimers();
+    stopAllCodexThreadKeepalives('mcp-server-shutdown');
+    outgoingQueue.length = 0;
+
+    await Promise.race([
+      Promise.allSettled([
+        closeHubWs(),
+        closeAppServerClients(),
+      ]),
+      delay(Math.max(0, timeoutMs - 100)),
+    ]);
+  } finally {
+    clearTimeout(forceExitTimer);
+    exitFn(0);
+  }
+
+  return { started: true, reason };
+}
+
+function installLifecycleHandlers() {
+  process.stdin.once('end', () => {
+    void gracefulShutdown('stdin-end');
+  });
+  process.stdin.once('close', () => {
+    void gracefulShutdown('stdin-close');
+  });
+
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+    process.once(signal, () => {
+      void gracefulShutdown(signal);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1722,6 +1846,7 @@ function flushOutgoingQueue() {
 }
 
 function scheduleReconnect() {
+  if (isShuttingDown) return;
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     process.stderr.write('[ipc] max reconnect attempts reached, giving up\n');
     return;
@@ -1736,7 +1861,11 @@ function scheduleReconnect() {
   process.stderr.write(
     `[ipc] reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})\n`,
   );
-  setTimeout(connect, delay);
+  const timer = setTimeout(() => {
+    reconnectTimers.delete(timer);
+    connect();
+  }, delay);
+  reconnectTimers.add(timer);
 }
 
 // ---------------------------------------------------------------------------
@@ -1870,6 +1999,7 @@ async function handleWsMessage(event) {
 // Persistent reconnect loop (used after initial connection is established)
 // ---------------------------------------------------------------------------
 function connect() {
+  if (isShuttingDown) return;
   const url = buildWsUrl();
   mcpTrace('ws_reconnect_attempt', { url });
   process.stderr.write(`[ipc] connecting to hub at ${url}\n`);
@@ -1884,6 +2014,12 @@ function connect() {
   }
 
   socket.addEventListener('open', () => {
+    if (isShuttingDown) {
+      try {
+        socket.close();
+      } catch {}
+      return;
+    }
     mcpTrace('ws_reconnect_open', { url });
     process.stderr.write('[ipc] connected to hub\n');
     reconnectAttempts = 0;
@@ -1895,6 +2031,7 @@ function connect() {
   socket.addEventListener('message', handleWsMessage);
 
   socket.addEventListener('close', (event) => {
+    if (isShuttingDown) return;
     mcpTrace('ws_disconnect', { code: event.code, reason: event.reason });
     process.stderr.write(`[ipc] disconnected from hub (code=${event.code})\n`);
     ws = null;
@@ -1918,6 +2055,10 @@ async function initialConnect() {
     let autostartDone = false;
 
     function tryOnce() {
+      if (isShuttingDown) {
+        resolve();
+        return;
+      }
       const url = buildWsUrl();
       mcpTrace('ws_connect_attempt', { url });
       let socket;
@@ -1935,6 +2076,13 @@ async function initialConnect() {
 
       const onOpen = () => {
         cleanup();
+        if (isShuttingDown) {
+          try {
+            socket.close();
+          } catch {}
+          resolve();
+          return;
+        }
         mcpTrace('ws_connect_open', { url });
         process.stderr.write('[ipc] initial connection to hub succeeded\n');
         reconnectAttempts = 0;
@@ -1946,6 +2094,7 @@ async function initialConnect() {
         socket.addEventListener('message', handleWsMessage);
 
         socket.addEventListener('close', (ev) => {
+          if (isShuttingDown) return;
           mcpTrace('ws_disconnect', { code: ev.code, reason: ev.reason });
           process.stderr.write(`[ipc] disconnected from hub (code=${ev.code})\n`);
           ws = null;
@@ -2243,6 +2392,8 @@ export function createSourceChangeWatcher({
 }
 
 if (import.meta.main) {
+  installLifecycleHandlers();
+
   main().catch((err) => {
     process.stderr.write(`[ipc] fatal: ${err?.message ?? err}\n`);
     process.exit(1);

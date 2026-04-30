@@ -117,6 +117,13 @@ test('install.ps1 ipcx runs Codex through the title wrapper with IPC_NAME in env
   assert.match(ipcxFunc, /mcp_servers\.jianmu-ipc\.env\.IPC_NAME=``"`\$Name``""/);
 });
 
+test('install.ps1 ipcx marks Codex runtime in parent env and MCP config', () => {
+  const ipcxFunc = extractHereStringVar('ipcxFuncCode');
+
+  assert.match(ipcxFunc, /\$env:IPC_RUNTIME = 'codex'/);
+  assert.match(ipcxFunc, /mcp_servers\.jianmu-ipc\.env\.IPC_RUNTIME=``"codex``""/);
+});
+
 test('package.json publishes the Codex title wrapper used by ipcx', () => {
   assert.ok(packageJson.files.includes('bin/codex-title-wrapper.mjs'));
 });

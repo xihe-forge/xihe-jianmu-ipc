@@ -673,6 +673,37 @@ test('createNetworkWatchdog: critiques five_hour at 70% and seven_day at 80%', a
   assert.match(sent[1].content, /harness seven_day 80% >= 80%/);
 });
 
+test('createNetworkWatchdog: skips stale rate limit critiques after reset time', async () => {
+  const sent = [];
+  const capture = createFetchCapture({
+    [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+      {
+        name: 'stale-session',
+        rateLimits: {
+          five_hour: { used_percentage: 80, resets_at: 999 },
+        },
+      },
+    ],
+  });
+  const watchdog = createIsolatedWatchdog({
+    fetchImpl: capture.fetchImpl,
+    now: () => 1_000_000,
+    handoverEnabled: false,
+    rateLimitCritiqueEnabled: true,
+    handoverConfig: { ipcSend: async (message) => { sent.push(message); } },
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+    },
+  });
+
+  await watchdog.runTick();
+
+  assert.deepEqual(sent, []);
+});
+
 test('createNetworkWatchdog: rate limit critique dedups per session window for 5 minutes', async () => {
   const sent = [];
   const clock = createManualNow(1_000_000);

@@ -107,6 +107,7 @@ let mcpClientInfo = null;
 let localAppServerClient = null;
 let localAppServerThreadId = null;
 let localAppServerPid = null;
+let localAppServerEnsurePromise = null;
 const spawnedAppServerClients = new Map();
 const threadKeepaliveMap = new Map();
 const SELF_DETECTION_WINDOW_MS = 60_000;
@@ -359,6 +360,8 @@ export function resolveRuntime({
 }
 
 function createCurrentRegisterMessage() {
+  const runtime = resolveRuntime();
+  maybeEnsureLocalCodexAppServer('register', runtime);
   const message = createRegisterMessage({
     name: IPC_NAME,
     pid: process.pid,
@@ -367,7 +370,7 @@ function createCurrentRegisterMessage() {
   });
   return {
     ...message,
-    runtime: resolveRuntime(),
+    runtime,
     subprocess: IPC_NAME_IS_FALLBACK,
     appServerThreadId: localAppServerThreadId,
   };
@@ -450,6 +453,7 @@ const channelNotifier = createChannelNotifier({
 server.oninitialized = () => {
   mcpClientInfo = server.getClientVersion?.() ?? null;
   channelNotifier.markInitialized();
+  maybeEnsureLocalCodexAppServer('mcp-initialized');
 };
 
 // ---------------------------------------------------------------------------
@@ -666,32 +670,58 @@ async function ensureLocalCodexAppServer() {
       pid: localAppServerPid,
     };
   }
-
-  try {
-    const bridge = await startCodexAppServerBridge({ sessionName: IPC_NAME, cwd: process.cwd() });
-    localAppServerClient = bridge.client;
-    localAppServerThreadId = bridge.threadId;
-    localAppServerPid = bridge.pid;
-    process.stderr.write(
-      `[ipc] codex app-server bridge ready for "${IPC_NAME}" thread=${localAppServerThreadId} pid=${localAppServerPid ?? 'n/a'}\n`,
-    );
-    mcpTrace('codex_app_server_bridge_ready', {
-      thread_id: localAppServerThreadId,
-      app_server_pid: localAppServerPid ?? null,
+  if (localAppServerEnsurePromise) {
+    mcpTrace('codex_app_server_bridge_skip', {
+      reason: 'already-starting',
     });
-    return bridge;
-  } catch (error) {
-    process.stderr.write(`[ipc] codex app-server bridge unavailable: ${error?.message ?? error}\n`);
-    mcpTrace('codex_app_server_bridge_unavailable', {
-      error_message: error?.message ?? String(error),
-      error_name: error?.name ?? null,
-      error_stack: error?.stack ?? null,
-    });
-    localAppServerClient = null;
-    localAppServerThreadId = null;
-    localAppServerPid = null;
-    return null;
+    return localAppServerEnsurePromise;
   }
+
+  localAppServerEnsurePromise = (async () => {
+    try {
+      const bridge = await startCodexAppServerBridge({ sessionName: IPC_NAME, cwd: process.cwd() });
+      localAppServerClient = bridge.client;
+      localAppServerThreadId = bridge.threadId;
+      localAppServerPid = bridge.pid;
+      process.stderr.write(
+        `[ipc] codex app-server bridge ready for "${IPC_NAME}" thread=${localAppServerThreadId} pid=${localAppServerPid ?? 'n/a'}\n`,
+      );
+      mcpTrace('codex_app_server_bridge_ready', {
+        thread_id: localAppServerThreadId,
+        app_server_pid: localAppServerPid ?? null,
+      });
+      return bridge;
+    } catch (error) {
+      process.stderr.write(`[ipc] codex app-server bridge unavailable: ${error?.message ?? error}\n`);
+      mcpTrace('codex_app_server_bridge_unavailable', {
+        error_message: error?.message ?? String(error),
+        error_name: error?.name ?? null,
+        error_stack: error?.stack ?? null,
+      });
+      localAppServerClient = null;
+      localAppServerThreadId = null;
+      localAppServerPid = null;
+      return null;
+    } finally {
+      localAppServerEnsurePromise = null;
+    }
+  })();
+
+  return localAppServerEnsurePromise;
+}
+
+function maybeEnsureLocalCodexAppServer(reason, resolvedRuntime = resolveRuntime()) {
+  if (resolvedRuntime !== 'codex') return false;
+  if (localAppServerClient && localAppServerThreadId) return false;
+  if (localAppServerEnsurePromise) return false;
+  mcpTrace('codex_app_server_bridge_retry', {
+    reason,
+    resolved_runtime: resolvedRuntime,
+    ipc_name: process.env.IPC_NAME ?? null,
+    mcp_client_info: mcpClientInfo ? { name: mcpClientInfo.name ?? null } : null,
+  });
+  void ensureLocalCodexAppServer();
+  return true;
 }
 
 async function startSpawnedCodexAppServer({ sessionName, cwd }) {
@@ -1800,12 +1830,15 @@ async function handleWsMessage(event) {
       return; // Don't push to LLM
     }
 
-    if (resolveRuntime() === 'codex' && (await pushLocalCodexInboundViaAppServer(msg))) {
-      ackInboundMessage(msg);
-      process.stderr.write(
-        `[ipc] pushed codex App Server inbound from ${msg.from ?? '(unknown)'}\n`,
-      );
-      return;
+    if (resolveRuntime() === 'codex') {
+      await ensureLocalCodexAppServer();
+      if (await pushLocalCodexInboundViaAppServer(msg)) {
+        ackInboundMessage(msg);
+        process.stderr.write(
+          `[ipc] pushed codex App Server inbound from ${msg.from ?? '(unknown)'}\n`,
+        );
+        return;
+      }
     }
 
     mcpTrace('channel_push_begin', {

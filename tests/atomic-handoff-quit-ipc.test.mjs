@@ -1,7 +1,8 @@
 ﻿import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAtomicHandoverTrigger } from '../lib/context-usage-auto-handover.mjs';
@@ -161,10 +162,11 @@ test('atomic handover aborts spawn when quit notification fails', async () => {
 test('watchdog atomic handoff sends atomic-handoff-quit IPC with auth', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-quit-send-'));
   try {
+    initCleanGitDir(dir);
     const spawned = [];
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 51, cwd: dir },
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 95, cwd: dir, pendingOutgoing: 0 },
       ],
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: { messages: [] },
     });
@@ -220,10 +222,11 @@ test('watchdog atomic handoff sends atomic-handoff-quit IPC with auth', async ()
 test('watchdog sends prepare-rebind before quit IPC before spawn', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-quit-order-'));
   try {
+    initCleanGitDir(dir);
     const events = [];
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 51, cwd: dir },
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 95, cwd: dir, pendingOutgoing: 0 },
       ],
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: { messages: [] },
     });
@@ -274,3 +277,7 @@ test('watchdog sends prepare-rebind before quit IPC before spawn', async () => {
   }
 });
 
+function initCleanGitDir(dir) {
+  execFileSync('git', ['init'], { cwd: dir, stdio: 'ignore' });
+  mkdirSync(join(dir, 'reports', 'codex-runs'), { recursive: true });
+}

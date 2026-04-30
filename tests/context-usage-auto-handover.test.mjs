@@ -18,7 +18,7 @@ function makeAuto(options = {}) {
     estimateContextPct: async () => {
       calls.estimate += 1;
       if (options.estimateThrows) throw new Error('estimate failed');
-      return options.pct ?? 75;
+      return options.pct ?? 91;
     },
     isMinimalTaskUnitComplete: () => options.complete ?? true,
     triggerHandover: async () => {
@@ -38,24 +38,24 @@ function makeAuto(options = {}) {
   };
 }
 
-test('pct <= 50 does not trigger', async () => {
-  const { auto, calls } = makeAuto({ pct: 50 });
+test('default threshold 90: pct < 90 does not trigger', async () => {
+  const { auto, calls } = makeAuto({ pct: 89 });
 
-  assert.deepEqual(await auto.tick(), { skipped: 'under-threshold', pct: 50 });
+  assert.deepEqual(await auto.tick(), { skipped: 'under-threshold', pct: 89 });
   assert.equal(calls.trigger, 0);
 });
 
-test('pct > 50 + task in progress skips task-in-progress', async () => {
-  const { auto, calls } = makeAuto({ pct: 51, complete: false });
+test('default threshold 90: pct >= 90 + task in progress skips task-in-progress', async () => {
+  const { auto, calls } = makeAuto({ pct: 90, complete: false });
 
-  assert.deepEqual(await auto.tick(), { skipped: 'task-in-progress', pct: 51 });
+  assert.deepEqual(await auto.tick(), { skipped: 'task-in-progress', pct: 90 });
   assert.equal(calls.trigger, 0);
 });
 
-test('pct > 50 + minimal task complete triggers handover', async () => {
-  const { auto, calls } = makeAuto({ pct: 80, complete: true });
+test('default threshold 90: pct >= 90 + minimal task complete triggers handover', async () => {
+  const { auto, calls } = makeAuto({ pct: 90, complete: true });
 
-  assert.deepEqual(await auto.tick(), { triggered: true, pct: 80, handover: 'ok' });
+  assert.deepEqual(await auto.tick(), { triggered: true, pct: 90, handover: 'ok' });
   assert.equal(calls.trigger, 1);
 });
 
@@ -113,20 +113,30 @@ test('triggerHandover throw does not update cooldown timestamp', async () => {
   assert.equal(calls.trigger, 2);
 });
 
-test('minimal task unit complete when ipc queue and git tree are clean', () => {
+test('minimal task unit incomplete when codex task is still in flight', () => {
   const checker = createMinimalTaskUnitCompleteChecker({
     getPendingOutgoingCount: () => 0,
     isGitTreeClean: () => true,
     hasInFlightCodexTask: () => true,
   });
 
-  assert.equal(checker(), true);
+  assert.equal(checker(), false);
 });
 
-test('minimal task unit complete when ipc queue and codex tasks are idle', () => {
+test('minimal task unit incomplete when git tree is dirty', () => {
   const checker = createMinimalTaskUnitCompleteChecker({
     getPendingOutgoingCount: () => 0,
     isGitTreeClean: () => false,
+    hasInFlightCodexTask: () => false,
+  });
+
+  assert.equal(checker(), false);
+});
+
+test('minimal task unit complete only when ipc queue, git tree, and codex tasks are all clean', () => {
+  const checker = createMinimalTaskUnitCompleteChecker({
+    getPendingOutgoingCount: () => 0,
+    isGitTreeClean: () => true,
     hasInFlightCodexTask: () => false,
   });
 

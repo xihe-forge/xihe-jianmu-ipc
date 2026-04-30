@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -253,11 +254,12 @@ test('createNetworkWatchdog: handover tick 60s 内重复调用返回 tick-interv
 test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-runs spawn', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-hub-pct-'));
   try {
+    initCleanGitDir(dir);
     const logs = [];
     const spawned = [];
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 51 },
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 95, cwd: dir, pendingOutgoing: 0 },
       ],
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
         messages: [{ from: 'jianmu-pm', topic: 'status', content: 'drained ipc' }],
@@ -287,10 +289,10 @@ test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-run
 
     assert.equal(result.detected.length, 1);
     assert.equal(result.detected[0].name, 'jianmu-pm');
-    assert.equal(result.detected[0].pct, 51);
+    assert.equal(result.detected[0].pct, 95);
     assert.equal(result.detected[0].dryRun, true);
     assert.equal(spawned.length, 0);
-    assert.ok(logs.some((line) => line.includes('estimateContextPct hub session=jianmu-pm pid=1777 pct=51')));
+    assert.ok(logs.some((line) => line.includes('estimateContextPct hub session=jianmu-pm pid=1777 pct=95')));
     assert.ok(logs.some((line) => line.includes('pre-spawn-review dry-run')));
     assert.ok(capture.requests.some((request) => request.url.endsWith('/send') && request.body?.topic === 'pre-spawn-review'));
   } finally {
@@ -298,13 +300,116 @@ test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-run
   }
 });
 
+test('createNetworkWatchdog: default handover threshold is 90%', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-threshold-'));
+  try {
+    initCleanGitDir(dir);
+    const capture = createFetchCapture({
+      [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 89, cwd: dir, pendingOutgoing: 0 },
+      ],
+    });
+    const watchdog = createIsolatedWatchdog({
+      fetchImpl: capture.fetchImpl,
+      now: () => 1_000_000,
+      ipcSpawn: async () => ({ spawned: true }),
+      handoverEnabled: true,
+      handoverTickIntervalMs: 0,
+      handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
+      probes: {
+        cliProxy: async () => ok(),
+        hub: async () => ok(),
+        anthropic: async () => ok(),
+        dns: async () => ok(),
+      },
+    });
+
+    await watchdog.runTick();
+    const result = watchdog.getLastHandoverTickResult();
+
+    assert.equal(result.detected.length, 0);
+    assert.equal(result.skipped.find((item) => item.name === 'jianmu-pm')?.skipped, 'under-threshold');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('createNetworkWatchdog: handover requires pending=0, clean git, and no in-flight codex task', async () => {
+  const cases = [
+    {
+      name: 'pending-ipc',
+      sessionPatch: { pendingOutgoing: 1 },
+      setup: initCleanGitDir,
+    },
+    {
+      name: 'dirty-git',
+      sessionPatch: { pendingOutgoing: 0 },
+      setup: (dir) => {
+        initCleanGitDir(dir);
+        writeFileSync(join(dir, 'dirty.txt'), 'dirty');
+      },
+    },
+    {
+      name: 'running-codex',
+      sessionPatch: { pendingOutgoing: 0 },
+      setup: (dir) => {
+        initCleanGitDir(dir);
+        const reportsDir = join(dir, 'reports', 'codex-runs');
+        mkdirSync(reportsDir, { recursive: true });
+        writeFileSync(join(reportsDir, 'run.json'), JSON.stringify({ status: 'running' }));
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const dir = mkdtempSync(join(tmpdir(), `watchdog-${testCase.name}-`));
+    try {
+      testCase.setup(dir);
+      const capture = createFetchCapture({
+        [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+          {
+            name: testCase.name,
+            pid: 1777,
+            contextUsagePct: 95,
+            cwd: dir,
+            ...testCase.sessionPatch,
+          },
+        ],
+      });
+      const watchdog = createIsolatedWatchdog({
+        fetchImpl: capture.fetchImpl,
+        now: () => 1_000_000,
+        ipcSpawn: async () => ({ spawned: true }),
+        handoverEnabled: true,
+        handoverTickIntervalMs: 0,
+        handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
+        probes: {
+          cliProxy: async () => ok(),
+          hub: async () => ok(),
+          anthropic: async () => ok(),
+          dns: async () => ok(),
+        },
+      });
+
+      await watchdog.runTick();
+      const result = watchdog.getLastHandoverTickResult();
+
+      assert.equal(result.detected.length, 0, testCase.name);
+      assert.equal(result.skipped.find((item) => item.name === testCase.name)?.skipped, 'task-in-progress', testCase.name);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test('startWatchdog: boot default runs atomic handover as real swap', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-boot-real-swap-'));
   try {
+    initCleanGitDir(dir);
     const spawned = [];
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 51, cwd: dir },
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 95, cwd: dir, pendingOutgoing: 0 },
       ],
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
         messages: [{ from: 'jianmu-pm', topic: 'status', content: 'drained ipc' }],
@@ -361,10 +466,11 @@ test('startWatchdog: WATCHDOG_HANDOVER_DRY_RUN=true keeps boot handover in dry-r
   process.env.WATCHDOG_HANDOVER_DRY_RUN = 'true';
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-boot-dry-run-'));
   try {
+    initCleanGitDir(dir);
     const spawned = [];
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 51, cwd: dir },
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 95, cwd: dir, pendingOutgoing: 0 },
       ],
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
         messages: [{ from: 'jianmu-pm', topic: 'status', content: 'drained ipc' }],
@@ -493,11 +599,12 @@ test('createNetworkWatchdog: available_ram_mb below 3GB invokes tree-kill', asyn
 test('createNetworkWatchdog: handover tick uses next-tick pacing label', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-handoff-pacing-'));
   try {
+    initCleanGitDir(dir);
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'low-pct', pid: 1001, contextUsagePct: 70 },
-        { name: 'high-pct', pid: 1002, contextUsagePct: 95 },
-        { name: 'mid-pct', pid: 1003, contextUsagePct: 85 },
+        { name: 'low-pct', pid: 1001, contextUsagePct: 70, cwd: dir, pendingOutgoing: 0 },
+        { name: 'high-pct', pid: 1002, contextUsagePct: 95, cwd: dir, pendingOutgoing: 0 },
+        { name: 'mid-pct', pid: 1003, contextUsagePct: 85, cwd: dir, pendingOutgoing: 0 },
       ],
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=high-pct&since=3600000&limit=50`]: { messages: [] },
       [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=mid-pct&since=3600000&limit=50`]: { messages: [] },
@@ -613,6 +720,11 @@ function createManualNow(start = 0) {
       return current;
     },
   };
+}
+
+function initCleanGitDir(dir) {
+  execFileSync('git', ['init'], { cwd: dir, stdio: 'ignore' });
+  mkdirSync(join(dir, 'reports', 'codex-runs'), { recursive: true });
 }
 
 function createFetchCapture(routes = {}) {

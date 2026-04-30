@@ -60,7 +60,7 @@ test('default threshold 90: pct >= 90 + minimal task complete triggers handover'
 });
 
 test('cooldown prevents repeat handover inside window', async () => {
-  const { auto, calls } = makeAuto({ pct: 80, complete: true });
+  const { auto, calls } = makeAuto({ pct: 90, complete: true });
 
   await auto.tick();
   assert.deepEqual(await auto.tick(), { skipped: 'cooldown' });
@@ -68,7 +68,7 @@ test('cooldown prevents repeat handover inside window', async () => {
 });
 
 test('cooldown allows repeat handover after window', async () => {
-  const { auto, calls, advance } = makeAuto({ pct: 80, complete: true });
+  const { auto, calls, advance } = makeAuto({ pct: 90, complete: true });
 
   await auto.tick();
   advance(1_001);

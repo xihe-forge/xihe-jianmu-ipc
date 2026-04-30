@@ -110,6 +110,7 @@ test('POST /session/context updates registered session and /sessions exposes tru
       pid: 1234,
       cwd: 'D:/repo',
       contextUsagePct: 42,
+      pendingOutgoing: 0,
       contextWindow: body.context_window,
       rateLimits: body.rate_limits,
       cost: body.cost,

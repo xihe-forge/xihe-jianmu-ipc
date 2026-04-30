@@ -35,6 +35,9 @@ import {
 import {
   createAtomicHandoverTrigger,
   createContextUsageAutoHandover,
+  createMinimalTaskUnitCompleteChecker,
+  hasInFlightCodexTask,
+  isGitTreeClean,
 } from '../lib/context-usage-auto-handover.mjs';
 import { getSessionState } from '../lib/session-state-reader.mjs';
 import {
@@ -68,6 +71,7 @@ export const PHYS_RAM_WARN_PCT = 80;
 export const PHYS_RAM_CRIT_PCT = 90;
 export const PHYS_RAM_RESET_PCT = 70;
 export const PHYS_RAM_DEDUP_MS = 5 * 60 * 1000;
+export const DEFAULT_HANDOVER_THRESHOLD = 90;
 export const RATE_LIMIT_WARN_FIVE_HOUR = 70;
 export const RATE_LIMIT_WARN_SEVEN_DAY = 80;
 export const RATE_LIMIT_CRITIQUE_DEDUP_MS = 5 * 60 * 1000;
@@ -83,6 +87,11 @@ function parsePort(value, fallback) {
 function parseNonNegativeInt(value, fallback) {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parsePercentThreshold(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : fallback;
 }
 
 function createWait(waitImpl, setTimeoutImpl) {
@@ -851,6 +860,19 @@ function omitHarnessProbe(probes) {
   );
 }
 
+function getSessionPendingOutgoingCount(sessionRecord) {
+  for (const key of ['pendingOutgoing', 'pending_outgoing', 'pendingOutgoingCount', 'pending_outgoing_count']) {
+    const count = Number(sessionRecord?.[key]);
+    if (Number.isFinite(count) && count >= 0) return count;
+  }
+  return 0;
+}
+
+function getSessionCwd(sessionRecord, fallbackCwd) {
+  const cwd = typeof sessionRecord?.cwd === 'string' ? sessionRecord.cwd.trim() : '';
+  return cwd || fallbackCwd || process.cwd();
+}
+
 export function createWatchdogStatusHandler({
   getSnapshot,
   getHarnessSnapshot = null,
@@ -921,7 +943,7 @@ export function createNetworkWatchdog({
   zombiePidDetectorIsPidAlive = isPidAlive,
   handoverEnabled = false,
   handoverTickIntervalMs = 60 * 1000,
-  handoverThreshold = 50,
+  handoverThreshold = DEFAULT_HANDOVER_THRESHOLD,
   handoverDryRun = true,
   getSessionStateImpl = getSessionState,
   rateLimitCritiqueEnabled = true,
@@ -1119,6 +1141,7 @@ export function createNetworkWatchdog({
           let entry = contextUsageHandoverDetectors.get(sessionName);
           if (!entry) {
             entry = { sessionRecord: session };
+            const sessionCwd = () => getSessionCwd(entry.sessionRecord, handoverConfig?.handoverRepoPath ?? process.cwd());
             entry.detector = createContextUsageAutoHandover({
               threshold: handoverThreshold,
               estimateContextPct: async (sessionRecord = entry.sessionRecord) => {
@@ -1131,11 +1154,15 @@ export function createNetworkWatchdog({
                 stderr(`[network-watchdog] estimateContextPct hub session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} pct=${pct}`);
                 return pct;
               },
-              isMinimalTaskUnitComplete: () => true,
+              isMinimalTaskUnitComplete: createMinimalTaskUnitCompleteChecker({
+                getPendingOutgoingCount: () => getSessionPendingOutgoingCount(entry.sessionRecord),
+                isGitTreeClean: () => isGitTreeClean(sessionCwd()),
+                hasInFlightCodexTask: () => hasInFlightCodexTask(join(sessionCwd(), 'reports', 'codex-runs')),
+              }),
               triggerHandover: createAtomicHandoverTrigger({
                 name: sessionName,
                 // ADR-010 mod 6 wiring v6 fix·cwd 取原 session 自身 cwd（Hub /sessions[].cwd）·不取 watchdog 自身 / handoverRepoPath / process.cwd·防新 spawn 进错仓
-                cwd: session?.cwd ?? handoverConfig?.handoverRepoPath ?? process.cwd(),
+                cwd: sessionCwd(),
                 handoverDir: handoverConfig?.handoverDir,
                 dryRun: handoverDryRun,
                 stderr,
@@ -1742,6 +1769,7 @@ export function formatWatchdogHelp() {
     `  IPC_WATCHDOG_INTERVAL_MS=${DEFAULT_WATCHDOG_INTERVAL_MS}  Probe interval in milliseconds`,
     `  WATCHDOG_COLD_START_GRACE_MS=${DEFAULT_WATCHDOG_COLD_START_GRACE_MS}  Suppress harness self-handover until first alive signal`,
     '  WATCHDOG_K_D_DRY_RUN=true          Zombie pid cleanup dry-run; set false to evict',
+    `  WATCHDOG_HANDOVER_THRESHOLD=${DEFAULT_HANDOVER_THRESHOLD}     Context usage pct required before atomic handoff`,
     '  IPC_INTERNAL_TOKEN=<token>          Shared internal auth token',
   ].join('\n');
 }
@@ -1753,6 +1781,10 @@ export async function startWatchdog(options = {}) {
   const coldStartGraceMs = parseNonNegativeInt(
     options.coldStartGraceMs ?? process.env.WATCHDOG_COLD_START_GRACE_MS,
     DEFAULT_WATCHDOG_COLD_START_GRACE_MS,
+  );
+  const handoverThreshold = parsePercentThreshold(
+    options.handoverThreshold ?? process.env.WATCHDOG_HANDOVER_THRESHOLD,
+    DEFAULT_HANDOVER_THRESHOLD,
   );
   const internalToken = options.internalToken ?? await loadInternalToken({ rootDir: PROJECT_ROOT });
   const ipcSpawn = options.ipcSpawn ?? await loadDefaultIpcSpawn();
@@ -1775,6 +1807,7 @@ export async function startWatchdog(options = {}) {
     zombiePidDetectorEnabled: options.zombiePidDetectorEnabled ?? true,
     zombiePidDetectorDryRun: options.zombiePidDetectorDryRun ?? (process.env.WATCHDOG_K_D_DRY_RUN !== 'false'),
     handoverEnabled: options.handoverEnabled ?? true,
+    handoverThreshold,
     handoverDryRun: options.handoverDryRun ?? (process.env.WATCHDOG_HANDOVER_DRY_RUN === 'true'),
     handoverConfig: {
       checkpointPath: baseHandoverConfig.checkpointPath ?? DEFAULT_CHECKPOINT_PATH,

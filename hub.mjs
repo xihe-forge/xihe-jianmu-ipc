@@ -83,6 +83,7 @@ import {
   normalizePid,
   normalizeCwd,
   normalizeContextUsagePct,
+  normalizePendingOutgoing,
   TASK_STATUSES,
 } from './lib/protocol.mjs';
 import {
@@ -622,6 +623,7 @@ wss.on('connection', async (ws, req) => {
       pid: null,
       cwd: null,
       contextUsagePct: null,
+      pendingOutgoing: 0,
       contextWindow: null,
       rateLimits: null,
       cost: null,
@@ -696,6 +698,7 @@ wss.on('connection', async (ws, req) => {
         session.pid = normalizePid(msg.pid);
         session.cwd = normalizeCwd(msg.cwd);
         session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
+        session.pendingOutgoing = normalizePendingOutgoing(msg.pendingOutgoing);
         session.subprocess = msg.subprocess === true;
         session.runtime = normalizeRuntime(msg.runtime);
         session.appServerPid = normalizePid(msg.appServerPid);
@@ -711,6 +714,9 @@ wss.on('connection', async (ws, req) => {
       case 'update':
         if (Object.hasOwn(msg, 'contextUsagePct')) {
           session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
+        }
+        if (Object.hasOwn(msg, 'pendingOutgoing')) {
+          session.pendingOutgoing = normalizePendingOutgoing(msg.pendingOutgoing);
         }
         send(ws, { type: 'updated', name: session.name, contextUsagePct: session.contextUsagePct });
         break;

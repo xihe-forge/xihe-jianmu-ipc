@@ -1,0 +1,13 @@
+phase=phase2-ku-watchdog-atomic-handoff-auto-trigger
+ts=2026-04-30T14:00:00+08:00
+agent=codex
+inner EXIT=0
+outer EXIT=0
+red_hash=5757b59
+green_commit_subject=fix(ipc): K.U wire watchdog atomic handoff trigger
+tests=focused context-usage-auto-handover EXIT=0; focused watchdog-main EXIT=0; focused atomic-handoff-quit-ipc EXIT=0; focused watchdog-handover-dummy e2e EXIT=0; prepare-rebind rerun EXIT=0; IPC_TEST_CONCURRENCY=1 pnpm test EXIT=0
+red_evidence=default threshold was still 50; minimal task checker allowed 2-of-3 signals; watchdog used hardcoded isMinimalTaskUnitComplete true; Hub /sessions omitted pendingOutgoing.
+green_evidence=default threshold is 90 and inclusive; watchdog uses createMinimalTaskUnitCompleteChecker against latest Hub session record; pendingOutgoing is exposed on /sessions; pending-rebind topic control messages bypass successor buffering so atomic-handoff-quit reaches the old holder.
+e2e_dummy=dummy session registered with contextUsagePct=95, pendingOutgoing=0, clean git cwd, empty reports/codex-runs; watchdog auto-triggered within test tick; old lineage reconnected as <name>-old; new lineage connected under original name; cold-start brief passed through ipcSpawn.
+regression=K.A-K.T tests covered by full pnpm test; initial parallel full run hit transient random-port EACCES in prepare-rebind, isolated rerun passed, serial full run passed.
+rollback=revert GREEN commit to restore previous watchdog handoff behavior.

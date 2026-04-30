@@ -1,8 +1,26 @@
 ﻿import http from 'node:http';
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+
+const DEDUP_STATE_FILE = process.env.WATCHDOG_DEDUP_STATE_PATH
+  || join(tmpdir(), 'jianmu-ipc-watchdog-dedup.json');
+
+function loadDedupState() {
+  try {
+    const raw = readFileSync(DEDUP_STATE_FILE, 'utf8');
+    return new Map(Object.entries(JSON.parse(raw)).map(([k, v]) => [k, Number(v)]));
+  } catch { return new Map(); }
+}
+
+function saveDedupState(map) {
+  try {
+    mkdirSync(dirname(DEDUP_STATE_FILE), { recursive: true });
+    writeFileSync(DEDUP_STATE_FILE, JSON.stringify(Object.fromEntries(map)), 'utf8');
+  } catch {}
+}
 import WebSocket from 'ws';
 import { createRegisterMessage, resolveContextUsagePct } from '../lib/protocol.mjs';
 import { createWakeCooldown } from '../lib/wake-cooldown.mjs';
@@ -690,6 +708,7 @@ export async function checkRateLimits(sessions, {
       }
 
       lastRateLimitCritiqueAt.set(dedupKey, nowTs);
+      saveDedupState(lastRateLimitCritiqueAt);
       const content = `[rate-limit-critique] ${name} ${windowName} ${pct}% >= ${threshold}% · resets ${formatResetTime(window?.resets_at)}`;
       try {
         await ipcSend({ to: 'harness', topic: 'critique', content });
@@ -978,7 +997,7 @@ export function createNetworkWatchdog({
   const lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY };
-  const lastRateLimitCritiqueAt = new Map();
+  const lastRateLimitCritiqueAt = loadDedupState();
   let lastCommittedPctCheck = null;
   let lastAvailableRamCheck = null;
   let lastPhysRamPctCheck = null;

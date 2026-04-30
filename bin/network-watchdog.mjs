@@ -684,7 +684,7 @@ export async function checkRateLimits(sessions, {
       const resetsAt = Number(window?.resets_at);
       if (Number.isFinite(resetsAt) && resetsAt * 1000 <= nowTs) continue;
 
-      const dedupKey = `${name}:${windowName}`;
+      const dedupKey = `portfolio:${windowName}`;
       if (nowTs - (lastRateLimitCritiqueAt.get(dedupKey) ?? Number.NEGATIVE_INFINITY) < RATE_LIMIT_CRITIQUE_DEDUP_MS) {
         continue;
       }

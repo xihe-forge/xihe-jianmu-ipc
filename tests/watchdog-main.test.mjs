@@ -9,6 +9,7 @@ import {
   createWatchdogIpcClient,
   createNetworkWatchdog,
   startWatchdog,
+  RATE_LIMIT_CRITIQUE_DEDUP_MS,
   WATCHDOG_RETRY_DELAYS_MS,
 } from '../bin/network-watchdog.mjs';
 
@@ -300,13 +301,61 @@ test('createNetworkWatchdog: handover tick reads Hub contextUsagePct and dry-run
   }
 });
 
-test('createNetworkWatchdog: default handover threshold is 90%', async () => {
+test('createNetworkWatchdog: handover tick prefers contextWindow.used_percentage over stale contextUsagePct', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'watchdog-hub-context-window-pct-'));
+  try {
+    initCleanGitDir(dir);
+    const logs = [];
+    const capture = createFetchCapture({
+      [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
+        {
+          name: 'jianmu-pm',
+          pid: 1777,
+          contextUsagePct: 0.04,
+          contextWindow: { used_percentage: 95, max_tokens: 200000 },
+          cwd: dir,
+          pendingOutgoing: 0,
+        },
+      ],
+      [`http://127.0.0.1:${TEST_IPC_PORT}/recent-messages?name=jianmu-pm&since=3600000&limit=50`]: {
+        messages: [],
+      },
+    });
+    const watchdog = createIsolatedWatchdog({
+      fetchImpl: capture.fetchImpl,
+      stderr: (line) => logs.push(line),
+      now: () => 1_000_000,
+      ipcSpawn: async () => ({ spawned: true }),
+      handoverEnabled: true,
+      handoverTickIntervalMs: 0,
+      handoverConfig: { handoverDir: dir, handoverRepoPath: dir },
+      probes: {
+        cliProxy: async () => ok(),
+        hub: async () => ok(),
+        anthropic: async () => ok(),
+        dns: async () => ok(),
+      },
+    });
+
+    await watchdog.runTick();
+    const result = watchdog.getLastHandoverTickResult();
+
+    assert.equal(result.detected.length, 1);
+    assert.equal(result.detected[0].name, 'jianmu-pm');
+    assert.equal(result.detected[0].pct, 95);
+    assert.ok(logs.some((line) => line.includes('estimateContextPct hub session=jianmu-pm pid=1777 pct=95')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('createNetworkWatchdog: default handover threshold is 50%', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'watchdog-threshold-'));
   try {
     initCleanGitDir(dir);
     const capture = createFetchCapture({
       [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
-        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 89, cwd: dir, pendingOutgoing: 0 },
+        { name: 'jianmu-pm', pid: 1777, contextUsagePct: 49, cwd: dir, pendingOutgoing: 0 },
       ],
     });
     const watchdog = createIsolatedWatchdog({
@@ -704,7 +753,7 @@ test('createNetworkWatchdog: skips stale rate limit critiques after reset time',
   assert.deepEqual(sent, []);
 });
 
-test('createNetworkWatchdog: rate limit critique dedups per portfolio window for 5 minutes', async () => {
+test('createNetworkWatchdog: rate limit critique dedups per portfolio window until dedup window elapses', async () => {
   const sent = [];
   const clock = createManualNow(1_000_000);
   const capture = createFetchCapture({
@@ -741,7 +790,7 @@ test('createNetworkWatchdog: rate limit critique dedups per portfolio window for
 
   await watchdog.runTick();
   await watchdog.runTick();
-  clock.advance(5 * 60 * 1000);
+  clock.advance(RATE_LIMIT_CRITIQUE_DEDUP_MS);
   await watchdog.runTick();
 
   assert.equal(sent.length, 4);

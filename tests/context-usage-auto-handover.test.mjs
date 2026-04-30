@@ -38,29 +38,29 @@ function makeAuto(options = {}) {
   };
 }
 
-test('default threshold 90: pct < 90 does not trigger', async () => {
-  const { auto, calls } = makeAuto({ pct: 89 });
+test('default threshold 50: pct < 50 does not trigger', async () => {
+  const { auto, calls } = makeAuto({ pct: 49 });
 
-  assert.deepEqual(await auto.tick(), { skipped: 'under-threshold', pct: 89 });
+  assert.deepEqual(await auto.tick(), { skipped: 'under-threshold', pct: 49 });
   assert.equal(calls.trigger, 0);
 });
 
-test('default threshold 90: pct >= 90 + task in progress skips task-in-progress', async () => {
-  const { auto, calls } = makeAuto({ pct: 90, complete: false });
+test('default threshold 50: pct >= 50 + task in progress skips task-in-progress', async () => {
+  const { auto, calls } = makeAuto({ pct: 50, complete: false });
 
-  assert.deepEqual(await auto.tick(), { skipped: 'task-in-progress', pct: 90 });
+  assert.deepEqual(await auto.tick(), { skipped: 'task-in-progress', pct: 50 });
   assert.equal(calls.trigger, 0);
 });
 
-test('default threshold 90: pct >= 90 + minimal task complete triggers handover', async () => {
-  const { auto, calls } = makeAuto({ pct: 90, complete: true });
+test('default threshold 50: pct >= 50 + minimal task complete triggers handover', async () => {
+  const { auto, calls } = makeAuto({ pct: 50, complete: true });
 
-  assert.deepEqual(await auto.tick(), { triggered: true, pct: 90, handover: 'ok' });
+  assert.deepEqual(await auto.tick(), { triggered: true, pct: 50, handover: 'ok' });
   assert.equal(calls.trigger, 1);
 });
 
 test('cooldown prevents repeat handover inside window', async () => {
-  const { auto, calls } = makeAuto({ pct: 90, complete: true });
+  const { auto, calls } = makeAuto({ pct: 50, complete: true });
 
   await auto.tick();
   assert.deepEqual(await auto.tick(), { skipped: 'cooldown' });
@@ -68,7 +68,7 @@ test('cooldown prevents repeat handover inside window', async () => {
 });
 
 test('cooldown allows repeat handover after window', async () => {
-  const { auto, calls, advance } = makeAuto({ pct: 90, complete: true });
+  const { auto, calls, advance } = makeAuto({ pct: 50, complete: true });
 
   await auto.tick();
   advance(1_001);

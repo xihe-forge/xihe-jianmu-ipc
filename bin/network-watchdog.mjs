@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
-import { createRegisterMessage } from '../lib/protocol.mjs';
+import { createRegisterMessage, resolveContextUsagePct } from '../lib/protocol.mjs';
 import { createWakeCooldown } from '../lib/wake-cooldown.mjs';
 import { createStateMachine } from '../lib/network-state.mjs';
 import { createHarnessStateMachine } from '../lib/harness-state.mjs';
@@ -71,7 +71,7 @@ export const PHYS_RAM_WARN_PCT = 80;
 export const PHYS_RAM_CRIT_PCT = 90;
 export const PHYS_RAM_RESET_PCT = 70;
 export const PHYS_RAM_DEDUP_MS = 5 * 60 * 1000;
-export const DEFAULT_HANDOVER_THRESHOLD = 90;
+export const DEFAULT_HANDOVER_THRESHOLD = 50;
 export const RATE_LIMIT_WARN_FIVE_HOUR = 70;
 export const RATE_LIMIT_WARN_SEVEN_DAY = 80;
 export const RATE_LIMIT_CRITIQUE_DEDUP_MS = 30 * 60 * 1000;
@@ -875,6 +875,13 @@ function getSessionCwd(sessionRecord, fallbackCwd) {
   return cwd || fallbackCwd || process.cwd();
 }
 
+function getSessionContextUsagePct(sessionRecord) {
+  return resolveContextUsagePct({
+    contextWindow: sessionRecord?.contextWindow,
+    contextUsagePct: sessionRecord?.contextUsagePct,
+  });
+}
+
 export function createWatchdogStatusHandler({
   getSnapshot,
   getHarnessSnapshot = null,
@@ -1124,8 +1131,8 @@ export function createNetworkWatchdog({
         const detected = [];
         const skipped = [];
         const candidateSessions = [...onlineSessions].sort((a, b) => {
-          const pctA = Number.isFinite(Number(a?.contextUsagePct)) ? Number(a.contextUsagePct) : 0;
-          const pctB = Number.isFinite(Number(b?.contextUsagePct)) ? Number(b.contextUsagePct) : 0;
+          const pctA = getSessionContextUsagePct(a) ?? 0;
+          const pctB = getSessionContextUsagePct(b) ?? 0;
           return pctB - pctA;
         });
         let triggeredThisTick = false;
@@ -1147,12 +1154,11 @@ export function createNetworkWatchdog({
             entry.detector = createContextUsageAutoHandover({
               threshold: handoverThreshold,
               estimateContextPct: async (sessionRecord = entry.sessionRecord) => {
-                const raw = sessionRecord?.contextUsagePct;
-                if (raw === null || raw === undefined) {
+                const pct = getSessionContextUsagePct(sessionRecord);
+                if (pct === null) {
                   stderr(`[network-watchdog] estimateContextPct hub session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} pct=unknown (null·skip handover)`);
                   return null;
                 }
-                const pct = Number.isFinite(Number(raw)) ? Number(raw) : null;
                 stderr(`[network-watchdog] estimateContextPct hub session=${sessionName} pid=${sessionRecord?.pid ?? 'unknown'} pct=${pct}`);
                 return pct;
               },

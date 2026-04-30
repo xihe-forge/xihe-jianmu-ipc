@@ -17,7 +17,7 @@ import { startWatchdog } from '../../bin/network-watchdog.mjs';
 
 const TEST_TIMEOUT = 10_000;
 
-test('watchdog e2e dummy: pct>=90 and three clean signals auto-spawn a new lineage', { timeout: TEST_TIMEOUT }, async () => {
+test('watchdog e2e dummy: pct>=50 and three clean signals auto-spawn a new lineage', { timeout: TEST_TIMEOUT }, async () => {
   const hub = await startHub({ prefix: 'watchdog-handover-dummy' });
   const cwd = mkdtempSync(join(TEMP_ROOT, 'watchdog-handover-dummy-'));
   const name = `dummy-handover-test-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
@@ -34,14 +34,14 @@ test('watchdog e2e dummy: pct>=90 and three clean signals auto-spawn a new linea
       register: {
         pid: process.pid,
         cwd,
-        contextUsagePct: 95,
+        contextUsagePct: 70,
         pendingOutgoing: 0,
       },
     });
 
     const initialSessions = await getSessions(hub.port);
     const initialDummy = initialSessions.find((session) => session.name === name);
-    assert.equal(initialDummy?.contextUsagePct, 95);
+    assert.equal(initialDummy?.contextUsagePct, 70);
     assert.equal(initialDummy?.pendingOutgoing, 0);
 
     const oldQuitAndRename = waitForWebSocketMessage(
@@ -111,7 +111,7 @@ test('watchdog e2e dummy: pct>=90 and three clean signals auto-spawn a new linea
     assert.match(spawned[0].task, /ADR-010 context-usage auto handover cold start/);
     assert.ok(sessions.some((session) => session.name === name), 'new lineage is online');
     assert.ok(sessions.some((session) => session.name === `${name}-old`), 'old lineage is online under -old');
-    assert.ok(logs.some((line) => line.includes(`context usage handover triggered: ${name} pct=95`)));
+    assert.ok(logs.some((line) => line.includes(`context usage handover triggered: ${name} pct=70`)));
   } finally {
     await watchdog?.stop();
     await closeWebSocket(newLineage);

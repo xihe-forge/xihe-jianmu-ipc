@@ -7,6 +7,7 @@ import {
   startHub,
   stopHub,
   TEST_TIMEOUT,
+  waitForWebSocketMessage,
 } from './helpers/hub-fixture.mjs';
 
 async function getSessions(port) {
@@ -50,6 +51,40 @@ test('T-ADR-010-MOD6 /sessions persists contextUsagePct from register', { timeou
     const session = sessions.find((item) => item.name === 'context-usage-value');
     assert.equal(session?.pid, 12345);
     assert.equal(session?.contextUsagePct, 61.5);
+  } finally {
+    await closeWebSocket(ws);
+    await stopHub(hub);
+  }
+});
+
+test('T-ADR-010-MOD6-KU /sessions keeps contextWindow truth across stale register and update', { timeout: TEST_TIMEOUT }, async () => {
+  const hub = await startHub({ prefix: 'hub-sessions-context-window-truth' });
+  const name = 'context-window-truth';
+  const cwd = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc';
+  const ws = await connectSession(hub.port, name, {
+    register: { pid: 12345, cwd, contextUsagePct: 0.04 },
+  });
+  try {
+    await waitForWebSocketMessage(ws, (message) => message.type === 'registered' && message.name === name);
+
+    const contextWindow = { used_percentage: 70, max_tokens: 200000 };
+    const response = await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/session/context',
+      json: { name, context_window: contextWindow },
+    });
+    assert.equal(response.statusCode, 204);
+
+    ws.send(JSON.stringify({ type: 'update', name, contextUsagePct: 0.0412 }));
+    await waitForWebSocketMessage(ws, (message) => message.type === 'updated' && message.name === name);
+
+    ws.send(JSON.stringify({ type: 'register', name, pid: 12345, cwd, contextUsagePct: 0.0412 }));
+    await waitForWebSocketMessage(ws, (message) => message.type === 'registered' && message.name === name);
+
+    const sessions = await getSessions(hub.port);
+    const session = sessions.find((item) => item.name === name);
+    assert.equal(session?.contextUsagePct, 70);
+    assert.deepEqual(session?.contextWindow, contextWindow);
   } finally {
     await closeWebSocket(ws);
     await stopHub(hub);

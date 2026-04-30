@@ -83,7 +83,7 @@ import {
   validateMessage,
   normalizePid,
   normalizeCwd,
-  normalizeContextUsagePct,
+  resolveContextUsagePct,
   normalizePendingOutgoing,
   TASK_STATUSES,
 } from './lib/protocol.mjs';
@@ -166,6 +166,13 @@ function normalizeOptionalString(value) {
 function normalizeStartedAt(value) {
   if (!Number.isFinite(value) || value <= 0) return null;
   return Math.trunc(value);
+}
+
+function updateSessionContextUsagePct(session, contextUsagePct) {
+  session.contextUsagePct = resolveContextUsagePct({
+    contextWindow: session.contextWindow,
+    contextUsagePct,
+  });
 }
 
 /** 会话注册表 @type {Map<string, {name:string, ws:import('ws').WebSocket|null, connectedAt:number, topics:Set<string>, inbox:Array, inboxExpiry:ReturnType<typeof setTimeout>|null, gracefulReleasing?:boolean}>} */
@@ -756,7 +763,7 @@ wss.on('connection', async (ws, req) => {
         session.channelPort = msg.channelPort ?? null;
         session.pid = normalizePid(msg.pid);
         session.cwd = normalizeCwd(msg.cwd);
-        session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
+        updateSessionContextUsagePct(session, msg.contextUsagePct);
         session.pendingOutgoing = normalizePendingOutgoing(msg.pendingOutgoing);
         session.subprocess = msg.subprocess === true;
         session.runtime = normalizeRuntime(msg.runtime);
@@ -777,7 +784,7 @@ wss.on('connection', async (ws, req) => {
         break;
       case 'update':
         if (Object.hasOwn(msg, 'contextUsagePct')) {
-          session.contextUsagePct = normalizeContextUsagePct(msg.contextUsagePct);
+          updateSessionContextUsagePct(session, msg.contextUsagePct);
         }
         if (Object.hasOwn(msg, 'pendingOutgoing')) {
           session.pendingOutgoing = normalizePendingOutgoing(msg.pendingOutgoing);

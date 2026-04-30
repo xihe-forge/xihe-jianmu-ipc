@@ -91,7 +91,7 @@ export const PHYS_RAM_RESET_PCT = 70;
 export const PHYS_RAM_DEDUP_MS = 5 * 60 * 1000;
 export const DEFAULT_HANDOVER_THRESHOLD = 50;
 export const RATE_LIMIT_WARN_FIVE_HOUR = 70;
-export const RATE_LIMIT_WARN_SEVEN_DAY = 80;
+export const RATE_LIMIT_WARN_SEVEN_DAY = 95;
 export const RATE_LIMIT_CRITIQUE_DEDUP_MS = 30 * 60 * 1000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

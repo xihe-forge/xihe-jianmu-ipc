@@ -704,13 +704,20 @@ test('createNetworkWatchdog: skips stale rate limit critiques after reset time',
   assert.deepEqual(sent, []);
 });
 
-test('createNetworkWatchdog: rate limit critique dedups per session window for 5 minutes', async () => {
+test('createNetworkWatchdog: rate limit critique dedups per portfolio window for 5 minutes', async () => {
   const sent = [];
   const clock = createManualNow(1_000_000);
   const capture = createFetchCapture({
     [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
       {
         name: 'auditor-portfolio',
+        rateLimits: {
+          five_hour: { used_percentage: 71, resets_at: 1777300000 },
+          seven_day: { used_percentage: 81, resets_at: 1777900000 },
+        },
+      },
+      {
+        name: 'xihe-ai',
         rateLimits: {
           five_hour: { used_percentage: 71, resets_at: 1777300000 },
           seven_day: { used_percentage: 81, resets_at: 1777900000 },
@@ -740,6 +747,8 @@ test('createNetworkWatchdog: rate limit critique dedups per session window for 5
   assert.equal(sent.length, 4);
   assert.equal(sent.filter((message) => message.content.includes('five_hour')).length, 2);
   assert.equal(sent.filter((message) => message.content.includes('seven_day')).length, 2);
+  assert.equal(sent.filter((message) => message.content.includes('auditor-portfolio')).length, 4);
+  assert.equal(sent.filter((message) => message.content.includes('xihe-ai')).length, 0);
 });
 
 function createManualNow(start = 0) {

@@ -65,7 +65,11 @@ describe('AC-WATCHDOG-008 phys_ram_used_pct probe', () => {
     assert.equal(handleAvailableRamPct({ ok: true, pct: 82 }, options), 'WARN');
     assert.equal(handleAvailableRamPct({ ok: true, pct: 92 }, options), 'CRIT');
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(sent.map((message) => message.topic), ['critique', 'critique']);
+    assert.deepEqual(sent.map((message) => message.topic), ['critique', 'critique', 'critique', 'critique']);
+    assert.deepEqual(sent.filter((message) => message.to === 'computer-worker').map((message) => message.content), [
+      '⚠️ 内存超 80%·建议排查',
+      '⚠️ 内存超 80%·建议排查',
+    ]);
     assert.equal(spawnMock.calls.length, 1);
     assert(spawnMock.calls[0].args.includes('tree-kill'));
   });
@@ -98,7 +102,7 @@ describe('AC-WATCHDOG-008 phys_ram_used_pct probe', () => {
     assert.equal(handleAvailableRamPct({ ok: true, pct: 85 }, options), 'WARN');
 
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(sent.length, 3);
+    assert.equal(sent.length, 6);
     assert.equal(spawnMock.calls.length, 1);
   });
 });

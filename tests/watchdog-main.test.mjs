@@ -395,7 +395,12 @@ test('createNetworkWatchdog: handover requires pending=0, clean git, and no in-f
       sessionPatch: { pendingOutgoing: 0 },
       setup: (dir) => {
         initCleanGitDir(dir);
-        writeFileSync(join(dir, 'dirty.txt'), 'dirty');
+        execFileSync('git', ['config', 'user.name', 'Xihe'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['config', 'user.email', 'xihe-ai@lumidrivetech.com'], { cwd: dir, stdio: 'ignore' });
+        writeFileSync(join(dir, 'README.md'), 'clean');
+        execFileSync('git', ['add', 'README.md'], { cwd: dir, stdio: 'ignore' });
+        execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, stdio: 'ignore' });
+        writeFileSync(join(dir, 'README.md'), 'dirty');
       },
     },
     {
@@ -687,15 +692,15 @@ test('createNetworkWatchdog: handover tick uses next-tick pacing label', async (
   }
 });
 
-test('createNetworkWatchdog: critiques five_hour at 70% and seven_day at 80%', async () => {
+test('createNetworkWatchdog: critiques five_hour and seven_day at 95%', async () => {
   const sent = [];
   const capture = createFetchCapture({
     [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
       {
         name: 'harness',
         rateLimits: {
-          five_hour: { used_percentage: 70, resets_at: 1777300000 },
-          seven_day: { used_percentage: 80, resets_at: 1777900000 },
+          five_hour: { used_percentage: 96, resets_at: 1777300000 },
+          seven_day: { used_percentage: 96, resets_at: 1777900000 },
         },
       },
     ],
@@ -718,8 +723,8 @@ test('createNetworkWatchdog: critiques five_hour at 70% and seven_day at 80%', a
 
   assert.deepEqual(sent.map((message) => message.to), ['harness', 'harness']);
   assert.deepEqual(sent.map((message) => message.topic), ['critique', 'critique']);
-  assert.match(sent[0].content, /harness five_hour 70% >= 70%/);
-  assert.match(sent[1].content, /harness seven_day 80% >= 80%/);
+  assert.match(sent[0].content, /harness five_hour 96% >= 95%/);
+  assert.match(sent[1].content, /harness seven_day 96% >= 95%/);
 });
 
 test('createNetworkWatchdog: skips stale rate limit critiques after reset time', async () => {
@@ -755,21 +760,21 @@ test('createNetworkWatchdog: skips stale rate limit critiques after reset time',
 
 test('createNetworkWatchdog: rate limit critique dedups per portfolio window until dedup window elapses', async () => {
   const sent = [];
-  const clock = createManualNow(1_000_000);
+  const clock = createManualNow(1_000_000 + RATE_LIMIT_CRITIQUE_DEDUP_MS + 1);
   const capture = createFetchCapture({
     [`http://127.0.0.1:${TEST_IPC_PORT}/sessions`]: [
       {
         name: 'auditor-portfolio',
         rateLimits: {
-          five_hour: { used_percentage: 71, resets_at: 1777300000 },
-          seven_day: { used_percentage: 81, resets_at: 1777900000 },
+          five_hour: { used_percentage: 96, resets_at: 1777300000 },
+          seven_day: { used_percentage: 96, resets_at: 1777900000 },
         },
       },
       {
         name: 'xihe-ai',
         rateLimits: {
-          five_hour: { used_percentage: 71, resets_at: 1777300000 },
-          seven_day: { used_percentage: 81, resets_at: 1777900000 },
+          five_hour: { used_percentage: 96, resets_at: 1777300000 },
+          seven_day: { used_percentage: 96, resets_at: 1777900000 },
         },
       },
     ],

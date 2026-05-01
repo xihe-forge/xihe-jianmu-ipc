@@ -39,9 +39,11 @@ import { isLoopbackAddress, loadInternalToken } from '../lib/internal-auth.mjs';
 import {
   probeAnthropic,
   probeAvailableRamMb,
+  probeCpuUsedPct,
   probeCliProxy,
   probeCommittedPct,
   probeDns,
+  probeDiskUsedPct,
   probeHub,
 } from '../lib/network-probes.mjs';
 import { createStuckSessionDetector } from '../lib/stuck-session-detector.mjs';
@@ -89,6 +91,10 @@ export const PHYS_RAM_WARN_PCT = 80;
 export const PHYS_RAM_CRIT_PCT = 90;
 export const PHYS_RAM_RESET_PCT = 70;
 export const PHYS_RAM_DEDUP_MS = 5 * 60 * 1000;
+export const CPU_WARN_PCT = 80;
+export const DISK_WARN_PCT = 80;
+export const CPU_DEDUP_MS = 30 * 60 * 1000;
+export const DISK_DEDUP_MS = 30 * 60 * 1000;
 export const DEFAULT_HANDOVER_THRESHOLD = 50;
 export const RATE_LIMIT_WARN_FIVE_HOUR = 95;
 export const RATE_LIMIT_WARN_SEVEN_DAY = 95;
@@ -387,6 +393,8 @@ export function createDefaultWatchdogProbes({
     committed_pct: () => probeCommittedPct({ timeoutMs }),
     available_ram_mb: () => probeAvailableRamMb({ timeoutMs }),
     phys_ram_used_pct: () => probeAvailableRamPct({ timeoutMs }),
+    cpu_used_pct: () => probeCpuUsedPct({ timeoutMs }),
+    disk_used_pct: () => probeDiskUsedPct({ timeoutMs }),
     harness: harnessProbe,
   };
 }
@@ -473,6 +481,7 @@ function triggerPhysicalRamTreeKill({ metric, value }, {
 
 export function handleAvailableRamMb(result, {
   ipcSend = null,
+  alertComputerWorkerImpl = alertComputerWorker,
   now = Date.now,
   stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
   lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY },
@@ -505,6 +514,7 @@ export function handleAvailableRamMb(result, {
     })).catch((error) => {
       stderr(`[watchdog] available_ram_mb CRIT ${mb}MB -> broadcast FAILED: ${toErrorMessage(error)}`);
     });
+    alertComputerWorkerImpl('⚠️ 内存超 80%·建议排查', { ipcSend, stderr });
     return true;
   }
 
@@ -520,6 +530,7 @@ export function handleAvailableRamMb(result, {
     })).catch((error) => {
       stderr(`[watchdog] available_ram_mb WARN ${mb}MB -> broadcast FAILED: ${toErrorMessage(error)}`);
     });
+    alertComputerWorkerImpl('⚠️ 内存超 80%·建议排查', { ipcSend, stderr });
     return true;
   }
 
@@ -612,8 +623,27 @@ export function createWakeReaper({
   };
 }
 
+export function alertComputerWorker(content = '⚠️ CPU/磁盘 超 80%·建议排查', {
+  ipcSend = null,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+} = {}) {
+  if (typeof ipcSend !== 'function') {
+    return false;
+  }
+
+  void Promise.resolve(ipcSend({
+    to: 'computer-worker',
+    topic: 'critique',
+    content,
+  })).catch((error) => {
+    stderr(`[watchdog] computer-worker alert failed: ${toErrorMessage(error)}`);
+  });
+  return true;
+}
+
 export function handleAvailableRamPct(check, {
   ipcSend = null,
+  alertComputerWorkerImpl = alertComputerWorker,
   now = Date.now,
   stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
   lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY },
@@ -665,7 +695,70 @@ export function handleAvailableRamPct(check, {
   })).catch((error) => {
     stderr(`[watchdog] phys_ram_used_pct ${level} ${pct}% >= ${threshold}% -> broadcast FAILED: ${toErrorMessage(error)}`);
   });
+  alertComputerWorkerImpl('⚠️ 内存超 80%·建议排查', { ipcSend, stderr });
   return level;
+}
+
+export function handleCpuUsedPct(check, {
+  ipcSend = null,
+  alertComputerWorkerImpl = alertComputerWorker,
+  now = Date.now,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+  lastCpuAction = { WARN: Number.NEGATIVE_INFINITY },
+} = {}) {
+  if (check?.ok !== true || !Number.isFinite(check.pct) || check.pct < CPU_WARN_PCT) {
+    return false;
+  }
+
+  const nowTs = now();
+  if (nowTs - lastCpuAction.WARN < CPU_DEDUP_MS) {
+    return false;
+  }
+
+  lastCpuAction.WARN = nowTs;
+  const content = `[watchdog] system cpu_used_pct ${check.pct.toFixed(1)}% 破 80% WARN`;
+  void Promise.resolve(ipcSend?.({
+    to: '*',
+    topic: 'critique',
+    content,
+  })).catch((error) => {
+    stderr(`[watchdog] cpu_used_pct WARN ${check.pct}% >= ${CPU_WARN_PCT}% -> broadcast FAILED: ${toErrorMessage(error)}`);
+  });
+  alertComputerWorkerImpl('⚠️ CPU/磁盘 超 80%·建议排查', { ipcSend, stderr });
+  return true;
+}
+
+export function handleDiskUsedPct(check, {
+  ipcSend = null,
+  alertComputerWorkerImpl = alertComputerWorker,
+  now = Date.now,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+  lastDiskAction = { WARN: Number.NEGATIVE_INFINITY },
+} = {}) {
+  if (check?.ok !== true || !Number.isFinite(check.maxUsedPct) || check.maxUsedPct < DISK_WARN_PCT) {
+    return false;
+  }
+
+  const nowTs = now();
+  if (nowTs - lastDiskAction.WARN < DISK_DEDUP_MS) {
+    return false;
+  }
+
+  lastDiskAction.WARN = nowTs;
+  const hottest = Array.isArray(check.drives)
+    ? check.drives.find((drive) => drive?.usedPct === check.maxUsedPct)
+    : null;
+  const driveLabel = hottest?.drive ? ` ${hottest.drive}` : '';
+  const content = `[watchdog] system disk_used_pct${driveLabel} ${check.maxUsedPct.toFixed(1)}% 破 80% WARN`;
+  void Promise.resolve(ipcSend?.({
+    to: '*',
+    topic: 'critique',
+    content,
+  })).catch((error) => {
+    stderr(`[watchdog] disk_used_pct WARN ${check.maxUsedPct}% >= ${DISK_WARN_PCT}% -> broadcast FAILED: ${toErrorMessage(error)}`);
+  });
+  alertComputerWorkerImpl('⚠️ CPU/磁盘 超 80%·建议排查', { ipcSend, stderr });
+  return true;
 }
 
 function formatResetTime(resetsAt) {
@@ -877,7 +970,14 @@ export function createWatchdogIpcClient({
 
 function omitHarnessProbe(probes) {
   return Object.fromEntries(
-    Object.entries(probes).filter(([name]) => name !== 'harness' && name !== 'committed_pct' && name !== 'available_ram_mb' && name !== 'phys_ram_used_pct'),
+    Object.entries(probes).filter(([name]) => ![
+      'harness',
+      'committed_pct',
+      'available_ram_mb',
+      'phys_ram_used_pct',
+      'cpu_used_pct',
+      'disk_used_pct',
+    ].includes(name)),
   );
 }
 
@@ -996,11 +1096,15 @@ export function createNetworkWatchdog({
   const lastCommitAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastAvailableRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
+  const lastCpuAction = { WARN: Number.NEGATIVE_INFINITY };
+  const lastDiskAction = { WARN: Number.NEGATIVE_INFINITY };
   const lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY };
   const lastRateLimitCritiqueAt = loadDedupState();
   let lastCommittedPctCheck = null;
   let lastAvailableRamCheck = null;
   let lastPhysRamPctCheck = null;
+  let lastCpuPctCheck = null;
+  let lastDiskPctCheck = null;
   const anthropicProbeHistory = [];
   let wakeReaperNow = 0;
   let lastStuckDetectorTickAt = 0;
@@ -1033,6 +1137,12 @@ export function createNetworkWatchdog({
     : null;
   const physRamPctProbe = typeof resolvedProbes.phys_ram_used_pct === 'function'
     ? resolvedProbes.phys_ram_used_pct
+    : null;
+  const cpuPctProbe = typeof resolvedProbes.cpu_used_pct === 'function'
+    ? resolvedProbes.cpu_used_pct
+    : null;
+  const diskPctProbe = typeof resolvedProbes.disk_used_pct === 'function'
+    ? resolvedProbes.disk_used_pct
     : null;
   const canAutoHandover = typeof triggerHarnessSelfHandoverImpl === 'function'
     && lineage
@@ -1405,6 +1515,8 @@ export function createNetworkWatchdog({
       ...(lastCommittedPctCheck ? { committed_pct: lastCommittedPctCheck } : {}),
       ...(lastAvailableRamCheck ? { available_ram_mb: lastAvailableRamCheck } : {}),
       ...(lastPhysRamPctCheck ? { phys_ram_used_pct: lastPhysRamPctCheck } : {}),
+      ...(lastCpuPctCheck ? { cpu_used_pct: lastCpuPctCheck } : {}),
+      ...(lastDiskPctCheck ? { disk_used_pct: lastDiskPctCheck } : {}),
     };
     return {
       ...snapshot,
@@ -1492,6 +1604,58 @@ export function createNetworkWatchdog({
       lastPhysRamAction,
       spawnImpl,
       lastPhysRamTreeKillAction,
+    });
+    return check;
+  }
+
+  async function runCpuPctTick() {
+    if (!cpuPctProbe) {
+      return null;
+    }
+
+    let result;
+    try {
+      result = await cpuPctProbe();
+    } catch (error) {
+      result = { ok: false, pct: null, error: toErrorMessage(error) };
+    }
+
+    const check = {
+      ...result,
+      ts: result?.ts ?? now(),
+    };
+    lastCpuPctCheck = check;
+    handleCpuUsedPct(check, {
+      ipcSend: resolvedHandoverIpcSend,
+      now,
+      stderr,
+      lastCpuAction,
+    });
+    return check;
+  }
+
+  async function runDiskPctTick() {
+    if (!diskPctProbe) {
+      return null;
+    }
+
+    let result;
+    try {
+      result = await diskPctProbe();
+    } catch (error) {
+      result = { ok: false, drives: [], maxUsedPct: null, error: toErrorMessage(error) };
+    }
+
+    const check = {
+      ...result,
+      ts: result?.ts ?? now(),
+    };
+    lastDiskPctCheck = check;
+    handleDiskUsedPct(check, {
+      ipcSend: resolvedHandoverIpcSend,
+      now,
+      stderr,
+      lastDiskAction,
     });
     return check;
   }
@@ -1647,11 +1811,13 @@ export function createNetworkWatchdog({
 
   async function runTick({ scheduleNext = false } = {}) {
     try {
-      const [networkState, committedPctCheck, availableRamCheck, physRamPctCheck] = await Promise.all([
+      const [networkState, committedPctCheck, availableRamCheck, physRamPctCheck, cpuPctCheck, diskPctCheck] = await Promise.all([
         networkStateMachine.tick(),
         runCommittedPctTick(),
         runAvailableRamTick(),
         runPhysRamPctTick(),
+        runCpuPctTick(),
+        runDiskPctTick(),
         runHarnessTick(),
       ]);
       const lastChecks = {
@@ -1659,6 +1825,8 @@ export function createNetworkWatchdog({
         ...(committedPctCheck ? { committed_pct: committedPctCheck } : {}),
         ...(availableRamCheck ? { available_ram_mb: availableRamCheck } : {}),
         ...(physRamPctCheck ? { phys_ram_used_pct: physRamPctCheck } : {}),
+        ...(cpuPctCheck ? { cpu_used_pct: cpuPctCheck } : {}),
+        ...(diskPctCheck ? { disk_used_pct: diskPctCheck } : {}),
       };
       await Promise.all([
         runWakeReaperTick(lastChecks),

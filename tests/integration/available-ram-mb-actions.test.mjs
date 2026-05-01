@@ -68,10 +68,11 @@ test('available_ram_mb actions: 9000 MB broadcasts WARN critique once', () => {
   const acted = run({ ok: true, availableMb: 9_000 }, harness);
 
   assert.equal(acted, true);
-  assert.equal(harness.ipcCalls.length, 1);
+  assert.equal(harness.ipcCalls.length, 2);
   assert.equal(harness.ipcCalls[0].topic, 'critique');
   assert.match(harness.ipcCalls[0].content, /破 10GB/);
   assert.match(harness.ipcCalls[0].content, /警戒/);
+  assert.equal(harness.ipcCalls[1].to, 'computer-worker');
 });
 
 test('available_ram_mb actions: 4000 MB broadcasts CRIT critique once', () => {
@@ -80,10 +81,11 @@ test('available_ram_mb actions: 4000 MB broadcasts CRIT critique once', () => {
   const acted = run({ ok: true, availableMb: 4_000 }, harness);
 
   assert.equal(acted, true);
-  assert.equal(harness.ipcCalls.length, 1);
+  assert.equal(harness.ipcCalls.length, 2);
   assert.equal(harness.ipcCalls[0].topic, 'critique');
   assert.match(harness.ipcCalls[0].content, /破 5GB/);
   assert.match(harness.ipcCalls[0].content, /临界/);
+  assert.equal(harness.ipcCalls[1].to, 'computer-worker');
   assert.equal(harness.spawnMock.calls.length, 0);
 });
 
@@ -94,7 +96,7 @@ test('available_ram_mb actions: below 3GB invokes physical tree-kill', async () 
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(acted, true);
-  assert.equal(harness.ipcCalls.length, 1);
+  assert.equal(harness.ipcCalls.length, 2);
   assert.equal(harness.spawnMock.calls.length, 1);
   assert.equal(harness.spawnMock.calls[0].command, 'pwsh');
   assert(harness.spawnMock.calls[0].args.some((arg) => arg.includes('session-guard.ps1')));
@@ -107,9 +109,9 @@ test('available_ram_mb actions: CRIT dedup is independent from WARN', () => {
   run({ ok: true, availableMb: 9_000 }, harness);
   run({ ok: true, availableMb: 4_000 }, harness);
 
-  assert.equal(harness.ipcCalls.length, 2);
+  assert.equal(harness.ipcCalls.length, 4);
   assert.match(harness.ipcCalls[0].content, /破 10GB/);
-  assert.match(harness.ipcCalls[1].content, /破 5GB/);
+  assert.match(harness.ipcCalls[2].content, /破 5GB/);
 });
 
 test('available_ram_mb actions: dedups repeated 9000 MB WARN within 5min', () => {
@@ -118,7 +120,7 @@ test('available_ram_mb actions: dedups repeated 9000 MB WARN within 5min', () =>
   run({ ok: true, availableMb: 9_000 }, harness);
   run({ ok: true, availableMb: 9_000 }, harness);
 
-  assert.equal(harness.ipcCalls.length, 1);
+  assert.equal(harness.ipcCalls.length, 2);
 });
 
 test('available_ram_mb actions: emits second WARN after 5min dedup window', () => {
@@ -130,7 +132,7 @@ test('available_ram_mb actions: emits second WARN after 5min dedup window', () =
   nowValue += (5 * 60 * 1000) + 1;
   run({ ok: true, availableMb: 9_000 }, harness);
 
-  assert.equal(harness.ipcCalls.length, 2);
+  assert.equal(harness.ipcCalls.length, 4);
 });
 
 test('available_ram_mb actions: failed probe does not broadcast', () => {

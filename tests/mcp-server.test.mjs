@@ -82,13 +82,13 @@ test('mcp-server: startup name validation rejects PID fallback unless transient 
 
     assert.deepEqual(
       mod.validateMcpStartupSessionName({
-        name: 'worker_1',
+        name: 'AB_C',
         isFallback: false,
         env: {},
       }),
       {
         ok: false,
-        error: 'session name must match [a-z0-9-]+',
+        error: 'session name must match [a-z0-9_-]+',
       },
     );
 

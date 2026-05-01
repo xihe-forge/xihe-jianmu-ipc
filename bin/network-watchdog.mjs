@@ -1114,6 +1114,7 @@ export function createNetworkWatchdog({
   handoverDryRun = true,
   getSessionStateImpl = getSessionState,
   rateLimitCritiqueEnabled = true,
+  rateLimitDedupState = loadDedupState(),
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -1139,7 +1140,7 @@ export function createNetworkWatchdog({
   const lastDiskAction = { WARN: Number.NEGATIVE_INFINITY };
   const lastOrphanGitAction = { WARN: Number.NEGATIVE_INFINITY };
   const lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY };
-  const lastRateLimitCritiqueAt = loadDedupState();
+  const lastRateLimitCritiqueAt = rateLimitDedupState;
   let lastCommittedPctCheck = null;
   let lastAvailableRamCheck = null;
   let lastPhysRamPctCheck = null;

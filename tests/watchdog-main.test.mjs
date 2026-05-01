@@ -57,6 +57,7 @@ function createIsolatedWatchdog(options = {}) {
     internalToken: 'watchdog-token',
     createWatchdogIpcClientImpl: () => createIpcClientStub(),
     rateLimitCritiqueEnabled: false,
+    rateLimitDedupState: new Map(),
     ...options,
   });
 }

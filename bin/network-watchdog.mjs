@@ -45,6 +45,7 @@ import {
   probeDns,
   probeDiskUsedPct,
   probeHub,
+  probeOrphanGitProcesses,
 } from '../lib/network-probes.mjs';
 import { createStuckSessionDetector } from '../lib/stuck-session-detector.mjs';
 import {
@@ -95,6 +96,9 @@ export const CPU_WARN_PCT = 80;
 export const DISK_WARN_PCT = 80;
 export const CPU_DEDUP_MS = 30 * 60 * 1000;
 export const DISK_DEDUP_MS = 30 * 60 * 1000;
+export const ORPHAN_GIT_AGE_MS = 5 * 60 * 1000;
+export const ORPHAN_GIT_DEDUP_MS = 30 * 60 * 1000;
+export const ORPHAN_GIT_COUNT_WARN = 3;
 export const DEFAULT_HANDOVER_THRESHOLD = 50;
 export const RATE_LIMIT_WARN_FIVE_HOUR = 95;
 export const RATE_LIMIT_WARN_SEVEN_DAY = 95;
@@ -395,6 +399,7 @@ export function createDefaultWatchdogProbes({
     phys_ram_used_pct: () => probeAvailableRamPct({ timeoutMs }),
     cpu_used_pct: () => probeCpuUsedPct({ timeoutMs }),
     disk_used_pct: () => probeDiskUsedPct({ timeoutMs }),
+    orphan_git: () => probeOrphanGitProcesses({ timeoutMs, minAgeMs: ORPHAN_GIT_AGE_MS }),
     harness: harnessProbe,
   };
 }
@@ -761,6 +766,39 @@ export function handleDiskUsedPct(check, {
   return true;
 }
 
+export function handleOrphanGitProcesses(check, {
+  ipcSend = null,
+  alertComputerWorkerImpl = alertComputerWorker,
+  now = Date.now,
+  stderr = (...args) => process.stderr.write(`${args.join(' ')}\n`),
+  lastOrphanGitAction = { WARN: Number.NEGATIVE_INFINITY },
+} = {}) {
+  if (!check?.ok || !Array.isArray(check.orphans) || check.orphans.length < ORPHAN_GIT_COUNT_WARN) {
+    return false;
+  }
+
+  const nowTs = now();
+  if (nowTs - lastOrphanGitAction.WARN < ORPHAN_GIT_DEDUP_MS) {
+    return false;
+  }
+
+  lastOrphanGitAction.WARN = nowTs;
+  const maxAgeMs = Number.isFinite(check.maxAgeMs)
+    ? check.maxAgeMs
+    : Math.max(...check.orphans.map((processInfo) => Number(processInfo.ageMs) || 0));
+  const maxAgeMin = Math.max(0, Math.round(maxAgeMs / 60_000));
+  const content = `⚠️ ${check.orphans.length} 个孤儿 git.exe 父进程已退·最长 age=${maxAgeMin}min·CPU 雪崩风险`;
+  void Promise.resolve(ipcSend?.({
+    to: '*',
+    topic: 'critique',
+    content,
+  })).catch((error) => {
+    stderr(`[watchdog] orphan_git WARN count=${check.orphans.length} maxAgeMs=${maxAgeMs} -> broadcast FAILED: ${toErrorMessage(error)}`);
+  });
+  alertComputerWorkerImpl(content, { ipcSend, stderr });
+  return true;
+}
+
 function formatResetTime(resetsAt) {
   if (!Number.isFinite(Number(resetsAt))) {
     return 'unknown';
@@ -977,6 +1015,7 @@ function omitHarnessProbe(probes) {
       'phys_ram_used_pct',
       'cpu_used_pct',
       'disk_used_pct',
+      'orphan_git',
     ].includes(name)),
   );
 }
@@ -1098,6 +1137,7 @@ export function createNetworkWatchdog({
   const lastPhysRamAction = { WARN: Number.NEGATIVE_INFINITY, CRIT: Number.NEGATIVE_INFINITY };
   const lastCpuAction = { WARN: Number.NEGATIVE_INFINITY };
   const lastDiskAction = { WARN: Number.NEGATIVE_INFINITY };
+  const lastOrphanGitAction = { WARN: Number.NEGATIVE_INFINITY };
   const lastPhysRamTreeKillAction = { CRIT: Number.NEGATIVE_INFINITY };
   const lastRateLimitCritiqueAt = loadDedupState();
   let lastCommittedPctCheck = null;
@@ -1105,6 +1145,7 @@ export function createNetworkWatchdog({
   let lastPhysRamPctCheck = null;
   let lastCpuPctCheck = null;
   let lastDiskPctCheck = null;
+  let lastOrphanGitCheck = null;
   const anthropicProbeHistory = [];
   let wakeReaperNow = 0;
   let lastStuckDetectorTickAt = 0;
@@ -1143,6 +1184,9 @@ export function createNetworkWatchdog({
     : null;
   const diskPctProbe = typeof resolvedProbes.disk_used_pct === 'function'
     ? resolvedProbes.disk_used_pct
+    : null;
+  const orphanGitProbe = typeof resolvedProbes.orphan_git === 'function'
+    ? resolvedProbes.orphan_git
     : null;
   const canAutoHandover = typeof triggerHarnessSelfHandoverImpl === 'function'
     && lineage
@@ -1517,6 +1561,7 @@ export function createNetworkWatchdog({
       ...(lastPhysRamPctCheck ? { phys_ram_used_pct: lastPhysRamPctCheck } : {}),
       ...(lastCpuPctCheck ? { cpu_used_pct: lastCpuPctCheck } : {}),
       ...(lastDiskPctCheck ? { disk_used_pct: lastDiskPctCheck } : {}),
+      ...(lastOrphanGitCheck ? { orphan_git: lastOrphanGitCheck } : {}),
     };
     return {
       ...snapshot,
@@ -1656,6 +1701,32 @@ export function createNetworkWatchdog({
       now,
       stderr,
       lastDiskAction,
+    });
+    return check;
+  }
+
+  async function runOrphanGitTick() {
+    if (!orphanGitProbe) {
+      return null;
+    }
+
+    let result;
+    try {
+      result = await orphanGitProbe();
+    } catch (error) {
+      result = { ok: false, total: 0, orphans: [], maxAgeMs: 0, error: toErrorMessage(error) };
+    }
+
+    const check = {
+      ...result,
+      ts: result?.ts ?? now(),
+    };
+    lastOrphanGitCheck = check;
+    handleOrphanGitProcesses(check, {
+      ipcSend: resolvedHandoverIpcSend,
+      now,
+      stderr,
+      lastOrphanGitAction,
     });
     return check;
   }
@@ -1811,13 +1882,14 @@ export function createNetworkWatchdog({
 
   async function runTick({ scheduleNext = false } = {}) {
     try {
-      const [networkState, committedPctCheck, availableRamCheck, physRamPctCheck, cpuPctCheck, diskPctCheck] = await Promise.all([
+      const [networkState, committedPctCheck, availableRamCheck, physRamPctCheck, cpuPctCheck, diskPctCheck, orphanGitCheck] = await Promise.all([
         networkStateMachine.tick(),
         runCommittedPctTick(),
         runAvailableRamTick(),
         runPhysRamPctTick(),
         runCpuPctTick(),
         runDiskPctTick(),
+        runOrphanGitTick(),
         runHarnessTick(),
       ]);
       const lastChecks = {
@@ -1827,6 +1899,7 @@ export function createNetworkWatchdog({
         ...(physRamPctCheck ? { phys_ram_used_pct: physRamPctCheck } : {}),
         ...(cpuPctCheck ? { cpu_used_pct: cpuPctCheck } : {}),
         ...(diskPctCheck ? { disk_used_pct: diskPctCheck } : {}),
+        ...(orphanGitCheck ? { orphan_git: orphanGitCheck } : {}),
       };
       await Promise.all([
         runWakeReaperTick(lastChecks),

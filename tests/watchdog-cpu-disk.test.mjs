@@ -5,6 +5,7 @@ import {
   alertComputerWorker,
   handleCpuUsedPct,
   handleDiskUsedPct,
+  handleOrphanGitProcesses,
 } from '../bin/network-watchdog.mjs';
 import {
   probeCpuUsedPct,
@@ -104,4 +105,56 @@ test('handleCpuUsedPct and handleDiskUsedPct broadcast then single-ping computer
   assert.deepEqual(sent.map((message) => message.to), ['*', 'computer-worker', '*', 'computer-worker']);
   assert.match(sent[0].content, /cpu_used_pct 81\.2%/);
   assert.match(sent[2].content, /disk_used_pct D: 92\.0%/);
+});
+
+test('handleOrphanGitProcesses: >=3 orphans broadcast then single-ping computer-worker', async () => {
+  const sent = [];
+  const acted = handleOrphanGitProcesses({
+    ok: true,
+    total: 4,
+    orphans: [
+      { pid: 101, ppid: 1, ageMs: 5 * 60 * 1000 },
+      { pid: 102, ppid: 2, ageMs: 6 * 60 * 1000 },
+      { pid: 103, ppid: 3, ageMs: 9 * 60 * 1000 },
+    ],
+    maxAgeMs: 9 * 60 * 1000,
+  }, {
+    ipcSend: async (payload) => {
+      sent.push(payload);
+      return true;
+    },
+    now: () => 1_000_000,
+    stderr: () => {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(acted, true);
+  assert.deepEqual(sent.map((message) => message.to), ['*', 'computer-worker']);
+  assert.match(sent[0].content, /3 个孤儿 git\.exe/);
+  assert.match(sent[0].content, /age=9min/);
+  assert.equal(sent[1].content, sent[0].content);
+});
+
+test('handleOrphanGitProcesses: <3 orphans does not alert', async () => {
+  const sent = [];
+  const acted = handleOrphanGitProcesses({
+    ok: true,
+    total: 2,
+    orphans: [
+      { pid: 101, ppid: 1, ageMs: 8 * 60 * 1000 },
+      { pid: 102, ppid: 2, ageMs: 7 * 60 * 1000 },
+    ],
+    maxAgeMs: 8 * 60 * 1000,
+  }, {
+    ipcSend: async (payload) => {
+      sent.push(payload);
+      return true;
+    },
+    now: () => 1_000_000,
+    stderr: () => {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(acted, false);
+  assert.deepEqual(sent, []);
 });

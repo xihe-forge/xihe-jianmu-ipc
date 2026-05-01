@@ -604,6 +604,40 @@ test('createNetworkWatchdog: committed_pct is status-only and never critiques or
   assert.equal(spawnMock.calls.length, 0);
 });
 
+test('createNetworkWatchdog: orphan_git probe is status-only below alert count and appears in lastChecks', async () => {
+  const sent = [];
+  const watchdog = createIsolatedWatchdog({
+    handoverConfig: {
+      ipcSend: async (payload) => {
+        sent.push(payload);
+        return true;
+      },
+    },
+    probes: {
+      cliProxy: async () => ok(),
+      hub: async () => ok(),
+      anthropic: async () => ok(),
+      dns: async () => ok(),
+      orphan_git: async () => ({
+        ok: true,
+        total: 2,
+        orphans: [
+          { pid: 101, ppid: 1, ageMs: 8 * 60 * 1000 },
+          { pid: 102, ppid: 2, ageMs: 7 * 60 * 1000 },
+        ],
+        maxAgeMs: 8 * 60 * 1000,
+      }),
+    },
+  });
+
+  const state = await watchdog.runTick();
+  await watchdog.waitForIdle();
+
+  assert.equal(state.lastChecks.orphan_git.total, 2);
+  assert.equal(state.lastChecks.orphan_git.orphans.length, 2);
+  assert.equal(sent.length, 0);
+});
+
 test('createNetworkWatchdog: phys_ram_used_pct at 90% invokes tree-kill', async () => {
   const spawnMock = createSpawnMock();
   const watchdog = createIsolatedWatchdog({

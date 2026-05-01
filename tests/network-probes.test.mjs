@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import {
   probeAnthropic,
   probeCliProxy,
   probeDns,
   probeHub,
+  probeOrphanGitProcesses,
 } from '../lib/network-probes.mjs';
 
 function createClock(start = 0) {
@@ -30,6 +32,23 @@ function createNetworkError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function createSpawnMock({ stdout = '', stderr = '', code = 0 } = {}) {
+  const calls = [];
+  const spawnImpl = (command, args, options) => {
+    calls.push({ command, args, options });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      if (stdout) child.stdout.emit('data', stdout);
+      if (stderr) child.stderr.emit('data', stderr);
+      child.emit('close', code);
+    });
+    return child;
+  };
+  return { calls, spawnImpl };
 }
 
 test('probeCliProxy: healthz 200 响应视为可达并记录耗时', async () => {
@@ -276,4 +295,44 @@ test('probeDns: resolve 失败返回错误信息', async () => {
     latencyMs: 6,
     error: 'ENOTFOUND: getaddrinfo ENOTFOUND github.com',
   });
+});
+
+test('probeOrphanGitProcesses: mock PowerShell output reports only aged git.exe with gone parent', async () => {
+  const nowTs = Date.parse('2026-05-02T00:10:00.000Z');
+  const spawnMock = createSpawnMock({
+    stdout: JSON.stringify([
+      {
+        ProcessId: 101,
+        ParentProcessId: 1001,
+        CreationDate: '2026-05-02T00:00:00.000Z',
+        ParentAlive: false,
+      },
+      {
+        ProcessId: 102,
+        ParentProcessId: 1002,
+        CreationDate: '2026-05-02T00:00:00.000Z',
+        ParentAlive: true,
+      },
+      {
+        ProcessId: 103,
+        ParentProcessId: 1003,
+        CreationDate: '2026-05-02T00:08:00.000Z',
+        ParentAlive: false,
+      },
+    ]),
+  });
+
+  const result = await probeOrphanGitProcesses({
+    spawnImpl: spawnMock.spawnImpl,
+    now: () => nowTs,
+    minAgeMs: 5 * 60 * 1000,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.total, 3);
+  assert.deepEqual(result.orphans, [{ pid: 101, ppid: 1001, ageMs: 10 * 60 * 1000 }]);
+  assert.equal(result.maxAgeMs, 10 * 60 * 1000);
+  assert.equal(spawnMock.calls[0].command, 'pwsh');
+  assert(spawnMock.calls[0].args.some((arg) => String(arg).includes("Name='git.exe'")));
+  assert(spawnMock.calls[0].args.some((arg) => String(arg).includes('Get-Process -Id $ppid')));
 });

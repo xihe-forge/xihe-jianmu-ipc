@@ -22,6 +22,62 @@ Forged by [Xihe AI](https://github.com/xihe-forge), for developers who need real
 
 ---
 
+## Quickstart for users
+
+Start the Jianmu IPC hub with one command:
+
+```bash
+npx @xihe-forge/jianmu-ipc start
+```
+
+Then register the MCP server in your agent config. Use a stable lowercase session name per agent so messages can be routed and resumed.
+
+Codex `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.jianmu-ipc]
+command = "npx"
+args = ["-y", "@xihe-forge/jianmu-ipc", "mcp"]
+env = { IPC_NAME = "codex-main", IPC_RUNTIME = "codex" }
+```
+
+Claude Code `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "jianmu-ipc": {
+      "command": "npx",
+      "args": ["-y", "@xihe-forge/jianmu-ipc", "mcp"],
+      "env": {
+        "IPC_NAME": "claude-main",
+        "IPC_RUNTIME": "claude"
+      }
+    }
+  }
+}
+```
+
+Once connected, use `ipc_send` to send messages and `ipc_recent_messages` to drain durable backlog after reconnects.
+
+## 特性 / Features
+
+- WebSocket real-time push: messages are pushed to connected sessions immediately instead of relying on polling loops.
+- Topic subscription model: direct, broadcast, and pub/sub routing share the same hub and durable message log.
+- Session resume and persistent inbox: reconnecting sessions can drain missed messages with `ipc_recent_messages`; explicit handoff paths preserve lineage.
+- Portfolio-proven: built and hardened through real multi-session project work, not only a demo workflow.
+
+## 竞品对比 / Comparison
+
+| 项目 | 定位 | 跟 Jianmu IPC 的差异 |
+|---|---|---|
+| `claude-ipc-mcp` | AI-to-AI messages for Claude/Gemini/CLI agents | Natural-language commands and session auth; no topic subscription; no persistent inbox for cross-session resume. |
+| `mcp_agent_mail` | Async coordination with identity, inbox, threaded messages, Git/SQLite, and file lease | Strong mail semantics and file lease; no WebSocket real-time push, mainly polling. |
+| `claude-mpm` | Multi-agent PM orchestration with channels and plugin system | PM workflow layer, not a small IPC hub. |
+| `Network-AI` | Multi-framework orchestration with shared state, guardrails, and budgets | Enterprise orchestration layer; heavier than a focused MCP IPC server. |
+
+---
+
 ## 为什么存在：Token 成本问题 / Why This Exists: The Token Cost Problem
 
 多 agent 协作的标准路径——让 LLM 充当路由器，通过 Gateway 中转上下文——代价极高。每次跨 session 通信都会触发完整的 agent run，重新加载整个 JSONL 对话记录。随着对话变长，token 消耗是 O(N²) 累积的。
@@ -1123,6 +1179,44 @@ Xihe is named after the sun goddess who drives the solar chariot in Chinese myth
 更多面向 AI 协作、搜索、增长与数字体验的产品仍在持续锻造中，欢迎关注组织、试用产品或参与贡献。
 
 More products for AI collaboration, search, growth, and digital experiences are actively being forged — follow the org, try the products, or contribute.
+
+---
+
+## 发布 SOP / Publishing SOP
+
+This repository is prepared for npm and MCP Registry publishing, but publishing requires maintainer credentials and must be run manually.
+
+1. Verify the package:
+
+```bash
+npm test
+npm pack --dry-run
+npm pack
+node tests/dogfood-npm-pack-live.mjs .\xihe-forge-jianmu-ipc-0.5.0.tgz
+```
+
+2. Publish to npm:
+
+```bash
+npm login
+npm publish --access public
+```
+
+3. Publish to the MCP Registry:
+
+```bash
+npm install -g mcp-publisher
+mcp-publisher login github
+mcp-publisher publish
+```
+
+4. Confirm registry metadata:
+
+```bash
+npm view @xihe-forge/jianmu-ipc name version mcpName bin
+```
+
+The MCP Registry package name is `io.github.xihe-forge/jianmu-ipc`; it must stay identical in `package.json#mcpName` and `mcp-registry/server.json#name`.
 
 ---
 

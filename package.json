@@ -1,50 +1,38 @@
 {
-  "name": "xihe-jianmu-ipc",
+  "name": "@xihe-forge/jianmu-ipc",
   "version": "0.5.0",
   "description": "建木 — Real-time IPC hub for multi-AI-agent communication. WebSocket message routing between Claude Code, OpenClaw, Codex, and any HTTP client.",
   "type": "module",
+  "mcpName": "io.github.xihe-forge/jianmu-ipc",
   "main": "hub.mjs",
+  "exports": {
+    ".": "./hub.mjs",
+    "./hub": "./hub.mjs",
+    "./mcp-server": "./mcp-server.mjs",
+    "./mcp-wrapper": "./mcp-wrapper.mjs",
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "jianmu": "bin/jianmu.mjs"
+    "jianmu": "bin/jianmu.mjs",
+    "jianmu-ipc": "bin/jianmu.mjs"
   },
   "files": [
     "hub.mjs",
     "mcp-server.mjs",
+    "mcp-wrapper.mjs",
     "lib/",
-    "docs/",
     "bin/jianmu.mjs",
-    "bin/claude-stdin-auto-accept.mjs",
     "bin/codex-title-wrapper.mjs",
-    "bin/network-watchdog.mjs",
     "bin/install.ps1",
-    "bin/patch-channels.mjs",
-    "bin/hub-daemon.vbs",
-    "bin/install-daemon.ps1",
-    "bin/uninstall-daemon.ps1",
-    "bin/verify-daemons.ps1",
-    "bin/cliproxy-daemon.vbs",
-    "bin/install-cliproxy-daemon.ps1",
-    "bin/uninstall-cliproxy-daemon.ps1",
-    "bin/network-watchdog-daemon.vbs",
-    "bin/install-network-watchdog-daemon.ps1",
-    "bin/uninstall-network-watchdog-daemon.ps1",
-    "README.zh-CN.md",
-    "CHANGELOG.md",
-    "CLAUDE.md",
-    "SKILL.md",
+    "README.md",
     "LICENSE"
   ],
   "keywords": [
+    "mcp",
     "ipc",
     "multi-agent",
     "claude-code",
-    "openclaw",
-    "codex",
-    "mcp",
-    "websocket",
-    "ai-collaboration",
-    "xihe",
-    "jianmu"
+    "codex"
   ],
   "author": "xihe-forge <xihe-ai@lumidrivetech.com>",
   "license": "MIT",
@@ -53,6 +41,9 @@
     "url": "git+https://github.com/xihe-forge/xihe-jianmu-ipc.git"
   },
   "homepage": "https://github.com/xihe-forge/xihe-jianmu-ipc",
+  "bugs": {
+    "url": "https://github.com/xihe-forge/xihe-jianmu-ipc/issues"
+  },
   "dependencies": {
     "@ccusage/codex": "18.0.11",
     "@ccusage/mcp": "18.0.11",
@@ -71,6 +62,8 @@
   },
   "scripts": {
     "postinstall": "powershell -ExecutionPolicy Bypass -File bin/install.ps1 || true",
+    "start": "node hub.mjs",
+    "install:profile": "powershell -ExecutionPolicy Bypass -File bin/install.ps1",
     "hub": "node hub.mjs",
     "test": "node bin/run-tests.mjs tests tests/integration tests/e2e",
     "test:unit": "node bin/run-tests.mjs tests",

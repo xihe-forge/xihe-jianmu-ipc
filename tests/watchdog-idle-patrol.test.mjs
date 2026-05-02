@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { evaluateIdlePatrolSession } from '../lib/watchdog/idle-patrol.mjs';
+import { analyzeTranscript, createIdlePatrol, evaluateIdlePatrolSession } from '../lib/watchdog/idle-patrol.mjs';
 
 function createManualNow(start = 5 * 60 * 1000) {
   let current = start;
@@ -48,6 +48,7 @@ function createOptions({
   recentFileAt = 0,
   commitLastAt = 0,
   outbound = [],
+  sessionGitPath = process.cwd(),
 } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'idle-patrol-test-'));
   const sent = [];
@@ -73,6 +74,7 @@ function createOptions({
       analyzeTranscript: () => transcript,
       fetchOutboundMessages: async () => outbound,
       findRecentMtime: () => recentFileAt,
+      resolveSessionGitPath: () => sessionGitPath,
       countRecentCommits: () => ({ count: commitLastAt > 0 ? 1 : 0, lastAt: commitLastAt }),
       hasCodexProcessForCwd: () => false,
       ipcSend: async (message) => {
@@ -175,5 +177,63 @@ test('idle patrol: 收 L1 后 commit 了 -> escalation reset 到 0·不再 L2', 
     assert.equal(fixture.sent.length, 1);
   } finally {
     fixture.cleanup();
+  }
+});
+
+test('idle patrol: shared cwd mtime 不作为 session recent-action 信号', async () => {
+  const clock = createManualNow();
+  const fixture = createOptions({
+    clock,
+    recentFileAt: clock.now(),
+    sessionGitPath: null,
+  });
+  try {
+    const result = await evaluateIdlePatrolSession(baseSession(), fixture.options);
+    assert.equal(result.action, 'nudge');
+    assert.equal(result.level, 1);
+    assert.equal(fixture.sent.length, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('idle patrol: Hub session count diff >= 2 只 warning 并继续 tick', async () => {
+  const warnings = [];
+  const patrol = createIdlePatrol({
+    sessions: [],
+    expectedSessionCount: 24,
+    fetchImpl: async (url) => {
+      assert.match(String(url), /\/sessions$/);
+      return { status: 200, json: async () => Array.from({ length: 21 }, (_, index) => ({ name: `s${index}` })) };
+    },
+    stderr: (line) => warnings.push(String(line)),
+  });
+
+  const results = await patrol.tick();
+  assert.deepEqual(results, []);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /connected=21, expected=24/);
+});
+
+test('idle patrol: transcript 空 user/tool-result 不会遮蔽后续工具行动信号', () => {
+  const root = mkdtempSync(join(tmpdir(), 'idle-patrol-transcript-'));
+  try {
+    const transcriptPath = join(root, 'session.jsonl');
+    const lines = [
+      { timestamp: '2026-05-02T10:00:00.000Z', type: 'user', message: { role: 'user', content: '派 codex 实施' } },
+      { timestamp: '2026-05-02T10:01:00.000Z', type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash' }] } },
+      { timestamp: '2026-05-02T10:01:01.000Z', type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'command output' }] } },
+      { timestamp: '2026-05-02T10:01:02.000Z', type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'ScheduleWakeup' }] } },
+      { timestamp: '2026-05-02T10:01:03.000Z', type: 'user', message: { role: 'user', content: '' } },
+    ];
+    mkdirSync(root, { recursive: true });
+    writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf8');
+
+    const result = analyzeTranscript({ transcriptPath }, { bakedGraceMs: 0 });
+    assert.equal(result.lastUserText, '派 codex 实施');
+    assert.equal(result.lastToolUseAt, Date.parse('2026-05-02T10:01:02.000Z'));
+    assert.equal(result.hasScheduleWakeup, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

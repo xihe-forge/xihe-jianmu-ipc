@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { rmSync } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -274,17 +275,25 @@ test('GET /tasks: 返回刚创建的任务', { timeout: TEST_TIMEOUT }, async ()
   assert.ok(listResponse.body.tasks.some(task => task.id === createResponse.body.taskId));
 });
 
-function randomPort() {
-  return Math.floor(Math.random() * 10000 + 40000);
+function allocatePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 function createTempDbPath() {
   return getTempDbPath('hub-api');
 }
 
-function startHub() {
+async function startHub() {
+  const port = await allocatePort();
   return new Promise((resolve, reject) => {
-    const port = randomPort();
     const dbPath = createTempDbPath();
     const stderrChunks = [];
     const hubUrl = pathToFileURL(join(ROOT_DIR, 'hub.mjs')).href;
@@ -643,6 +652,68 @@ test('GET /messages: from+to 双向查询返回双方消息', { timeout: TEST_TI
     entries.map(entry => entry.content).reverse(),
   );
   assert.ok(response.body.some(message => message.from === 'bob' && message.to === 'alice'));
+});
+
+test('GET /messages: from 单参只返回 sender 发出的消息', { timeout: TEST_TIMEOUT }, async () => {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const entries = [
+    { from: 'sender-a', to: 'target-a', content: `from-only-${suffix}-a1` },
+    { from: 'sender-b', to: 'target-a', content: `from-only-${suffix}-b1` },
+    { from: 'sender-a', to: 'target-b', content: `from-only-${suffix}-a2` },
+  ];
+
+  for (const entry of entries) {
+    const sendResponse = await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/send',
+      json: entry,
+    });
+
+    assert.equal(sendResponse.statusCode, 200);
+    assert.equal(sendResponse.body.accepted, true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+
+  const response = await httpRequest(hub.port, {
+    method: 'GET',
+    path: '/messages?from=sender-a&limit=10',
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.ok(Array.isArray(response.body));
+  const matched = response.body.filter(message => String(message.content).includes(`from-only-${suffix}`));
+  assert.deepEqual(
+    matched.map(message => message.content),
+    [`from-only-${suffix}-a2`, `from-only-${suffix}-a1`],
+  );
+  assert.ok(matched.every(message => message.from === 'sender-a'));
+});
+
+test('GET /outbound: from 单参复用 sender-only 查询', { timeout: TEST_TIMEOUT }, async () => {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  for (const entry of [
+    { from: 'outbound-a', to: 'target-a', content: `outbound-${suffix}-a` },
+    { from: 'outbound-b', to: 'target-a', content: `outbound-${suffix}-b` },
+  ]) {
+    const sendResponse = await httpRequest(hub.port, {
+      method: 'POST',
+      path: '/send',
+      json: entry,
+    });
+    assert.equal(sendResponse.statusCode, 200);
+    assert.equal(sendResponse.body.accepted, true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+
+  const response = await httpRequest(hub.port, {
+    method: 'GET',
+    path: '/outbound?from=outbound-a&limit=10',
+  });
+
+  assert.equal(response.statusCode, 200);
+  const matched = response.body.filter(message => String(message.content).includes(`outbound-${suffix}`));
+  assert.deepEqual(matched.map(message => message.content), [`outbound-${suffix}-a`]);
+  assert.ok(matched.every(message => message.from === 'outbound-a'));
 });
 
 test('GET /stats: 返回最近 24 小时 per-agent 消息统计', { timeout: TEST_TIMEOUT }, async () => {

@@ -67,6 +67,10 @@ import {
   suspendSession,
   upsertWakeRecord,
 } from '../lib/db.mjs';
+import {
+  createIdlePatrol,
+  DEFAULT_IDLE_PATROL_INTERVAL_MS,
+} from '../lib/watchdog/idle-patrol.mjs';
 
 export const DEFAULT_IPC_PORT = 3179;
 export const DEFAULT_WATCHDOG_PORT = 3180;
@@ -1115,6 +1119,9 @@ export function createNetworkWatchdog({
   getSessionStateImpl = getSessionState,
   rateLimitCritiqueEnabled = true,
   rateLimitDedupState = loadDedupState(),
+  idlePatrolEnabled = process.env.WATCHDOG_IDLE_PATROL_ENABLED !== 'false',
+  idlePatrolIntervalMs = DEFAULT_IDLE_PATROL_INTERVAL_MS,
+  idlePatrolConfig = {},
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -1154,6 +1161,8 @@ export function createNetworkWatchdog({
   let lastZombiePidDetectorTickResult = { scanned: 0, dead: 0, evicted: 0, dryRun: [] };
   let lastHandoverTickAt = 0;
   let lastHandoverTickResult = { detected: [], skipped: [] };
+  let lastIdlePatrolTickAt = Date.now();
+  let lastIdlePatrolTickResult = { detected: [], skipped: [{ reason: 'initial-wait' }] };
   const contextUsageHandoverDetectors = new Map();
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
@@ -1552,6 +1561,16 @@ export function createNetworkWatchdog({
   if (resolvedHandoverIpcSend == null && typeof watchdogIpcClient.sendMessage === 'function') {
     resolvedHandoverIpcSend = (message) => watchdogIpcClient.sendMessage(message);
   }
+  const idlePatrol = createIdlePatrol({
+    ipcPort,
+    hubAuthToken,
+    fetchImpl,
+    now,
+    watchdogSessionName,
+    harnessSessionName,
+    stateDir: join(PROJECT_ROOT, 'data', 'watchdog', 'idle-patrol'),
+    ...idlePatrolConfig,
+  });
 
   function buildCompositeState() {
     const snapshot = networkStateMachine.getState();
@@ -1855,6 +1874,31 @@ export function createNetworkWatchdog({
     }
   }
 
+  async function runIdlePatrolTick() {
+    if (!idlePatrolEnabled) {
+      lastIdlePatrolTickResult = { detected: [], skipped: [{ reason: 'disabled' }] };
+      return lastIdlePatrolTickResult;
+    }
+    const ts = Date.now();
+    if (ts - lastIdlePatrolTickAt < idlePatrolIntervalMs) {
+      lastIdlePatrolTickResult = { detected: [], skipped: [{ reason: 'tick-interval' }] };
+      return lastIdlePatrolTickResult;
+    }
+    lastIdlePatrolTickAt = ts;
+    try {
+      const results = await idlePatrol.tick();
+      lastIdlePatrolTickResult = {
+        detected: results.filter((result) => result.action === 'nudge'),
+        skipped: results.filter((result) => result.action !== 'nudge'),
+      };
+      return lastIdlePatrolTickResult;
+    } catch (error) {
+      stderr(`[network-watchdog] idle patrol tick failed: ${error?.message ?? error}`);
+      lastIdlePatrolTickResult = { detected: [], skipped: [] };
+      return lastIdlePatrolTickResult;
+    }
+  }
+
   function ingestHarnessHeartbeat(heartbeat) {
     if (!heartbeat || typeof heartbeat !== 'object') {
       return false;
@@ -1908,6 +1952,7 @@ export function createNetworkWatchdog({
         runZombiePidDetectorTick(),
         runHandoverTick(),
         runRateLimitTick(),
+        runIdlePatrolTick(),
       ]);
       return {
         ...networkState,
@@ -2015,6 +2060,7 @@ export function createNetworkWatchdog({
     getHarnessState: buildHarnessSnapshot,
     getLastHandoverResult: () => lastHandoverResult,
     getLastHandoverTickResult: () => lastHandoverTickResult,
+    getLastIdlePatrolTickResult: () => lastIdlePatrolTickResult,
     getLastZombiePidDetectorTickResult: () => lastZombiePidDetectorTickResult,
     getConfig: () => ({
       ipcPort,
@@ -2022,6 +2068,8 @@ export function createNetworkWatchdog({
       intervalMs,
       zombiePidDetectorEnabled,
       zombiePidDetectorDryRun,
+      idlePatrolEnabled,
+      idlePatrolIntervalMs,
     }),
   };
 

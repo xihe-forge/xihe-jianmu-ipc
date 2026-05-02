@@ -64,8 +64,10 @@
     "ccusage": "18.0.11",
     "ws": "^8.18.0"
   },
-  "overrides": {
-    "axios": "1.15.0"
+  "pnpm": {
+    "overrides": {
+      "axios": "1.15.0"
+    }
   },
   "scripts": {
     "postinstall": "powershell -ExecutionPolicy Bypass -File bin/install.ps1 || true",

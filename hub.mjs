@@ -90,6 +90,7 @@ import {
 import {
   ERR_REBIND_PENDING,
   saveMessage,
+  updateMessageStatus,
   getMessages,
   getMessageCount,
   getMessageCountByAgent,
@@ -247,6 +248,7 @@ const ctx = {
   stderr,
   audit,
   saveMessage,
+  updateMessageStatus,
   saveInboxMessage,
   getInboxMessages,
   getRecipientRecent,
@@ -811,9 +813,11 @@ wss.on('connection', async (ws, req) => {
           rtt_ms: pending ? Date.now() - pending.ts : null,
         });
         if (pending) {
+          if (pending.timer) clearTimeout(pending.timer);
           ackPending.delete(msg.messageId);
+          updateMessageStatus(msg.messageId, 'delivered');
           const senderSession = sessions.get(pending.sender);
-          if (senderSession?.ws?.readyState === senderSession?.ws?.OPEN) {
+          if (senderSession?.ws && senderSession.ws.readyState === senderSession.ws.OPEN) {
             try {
               safePushAndAudit(
                 senderSession,

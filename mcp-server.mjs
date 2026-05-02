@@ -1843,7 +1843,7 @@ export async function spawnSession({
 // Channel notification push
 // ---------------------------------------------------------------------------
 function pushChannelNotification(msg) {
-  channelNotifier.pushChannelNotification(msg);
+  return channelNotifier.pushChannelNotification(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -2021,10 +2021,16 @@ async function handleWsMessage(event) {
       from: msg.from,
       mcp_initialized: channelNotifier.isInitialized(),
     });
-    pushChannelNotification(msg);
-    // Send ack back to Hub so the sender knows delivery succeeded
-    ackInboundMessage(msg);
-    process.stderr.write(`[ipc] pushed channel notification from ${msg.from ?? '(unknown)'}\n`);
+    try {
+      await pushChannelNotification(msg);
+      // Send ack back to Hub only after the channel notification left the MCP server.
+      ackInboundMessage(msg);
+      process.stderr.write(`[ipc] pushed channel notification from ${msg.from ?? '(unknown)'}\n`);
+    } catch (err) {
+      process.stderr.write(
+        `[ipc] channel notification failed for ${msg.id ?? '(no id)'}: ${err?.message ?? err}\n`,
+      );
+    }
   } else if (msg.type === 'ack') {
     process.stderr.write(`[ipc] delivery confirmed: ${msg.messageId} by ${msg.confirmedBy}\n`);
   } else if (msg.type === 'inbox') {
@@ -2032,7 +2038,14 @@ async function handleWsMessage(event) {
     for (const m of messages) {
       if (m.type === 'message') {
         mcpTrace('inbox_channel_push_begin', { msg_id: m.id, from: m.from });
-        pushChannelNotification(m);
+        try {
+          await pushChannelNotification(m);
+          ackInboundMessage(m);
+        } catch (err) {
+          process.stderr.write(
+            `[ipc] inbox channel notification failed for ${m.id ?? '(no id)'}: ${err?.message ?? err}\n`,
+          );
+        }
       }
     }
     process.stderr.write(`[ipc] pushed ${messages.length} buffered messages\n`);

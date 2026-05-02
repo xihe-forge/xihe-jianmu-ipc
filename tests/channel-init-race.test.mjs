@@ -58,6 +58,27 @@ test('post-init channel notifications send immediately', () => {
   assert.equal(sent[0].params.meta.message_id, 'm4');
 });
 
+test('pre-init push promise resolves only after initialized flush sends', async () => {
+  const { notifier, sent } = createHarness();
+  let resolved = false;
+
+  const promise = notifier
+    .pushChannelNotification({ id: 'm1', from: 'taiwei', content: 'one' })
+    .then(() => {
+      resolved = true;
+    });
+  await flushPromises();
+
+  assert.equal(resolved, false);
+  assert.equal(sent.length, 0);
+
+  notifier.markInitialized();
+  await promise;
+
+  assert.equal(resolved, true);
+  assert.equal(sent.length, 1);
+});
+
 test('isInitialized exposes factory init state', () => {
   const { notifier } = createHarness();
 
@@ -109,7 +130,10 @@ test('trace captures send failure path', async () => {
   });
 
   notifier.markInitialized();
-  notifier.pushChannelNotification({ id: 'm8', from: 'taiwei', content: 'fail' });
+  await assert.rejects(
+    notifier.pushChannelNotification({ id: 'm8', from: 'taiwei', content: 'fail' }),
+    /boom/,
+  );
   await flushPromises();
 
   assert.equal(traces.at(-2).event, 'channel_notification_send_attempt');
@@ -123,7 +147,7 @@ test('channel notification payload preserves content and metadata shape', () => 
   const { notifier } = createHarness();
 
   notifier.pushChannelNotification({ id: 'm5', from: 'taiwei', topic: 'race', content: 'hello' });
-  const payload = notifier._state.pendingChannelPayloads[0];
+  const payload = notifier._state.pendingChannelPayloads[0].payload;
 
   assert.equal(payload.method, 'notifications/claude/channel');
   assert.match(payload.params.content, /^\[2026\/4\/24 10:20:30 from: taiwei \[race\]\]\nhello$/);
@@ -138,7 +162,7 @@ test('channel notification defaults unknown sender and json body', () => {
   const { notifier } = createHarness();
 
   notifier.pushChannelNotification({ id: 'm6', ok: true });
-  const payload = notifier._state.pendingChannelPayloads[0];
+  const payload = notifier._state.pendingChannelPayloads[0].payload;
 
   assert.match(payload.params.content, /^\[2026\/4\/24 10:20:30 from: unknown\]\n/);
   assert.equal(payload.params.content.endsWith('{"id":"m6","ok":true}'), true);

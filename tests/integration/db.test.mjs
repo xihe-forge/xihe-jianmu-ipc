@@ -39,6 +39,14 @@ test('saveMessage: 重复ID不报错', () => {
   assert.doesNotThrow(() => db.saveMessage(msg));
 });
 
+test('saveMessage + updateMessageStatus: pending can become delivered', () => {
+  const msg = makeMsg(`msg_status_${Date.now()}`);
+  db.saveMessage(msg, { status: 'pending' });
+  assert.equal(db.updateMessageStatus(msg.id, 'delivered'), 1);
+  const found = db.getMessages({ peer: 'alice', limit: 10 }).find(r => r.id === msg.id);
+  assert.equal(found.status, 'delivered');
+});
+
 test('getMessages: from+to 双向查询', () => {
   const ts = Date.now();
   const id1 = `msg_bt1_${ts}`;

@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DEFAULT_ACK_DEDUP_MS,
+  DEFAULT_GIT_TIMEOUT_MS,
   DEFAULT_IDLE_PATROL_INTERVAL_MS,
   DEFAULT_IDLE_THRESHOLD_MS,
   analyzeTranscript,
+  countRecentCommits,
   createIdlePatrol,
   evaluateIdlePatrolSession,
   getAckDedupLastAt,
@@ -107,6 +109,7 @@ test('idle patrol defaults: threshold/interval 30min and ack dedup 60min', () =>
   assert.equal(DEFAULT_IDLE_THRESHOLD_MS, 30 * 60 * 1000);
   assert.equal(DEFAULT_IDLE_PATROL_INTERVAL_MS, 30 * 60 * 1000);
   assert.equal(DEFAULT_ACK_DEDUP_MS, 60 * 60 * 1000);
+  assert.equal(DEFAULT_GIT_TIMEOUT_MS, 5000);
 });
 
 test('idle patrol: 派工后 5min 无工具调用 + actionable=2 -> L1 nudge sent', async () => {
@@ -335,6 +338,43 @@ test('idle patrol: 收 L1 后 commit 了 -> escalation reset 到 0·不再 L2', 
     assert.equal(second.action, 'skip');
     assert.equal(second.reason, 'recent-action');
     assert.equal(fixture.sent.length, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('idle patrol: git log mock timeout uses 5s timeout and marks probe timed out', () => {
+  const warnings = [];
+  const result = countRecentCommits(
+    process.cwd(),
+    1,
+    (_command, _args, options) => {
+      assert.equal(options.timeout, 5000);
+      const error = new Error('spawnSync git ETIMEDOUT');
+      error.code = 'ETIMEDOUT';
+      throw error;
+    },
+    '.',
+    { stderr: (line) => warnings.push(line) },
+  );
+
+  assert.deepEqual(result, { count: 0, lastAt: 0, timedOut: true });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /git log timed out after 5000ms/);
+});
+
+test('idle patrol: git timeout skips session without nudge', async () => {
+  const fixture = createOptions({
+    sessionGitPath: process.cwd(),
+  });
+  try {
+    fixture.options.countRecentCommits = () => ({ count: 0, lastAt: 0, timedOut: true });
+
+    const result = await evaluateIdlePatrolSession(baseSession(), fixture.options);
+
+    assert.equal(result.action, 'skip');
+    assert.equal(result.reason, 'git-timeout');
+    assert.equal(fixture.sent.length, 0);
   } finally {
     fixture.cleanup();
   }

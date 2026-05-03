@@ -66,6 +66,7 @@ function createOptions({
       l1DedupMs: 30 * 60 * 1000,
       l2AfterMs: 30 * 60 * 1000,
       l3AfterMs: 90 * 60 * 1000,
+      maxTrustedIdleMs: 7 * 24 * 60 * 60 * 1000,
       watchdogSessionName: 'network-watchdog',
       harnessSessionName: 'harness',
       bossSessionName: 'boss',
@@ -192,6 +193,45 @@ test('idle patrol: shared cwd mtime 不作为 session recent-action 信号', asy
     assert.equal(result.action, 'nudge');
     assert.equal(result.level, 1);
     assert.equal(fixture.sent.length, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('idle patrol: transcript 缺失/时间不可用 -> 不用 epoch 0 误报 5 万小时', async () => {
+  const fixture = createOptions({
+    transcript: baseTranscript({
+      lastUserText: '',
+      lastUserAt: 0,
+      lastToolUseAt: 0,
+    }),
+    sessionGitPath: null,
+  });
+  try {
+    const result = await evaluateIdlePatrolSession(baseSession(), fixture.options);
+    assert.equal(result.action, 'skip');
+    assert.equal(result.reason, 'untrusted-action-time');
+    assert.equal(fixture.sent.length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('idle patrol: action time 超过 7 天 sanity window -> 不 nudge', async () => {
+  const clock = createManualNow(8 * 24 * 60 * 60 * 1000);
+  const fixture = createOptions({
+    clock,
+    transcript: baseTranscript({
+      lastUserAt: 1,
+      lastToolUseAt: 0,
+    }),
+    sessionGitPath: null,
+  });
+  try {
+    const result = await evaluateIdlePatrolSession(baseSession(), fixture.options);
+    assert.equal(result.action, 'skip');
+    assert.equal(result.reason, 'untrusted-action-time');
+    assert.equal(fixture.sent.length, 0);
   } finally {
     fixture.cleanup();
   }

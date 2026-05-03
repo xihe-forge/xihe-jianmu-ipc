@@ -71,6 +71,11 @@ import {
   createIdlePatrol,
   DEFAULT_IDLE_PATROL_INTERVAL_MS,
 } from '../lib/watchdog/idle-patrol.mjs';
+import {
+  DEFAULT_ORPHAN_GIT_REAPER_INTERVAL_MS,
+  getOrphanGitReaperStatus,
+  runOrphanGitReaper,
+} from '../lib/watchdog/orphan-git-reaper.mjs';
 
 export const DEFAULT_IPC_PORT = 3179;
 export const DEFAULT_WATCHDOG_PORT = 3180;
@@ -1122,6 +1127,13 @@ export function createNetworkWatchdog({
   idlePatrolEnabled = process.env.WATCHDOG_IDLE_PATROL_ENABLED !== 'false',
   idlePatrolIntervalMs = DEFAULT_IDLE_PATROL_INTERVAL_MS,
   idlePatrolConfig = {},
+  orphanGitReaperEnabled = process.env.WATCHDOG_ORPHAN_GIT_REAPER_ENABLED !== 'false',
+  orphanGitReaperIntervalMs = DEFAULT_ORPHAN_GIT_REAPER_INTERVAL_MS,
+  orphanGitReaperStatusIntervalMs = 5 * 60 * 1000,
+  orphanGitReaperInitialLastTickAt = Date.now(),
+  orphanGitReaperInitialLastStatusAt = Date.now(),
+  orphanGitReaperNow = Date.now,
+  orphanGitReaperImpl = runOrphanGitReaper,
 } = {}) {
   if (typeof internalToken !== 'string' || internalToken.trim() === '') {
     throw new Error('internalToken is required');
@@ -1163,6 +1175,9 @@ export function createNetworkWatchdog({
   let lastHandoverTickResult = { detected: [], skipped: [] };
   let lastIdlePatrolTickAt = Date.now();
   let lastIdlePatrolTickResult = { detected: [], skipped: [{ reason: 'initial-wait' }] };
+  let lastOrphanGitReaperTickAt = orphanGitReaperInitialLastTickAt;
+  let lastOrphanGitReaperStatusAt = orphanGitReaperInitialLastStatusAt;
+  let lastOrphanGitReaperTickResult = { reaped_count: 0, reaped_pids: [], skipped: [{ reason: 'initial-wait' }] };
   const contextUsageHandoverDetectors = new Map();
   const resolvedProbes = probes ?? createDefaultWatchdogProbes({
     ipcPort,
@@ -1899,6 +1914,31 @@ export function createNetworkWatchdog({
     }
   }
 
+  async function runOrphanGitReaperTick() {
+    if (!orphanGitReaperEnabled) {
+      lastOrphanGitReaperTickResult = { reaped_count: 0, reaped_pids: [], skipped: [{ reason: 'disabled' }] };
+      return lastOrphanGitReaperTickResult;
+    }
+    const ts = orphanGitReaperNow();
+    if (ts - lastOrphanGitReaperTickAt < orphanGitReaperIntervalMs) {
+      return lastOrphanGitReaperTickResult;
+    }
+    lastOrphanGitReaperTickAt = ts;
+    try {
+      lastOrphanGitReaperTickResult = await orphanGitReaperImpl({ stderr });
+    } catch (error) {
+      stderr(`[network-watchdog] orphan-git-reaper tick failed: ${error?.message ?? error}`);
+      lastOrphanGitReaperTickResult = { reaped_count: 0, reaped_pids: [], error: error?.message ?? String(error) };
+    }
+
+    if (ts - lastOrphanGitReaperStatusAt >= orphanGitReaperStatusIntervalMs) {
+      lastOrphanGitReaperStatusAt = ts;
+      const status = getOrphanGitReaperStatus();
+      stderr(`[watchdog] reaper status: reaped_total=${status.reaped_total} · last_cycle_count=${status.last_cycle_count}`);
+    }
+    return lastOrphanGitReaperTickResult;
+  }
+
   function ingestHarnessHeartbeat(heartbeat) {
     if (!heartbeat || typeof heartbeat !== 'object') {
       return false;
@@ -1953,6 +1993,7 @@ export function createNetworkWatchdog({
         runHandoverTick(),
         runRateLimitTick(),
         runIdlePatrolTick(),
+        runOrphanGitReaperTick(),
       ]);
       return {
         ...networkState,
@@ -2061,6 +2102,7 @@ export function createNetworkWatchdog({
     getLastHandoverResult: () => lastHandoverResult,
     getLastHandoverTickResult: () => lastHandoverTickResult,
     getLastIdlePatrolTickResult: () => lastIdlePatrolTickResult,
+    getLastOrphanGitReaperTickResult: () => lastOrphanGitReaperTickResult,
     getLastZombiePidDetectorTickResult: () => lastZombiePidDetectorTickResult,
     getConfig: () => ({
       ipcPort,
@@ -2070,6 +2112,8 @@ export function createNetworkWatchdog({
       zombiePidDetectorDryRun,
       idlePatrolEnabled,
       idlePatrolIntervalMs,
+      orphanGitReaperEnabled,
+      orphanGitReaperIntervalMs,
     }),
   };
 

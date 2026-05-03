@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "jianmu-ipc": {
+      "command": "node",
+      "args": [
+        "./mcp-server.mjs"
+      ],
+      "env": {
+        "IPC_DEFAULT_NAME": "codex-main",
+        "IPC_RUNTIME": "codex",
+        "IPC_HUB_HOST": "127.0.0.1",
+        "IPC_PORT": "3179"
+      }
+    }
+  }
+}

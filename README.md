@@ -3,6 +3,11 @@
 
 # xihe-jianmu-ipc
 
+## Codex Plugin
+
+Install with `codex plugin install xihe-forge/jianmu-ipc`, then start the hub with `npx @xihe-forge/jianmu-ipc start`.
+Inside Codex, call `ipc_whoami()` to verify the session name.
+
 > **命名由来 / Etymology** — 遵循曦和项目三段式命名规范 `xihe-{隐喻}-{功能}`：
 >
 > - **xihe（曦和）** — 品牌。源自中国神话中的太阳女神曦和 / Brand. Xihe, the sun goddess in Chinese mythology

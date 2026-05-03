@@ -1,0 +1,43 @@
+{
+  "name": "jianmu-ipc",
+  "version": "0.5.0",
+  "description": "Real-time IPC hub for multi-AI-agent communication.",
+  "author": {
+    "name": "xihe-forge",
+    "email": "xihe-ai@lumidrivetech.com",
+    "url": "https://github.com/xihe-forge"
+  },
+  "homepage": "https://github.com/xihe-forge/xihe-jianmu-ipc",
+  "repository": "https://github.com/xihe-forge/xihe-jianmu-ipc",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "ipc",
+    "multi-agent",
+    "codex",
+    "websocket"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Jianmu IPC",
+    "shortDescription": "Real-time IPC for multi-agent Codex sessions",
+    "longDescription": "Jianmu IPC bundles an MCP server and usage skill for routing messages, topic updates, and durable backlog reads across AI coding sessions through a shared WebSocket hub.",
+    "developerName": "xihe-forge",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/xihe-forge/xihe-jianmu-ipc",
+    "privacyPolicyURL": "https://github.com/xihe-forge/xihe-jianmu-ipc",
+    "termsOfServiceURL": "https://github.com/xihe-forge/xihe-jianmu-ipc/blob/master/LICENSE",
+    "defaultPrompt": [
+      "Use Jianmu IPC to send a task to another coding session.",
+      "Use Jianmu IPC to check recent messages and report status."
+    ],
+    "brandColor": "#10A37F",
+    "screenshots": []
+  }
+}

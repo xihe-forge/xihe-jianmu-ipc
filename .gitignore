@@ -8,6 +8,7 @@ auth-tokens.json
 .clawhub/
 local/
 skills/
+!.codex-plugin/skills/
 
 # 测试临时文件
 temp/

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_ORPHAN_GIT_REAPER_INTERVAL_MS,
   getOrphanGitReaperStatus,
-  isGitQueryCommand,
+  isMutatingGitCommand,
   isOrphanGitCandidate,
   resetOrphanGitReaperStatus,
   runOrphanGitReaper,
@@ -32,13 +32,19 @@ function gitProcess(overrides = {}) {
   };
 }
 
+function isReapableOrphan(cmdline) {
+  return isOrphanGitCandidate(gitProcess({ cmdline, startTimeMs: 0, parentExists: false }), {
+    nowMs: 120_000,
+  });
+}
+
 test('orphan git reaper defaults to a 60s cycle and 60s minimum age', () => {
   assert.equal(DEFAULT_ORPHAN_GIT_REAPER_INTERVAL_MS, 60 * 1000);
   assert.equal(isOrphanGitCandidate(gitProcess({ startTimeMs: 59_999 }), { nowMs: 120_000 }), true);
   assert.equal(isOrphanGitCandidate(gitProcess({ startTimeMs: 60_000 }), { nowMs: 120_000 }), false);
 });
 
-test('orphan git reaper: parent gone + query git older than 60s is killed and recorded', async () => {
+test('orphan git reaper: parent gone + non-mutating git older than 60s is killed and recorded', async () => {
   resetOrphanGitReaperStatus();
   const killed = [];
   const result = await runOrphanGitReaper({
@@ -77,14 +83,16 @@ test('orphan git reaper: normal running git under 60s is not killed', async () =
   assert.equal(result.reaped_count, 0);
 });
 
-test('orphan git reaper: push and commit are never killed even when parent is gone', async () => {
+test('orphan git reaper: mutating git commands are never killed even when parent is gone', async () => {
   resetOrphanGitReaperStatus();
   const killed = [];
   const result = await runOrphanGitReaper({
     now: () => 120_000,
     listProcesses: async () => [
       gitProcess({ pid: 4303, cmdline: 'git push origin main', startTimeMs: 0, parentExists: false }),
-      gitProcess({ pid: 4304, cmdline: 'git commit -m fix', startTimeMs: 0, parentExists: false }),
+      gitProcess({ pid: 4304, cmdline: 'git pull', startTimeMs: 0, parentExists: false }),
+      gitProcess({ pid: 4305, cmdline: 'git commit -m fix', startTimeMs: 0, parentExists: false }),
+      gitProcess({ pid: 4306, cmdline: 'git add .', startTimeMs: 0, parentExists: false }),
     ],
     killProcessImpl: async (pid) => killed.push(pid),
     stderr: () => {},
@@ -92,8 +100,31 @@ test('orphan git reaper: push and commit are never killed even when parent is go
 
   assert.deepEqual(killed, []);
   assert.equal(result.reaped_count, 0);
-  assert.equal(isGitQueryCommand('git push origin main'), false);
-  assert.equal(isGitQueryCommand('git commit -m fix'), false);
+  assert.equal(isMutatingGitCommand('git push origin main'), true);
+  assert.equal(isMutatingGitCommand('git pull'), true);
+  assert.equal(isMutatingGitCommand('git commit -m fix'), true);
+  assert.equal(isMutatingGitCommand('git add .'), true);
+  assert.equal(isReapableOrphan('git push origin main'), false);
+  assert.equal(isReapableOrphan('git pull'), false);
+  assert.equal(isReapableOrphan('git commit -m fix'), false);
+  assert.equal(isReapableOrphan('git add .'), false);
+});
+
+test('orphan git reaper: non-mutating git commands are reapable when orphaned and old', () => {
+  assert.equal(isMutatingGitCommand('git remote get-url origin'), false);
+  assert.equal(isMutatingGitCommand('git rev-parse HEAD'), false);
+  assert.equal(isMutatingGitCommand('git status --short'), false);
+  assert.equal(isMutatingGitCommand('git log --oneline -1'), false);
+  assert.equal(isReapableOrphan('git remote get-url origin'), true);
+  assert.equal(isReapableOrphan('git rev-parse HEAD'), true);
+  assert.equal(isReapableOrphan('git status --short'), true);
+  assert.equal(isReapableOrphan('git log --oneline -1'), true);
+});
+
+test('orphan git reaper: mutating matcher handles Windows git.exe command lines', () => {
+  assert.equal(isMutatingGitCommand('C:\\Program Files\\Git\\cmd\\git.exe push origin master'), true);
+  assert.equal(isMutatingGitCommand('"C:\\Program Files\\Git\\cmd\\git.exe" commit -m fix'), true);
+  assert.equal(isMutatingGitCommand('C:\\Program Files\\Git\\cmd\\git.exe rev-parse HEAD'), false);
 });
 
 test('orphan git reaper: live parent protects a 90s query git child', async () => {

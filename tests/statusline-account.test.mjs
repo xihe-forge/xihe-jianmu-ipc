@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TEMP_ROOT } from './helpers/temp-path.mjs';
 import {
@@ -55,7 +55,7 @@ test('statusline ignores stale marker when fingerprint mismatches current creden
       'utf8',
     );
 
-    assert.equal(await resolveAccount({ claudeDir, fetchProfileIdentity: async () => null }), 'a');
+    assert.equal(await resolveAccount({ claudeDir }), 'a');
   });
 });
 
@@ -63,7 +63,7 @@ test('statusline fallback resolves missing marker by matching credentials to vau
   await withAccountFixture(async ({ claudeDir, accountB }) => {
     await writeFile(join(claudeDir, '.credentials.json'), JSON.stringify(accountB), 'utf8');
 
-    assert.equal(await resolveAccount({ claudeDir, fetchProfileIdentity: async () => null }), 'b');
+    assert.equal(await resolveAccount({ claudeDir }), 'b');
   });
 });
 
@@ -75,11 +75,11 @@ test('statusline fallback resolves missing refresh token by matching access toke
       'utf8',
     );
 
-    assert.equal(await resolveAccount({ claudeDir, fetchProfileIdentity: async () => null }), 'b');
+    assert.equal(await resolveAccount({ claudeDir }), 'b');
   });
 });
 
-test('statusline never calls profile API and falls through stale marker user_id to subscription fallback', async () => {
+test('statusline never calls network identity lookup and falls through stale marker user_id to subscription fallback', async () => {
   await withAccountFixture(async ({ claudeDir }) => {
     await writeFile(
       join(claudeDir, '.credentials.json'),
@@ -92,13 +92,16 @@ test('statusline never calls profile API and falls through stale marker user_id 
       'utf8',
     );
 
-    const which = await resolveAccount({
-      claudeDir,
-      fetchProfileIdentity: async () => {
-        throw new Error('profile API must not be called');
-      },
-      now: () => 1_776_000_000_000,
-    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error('network identity lookup must not be called');
+    };
+    let which;
+    try {
+      which = await resolveAccount({ claudeDir });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
 
     assert.equal(which, 'b');
   });
@@ -117,16 +120,11 @@ test('statusline returns null when marker, vault fingerprints, and subscription 
       'utf8',
     );
 
-    assert.equal(await resolveAccount({
-      claudeDir,
-      fetchProfileIdentity: async () => {
-        throw new Error('profile API must not be called');
-      },
-    }), null);
+    assert.equal(await resolveAccount({ claudeDir }), null);
   });
 });
 
-test('statusline falls back gracefully when profile API is unavailable', async () => {
+test('statusline falls back gracefully from stale user_id marker', async () => {
   await withAccountFixture(async ({ claudeDir, accountB }) => {
     await writeFile(join(claudeDir, '.credentials.json'), JSON.stringify(accountB), 'utf8');
     await writeFile(
@@ -135,10 +133,6 @@ test('statusline falls back gracefully when profile API is unavailable', async (
       'utf8',
     );
 
-    assert.equal(await resolveAccount({
-      claudeDir,
-      fetchProfileIdentity: async () => null,
-      now: () => 1_776_000_000_000,
-    }), 'b');
+    assert.equal(await resolveAccount({ claudeDir }), 'b');
   });
 });

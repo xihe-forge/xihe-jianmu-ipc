@@ -31,7 +31,7 @@ function tokenFingerprint(token) {
   return createHash('sha256').update(String(token).slice(-16)).digest('hex').slice(0, 16);
 }
 
-test('update-claude-account-identity syncs OAuth fields and writes v3 fingerprint marker without profile API', async (t) => {
+test('update-claude-account-identity syncs OAuth fields and writes v3 fingerprint marker without network identity lookup', async (t) => {
   if (process.platform !== 'win32') {
     t.skip('Windows PowerShell is required for account script behavior tests');
     return;
@@ -60,7 +60,7 @@ test('update-claude-account-identity syncs OAuth fields and writes v3 fingerprin
       '-ExecutionPolicy',
       'Bypass',
       '-Command',
-      'function Invoke-RestMethod { throw "profile API must not be called" }; function Invoke-WebRequest { throw "profile API must not be called" };',
+      'function Invoke-RestMethod { throw "network identity lookup must not be called" }; function Invoke-WebRequest { throw "network identity lookup must not be called" };',
       '&',
       updateScript,
       '-Which',
@@ -121,7 +121,7 @@ test('sync-claude-account-vault once refreshes vault and marker after token rota
       '-ExecutionPolicy',
       'Bypass',
       '-Command',
-      'function Invoke-RestMethod { throw "profile API must not be called" }; function Invoke-WebRequest { throw "profile API must not be called" };',
+      'function Invoke-RestMethod { throw "network identity lookup must not be called" }; function Invoke-WebRequest { throw "network identity lookup must not be called" };',
       '&',
       syncScript,
       '-Which',

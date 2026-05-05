@@ -2,7 +2,7 @@
 
 > IPC 基础设施 repo 的活清单。按优先级分段。所有条目有明确"现状 / 目标 / 验收 / Owner / ETA"。
 
-**最后刷新**：2026-04-28T19:33:47+08:00（codex-ke-impl · ADR-014 Phase 2 K.E sessions Map race fix GREEN 同步）
+**最后刷新**：2026-05-05T22:45+08:00（codex · statusline v3 零 profile API + vault auto-sync 保留 · e2e-full）
 **刷新节奏**：每次重要产出 + 每周一 portfolio-sync · 老板 88% 周限额硬规矩：每完成任务立即落盘 + commit + push（不批量积压）
 
 ---
@@ -168,6 +168,10 @@
 ---
 
 ## 已完成（按日期倒排，最近 14 天）
+
+### 2026-05-05
+
+- [x] **statusline v3 零 profile API + vault auto-sync 保留** TDD Red→Green（RED `37e22ec` + GREEN 本轮提交）。删除 `statusline-account.mjs` profile endpoint / fetch / user_id cache / vault identity match；`update-claude-account-identity.ps1` 改本地 refreshToken fingerprint marker + atomic JSON write；`start-claude-account.ps1` 启动即写 v1 风格 marker，后台 sync 仍 8 秒首跑 + 60 秒周期。验证：profile grep 0 命中；focused 9/9 PASS；`npm test` 全绿；临时 `claude` shim 跑 start-script 8s 首 sync + 60s token rotation sync，vault 与 marker 均追上；resolver temp A/B 均正确。
 
 ### 2026-04-28
 

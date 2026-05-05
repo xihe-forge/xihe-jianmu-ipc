@@ -30,6 +30,13 @@ if (-not (Test-Path -LiteralPath $VaultPath)) {
 Copy-Item -LiteralPath $VaultPath -Destination $CredentialsPath -Force
 [Console]::Title = "Claude Code [Account $label]"
 
+$identityScript = Join-Path $PSScriptRoot 'update-claude-account-identity.ps1'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $identityScript `
+  -Which $Which `
+  -VaultPath $VaultPath `
+  -CredentialsPath $CredentialsPath `
+  -MarkerPath $MarkerPath
+
 $syncScript = Join-Path $PSScriptRoot 'sync-claude-account-vault.ps1'
 $syncArgs = @(
   '-NoProfile',

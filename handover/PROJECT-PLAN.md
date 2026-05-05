@@ -66,6 +66,15 @@
 
 ## 二、已 ship 产出（按时序倒排）
 
+### 2026-05-05
+
+- **statusline v3 零 Anthropic profile API + vault auto-sync 保留**
+  - 仓位：TDD Red→Green（RED `37e22ec` + GREEN 本轮提交）
+  - 改了什么：彻底移除 `api/oauth/profile` 端点、`PROFILE_ENDPOINT`、`fetchProfileIdentity`、profile user_id cache 与 vault `user_id` match；账号判断回到本地 hash-only：marker fingerprint match → vault refresh/access hash fallback → subscription fallback
+  - 为什么改：老板明确担心账号封禁，v3 不再打 Anthropic profile API；账号切换只依赖本地 `.credentials.json`、`.creds-vault/account-{which}.json` 和 `.current-account`
+  - vault auto-sync 怎么补偿：`start-claude-account.ps1` 启动即写 v1 风格 marker；后台 `sync-claude-account-vault.ps1` 保留 8 秒首跑 + 60 秒周期，把 Claude 刷新的 OAuth 字段原子同步回 vault，并同步更新 marker.fingerprint，token rotation 后状态栏仍能判对 A/B
+  - 怎么验的：focused 9/9 PASS；`npm test` 全绿；grep old profile symbols 0 命中；临时 `claude` shim 跑 start-script 8s 首 sync + 60s rotation sync，vault/marker 均追上；temp resolver A/B 均正确
+
 ### 2026-04-28
 
 - **ADR-014 Phase 2 K.E sessions Map race fix**

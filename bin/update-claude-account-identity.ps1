@@ -13,9 +13,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$MarkerPath,
 
-  [switch]$SyncOauthFromCredentials,
-
-  [string]$ProfileEndpoint = 'https://api.anthropic.com/api/oauth/profile'
+  [switch]$SyncOauthFromCredentials
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,7 +40,13 @@ function Set-JsonFile {
     [Parameter(Mandatory = $true)]$Value
   )
   $json = $Value | ConvertTo-Json -Depth 64
-  Set-Content -LiteralPath $Path -Value $json -NoNewline -Encoding UTF8
+  $directory = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path -LiteralPath $directory)) {
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+  }
+  $tempPath = "$Path.tmp.$PID.$([Guid]::NewGuid().ToString('n'))"
+  Set-Content -LiteralPath $tempPath -Value $json -NoNewline -Encoding UTF8
+  Move-Item -LiteralPath $tempPath -Destination $Path -Force
 }
 
 function Copy-JsonValue {
@@ -81,78 +85,30 @@ if ($SyncOauthFromCredentials) {
   } else {
     $vault | Add-Member -MemberType NoteProperty -Name $vaultOauthProperty -Value $oauthCopy
   }
-  Set-JsonFile -Path $VaultPath -Value $vault
 }
 
-$accessToken = [string]$oauth.accessToken
-if ([string]::IsNullOrWhiteSpace($accessToken)) {
-  throw "missing accessToken in credentials"
+$fingerprint = Get-TokenFingerprint -Token ([string]$oauth.refreshToken)
+if ([string]::IsNullOrWhiteSpace($fingerprint)) {
+  throw "missing refreshToken in Account $Which credentials"
 }
 
-$profile = $null
-try {
-  $headers = @{ Authorization = "Bearer $accessToken" }
-  $profile = Invoke-RestMethod -Method Get -Uri $ProfileEndpoint -Headers $headers -TimeoutSec 8
-} catch {
-  Write-Warning "profile identity capture failed for account $Which; using existing vault identity or legacy fingerprint marker: $($_.Exception.Message)"
+$capturedAt = (Get-Date).ToUniversalTime().ToString('o')
+$identity = [pscustomobject]@{
+  which = $Which
+  captured_at = $capturedAt
 }
 
-if ($null -ne $profile) {
-  $userId = $null
-  foreach ($candidate in @($profile.account.uuid, $profile.account.id, $profile.user_id, $profile.sub, $profile.id)) {
-    if (-not [string]::IsNullOrWhiteSpace([string]$candidate)) {
-      $userId = [string]$candidate
-      break
-    }
-  }
-  if ([string]::IsNullOrWhiteSpace($userId)) {
-    throw "profile response did not include account.uuid/user_id"
-  }
-
-  $email = if ($null -ne $profile.account.email) { [string]$profile.account.email } elseif ($null -ne $profile.email) { [string]$profile.email } else { $null }
-  $orgId = if ($null -ne $profile.organization.uuid) { [string]$profile.organization.uuid } elseif ($null -ne $profile.organization_id) { [string]$profile.organization_id } else { $null }
-  $capturedAt = (Get-Date).ToUniversalTime().ToString('o')
-
-  $identity = [pscustomobject]@{
-    user_id = $userId
-    email = $email
-    org_id = $orgId
-    captured_at = $capturedAt
-    account_label = $Which
-  }
-
-  if ($vault.PSObject.Properties.Name -contains 'xihe_identity') {
-    $vault.xihe_identity = $identity
-  } else {
-    $vault | Add-Member -MemberType NoteProperty -Name 'xihe_identity' -Value $identity
-  }
-  Set-JsonFile -Path $VaultPath -Value $vault
-
-  $marker = [pscustomobject]@{
-    which = $Which
-    user_id = $userId
-    captured_at = $capturedAt
-  }
-  Set-JsonFile -Path $MarkerPath -Value $marker
-
-  Write-Host "[OK] Account $Which identity captured: user_id=$userId"
-} elseif ($null -ne $vault.xihe_identity -and -not [string]::IsNullOrWhiteSpace([string]$vault.xihe_identity.user_id)) {
-  $marker = [pscustomobject]@{
-    which = $Which
-    user_id = [string]$vault.xihe_identity.user_id
-    captured_at = (Get-Date).ToUniversalTime().ToString('o')
-  }
-  Set-JsonFile -Path $MarkerPath -Value $marker
-  Write-Host "[OK] Account $Which marker restored from existing vault identity"
+if ($vault.PSObject.Properties.Name -contains 'xihe_identity') {
+  $vault.xihe_identity = $identity
 } else {
-  $fingerprint = Get-TokenFingerprint -Token ([string]$oauth.refreshToken)
-  if ([string]::IsNullOrWhiteSpace($fingerprint)) {
-    throw "missing refreshToken in Account $Which vault and no identity fallback exists"
-  }
-  $marker = [pscustomobject]@{
-    which = $Which
-    fingerprint = $fingerprint
-  }
-  Set-JsonFile -Path $MarkerPath -Value $marker
-  Write-Host "[OK] Account $Which marker wrote legacy fingerprint fallback"
+  $vault | Add-Member -MemberType NoteProperty -Name 'xihe_identity' -Value $identity
 }
+Set-JsonFile -Path $VaultPath -Value $vault
+
+$marker = [pscustomobject]@{
+  which = $Which
+  fingerprint = $fingerprint
+  captured_at = $capturedAt
+}
+Set-JsonFile -Path $MarkerPath -Value $marker
+Write-Host "[OK] Account $Which marker wrote refresh-token fingerprint"

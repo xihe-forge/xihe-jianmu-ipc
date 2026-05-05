@@ -11,11 +11,22 @@ param(
   [string]$CredentialsPath,
 
   [Parameter(Mandatory = $true)]
-  [string]$MarkerPath
+  [string]$MarkerPath,
+
+  [switch]$SyncOauthFromCredentials,
+
+  [string]$ProfileEndpoint = 'https://api.anthropic.com/api/oauth/profile'
 )
 
 $ErrorActionPreference = 'Stop'
-$profileEndpoint = 'https://api.anthropic.com/api/oauth/profile'
+
+function Get-OauthPropertyName {
+  param([Parameter(Mandatory = $true)]$Credentials)
+  foreach ($name in @('claudeAiOauth', 'claude_ai_oauth', 'oauth')) {
+    if ($null -ne $Credentials.PSObject.Properties[$name]) { return $name }
+  }
+  return $null
+}
 
 function Get-OauthObject {
   param([Parameter(Mandatory = $true)]$Credentials)
@@ -34,6 +45,11 @@ function Set-JsonFile {
   Set-Content -LiteralPath $Path -Value $json -NoNewline -Encoding UTF8
 }
 
+function Copy-JsonValue {
+  param([Parameter(Mandatory = $true)]$Value)
+  return ($Value | ConvertTo-Json -Depth 64 | ConvertFrom-Json)
+}
+
 function Get-TokenFingerprint {
   param([string]$Token)
   if ([string]::IsNullOrWhiteSpace($Token)) { return $null }
@@ -49,6 +65,25 @@ function Get-TokenFingerprint {
 $vault = Get-Content -Raw -LiteralPath $VaultPath | ConvertFrom-Json
 $credentials = Get-Content -Raw -LiteralPath $CredentialsPath | ConvertFrom-Json
 $oauth = Get-OauthObject -Credentials $credentials
+
+if ($SyncOauthFromCredentials) {
+  $credentialsOauthProperty = Get-OauthPropertyName -Credentials $credentials
+  if ([string]::IsNullOrWhiteSpace($credentialsOauthProperty)) {
+    throw "missing OAuth object in credentials"
+  }
+  $vaultOauthProperty = Get-OauthPropertyName -Credentials $vault
+  if ([string]::IsNullOrWhiteSpace($vaultOauthProperty)) {
+    $vaultOauthProperty = $credentialsOauthProperty
+  }
+  $oauthCopy = Copy-JsonValue -Value $oauth
+  if ($vault.PSObject.Properties.Name -contains $vaultOauthProperty) {
+    $vault.$vaultOauthProperty = $oauthCopy
+  } else {
+    $vault | Add-Member -MemberType NoteProperty -Name $vaultOauthProperty -Value $oauthCopy
+  }
+  Set-JsonFile -Path $VaultPath -Value $vault
+}
+
 $accessToken = [string]$oauth.accessToken
 if ([string]::IsNullOrWhiteSpace($accessToken)) {
   throw "missing accessToken in credentials"
@@ -57,7 +92,7 @@ if ([string]::IsNullOrWhiteSpace($accessToken)) {
 $profile = $null
 try {
   $headers = @{ Authorization = "Bearer $accessToken" }
-  $profile = Invoke-RestMethod -Method Get -Uri $profileEndpoint -Headers $headers -TimeoutSec 8
+  $profile = Invoke-RestMethod -Method Get -Uri $ProfileEndpoint -Headers $headers -TimeoutSec 8
 } catch {
   Write-Warning "profile identity capture failed for account $Which; using existing vault identity or legacy fingerprint marker: $($_.Exception.Message)"
 }

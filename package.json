@@ -29,6 +29,8 @@
     "bin/cc-a.bat",
     "bin/cc-b.bat",
     "bin/cc-save.bat",
+    "bin/start-claude-account.ps1",
+    "bin/sync-claude-account-vault.ps1",
     "bin/update-claude-account-identity.ps1",
     "bin/install.ps1",
     "patches/claude-hud-jianmu-priority.patch",

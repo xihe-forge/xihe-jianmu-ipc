@@ -37,79 +37,6 @@ function ipc {
     `$projectRoot = 'D:\workspace\ai\research\xiheAi'
     `$claudeArgs = @()
 
-    function Get-IpcSessionJsonls {
-        param(
-            [Parameter(Mandatory)][string]`$Name,
-            [Parameter(Mandatory)][string]`$JsonlDir
-        )
-
-        # marker 必须含完整 stderr JSON 边界·避免命中 IPC 对话 transcript 里粘的字面字符串
-        # 真 hook stderr：,"stderr":"[session-state-writer] throttle skip for ipc_name=<name>\r\n"
-        # 误命中样本：\",\"stderr\":\"[session-state-writer]... (json escape 后的字面值)·有反斜杠 escape 区分
-        `$markers = @(
-            ",``"stderr``":``"[session-state-writer] throttle skip for ipc_name=`$Name``\r``\n``"",
-            ",``"stderr``":``"[session-state-writer] throttle skip for IPC_NAME=`$Name``\r``\n``"",
-            "``"ipc_name``":``"`$Name``"",
-            "``"ipcName``":``"`$Name``"",
-            "``"IPC_NAME``":``"`$Name``""
-        )
-
-        `$rg = Get-Command rg -ErrorAction SilentlyContinue
-        if (`$null -ne `$rg) {
-            `$rgArgs = @('--files-with-matches', '--fixed-strings', '--glob', '*.jsonl')
-            foreach (`$marker in `$markers) {
-                `$rgArgs += @('-e', `$marker)
-            }
-            `$rgArgs += @('--', `$JsonlDir)
-
-            `$paths = @(& `$rg.Source @rgArgs 2>`$null)
-            return @(
-                `$paths |
-                    Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) } |
-                    Sort-Object -Unique |
-                    ForEach-Object { Get-Item -LiteralPath `$_ -ErrorAction SilentlyContinue } |
-                    Where-Object { `$null -ne `$_ } |
-                    Sort-Object LastWriteTime -Descending
-            )
-        }
-
-        `$matches = @()
-        foreach (`$jsonl in (Get-ChildItem -Path `$JsonlDir -Filter '*.jsonl' -File | Sort-Object LastWriteTime -Descending)) {
-            # marker 是 session-state-writer 周期写·散布在 transcript 全文·不在固定头部
-            # 全文 ReadAllBytes + UTF8 decode + Contains·实测 242 jsonl 2.4s（vs Select-String 22s 快 9x）
-            try {
-                `$bytes = [System.IO.File]::ReadAllBytes(`$jsonl.FullName)
-                `$text = [System.Text.Encoding]::UTF8.GetString(`$bytes)
-                foreach (`$marker in `$markers) {
-                    if (`$text.Contains(`$marker)) {
-                        `$matches += `$jsonl
-                        break
-                    }
-                }
-            } catch {}
-        }
-
-        return @(`$matches)
-    }
-
-    function Get-OnlineSessionId {
-        param([Parameter(Mandatory)][string]`$Name)
-
-        try {
-            `$response = Invoke-WebRequest -Uri 'http://127.0.0.1:3179/sessions' -TimeoutSec 2 -UseBasicParsing
-            `$sessions = `$response.Content | ConvertFrom-Json
-            foreach (`$session in @(`$sessions)) {
-                if ((`$session.name -eq `$Name) -and
-                    (-not ([string]::IsNullOrWhiteSpace([string]`$session.transcriptPath))) -and
-                    (-not ([string]::IsNullOrWhiteSpace([string]`$session.sessionId)))) {
-                    return [string]`$session.sessionId
-                }
-            }
-        } catch {}
-
-        return `$null
-    }
-
     if (`$rest.Count -gt 1) {
         Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
         return
@@ -129,8 +56,26 @@ function ipc {
         if (`$resumeValue -match '^\d+`$') {
             `$index = [int]`$resumeValue
             `$onlineSessionId = Get-OnlineSessionId -Name `$Name
+            `$historySessions = @(Get-IpcSessionsByNameFromHub -Name `$Name -Limit 10)
             if ((`$index -eq 0) -and (-not ([string]::IsNullOrWhiteSpace(`$onlineSessionId)))) {
                 `$claudeArgs += @('--resume', `$onlineSessionId)
+            } elseif (`$historySessions.Count -gt 0) {
+                `$historyIndex = `$index
+                if (-not ([string]::IsNullOrWhiteSpace(`$onlineSessionId))) {
+                    `$historyIndex = `$index - 1
+                }
+
+                if ((`$historyIndex -lt 0) -or (`$historyIndex -ge `$historySessions.Count)) {
+                    Write-Error "-resume `$resumeValue is out of range for IPC name '`$Name'. Found `$(`$historySessions.Count) sessions_history row(s). Use 0 for latest, 1 for HEAD~1."
+                    return
+                }
+
+                `$sessionId = [string]`$historySessions[`$historyIndex].sessionId
+                if ([string]::IsNullOrWhiteSpace(`$sessionId)) {
+                    Write-Error "sessions_history row for IPC name '`$Name' has empty sessionId."
+                    return
+                }
+                `$claudeArgs += @('--resume', `$sessionId)
             } else {
                 `$encodedCwd = ((`$projectRoot -replace ':', '-') -replace '[/\\]', '-') -replace '\s', '-'
                 `$jsonlDir = Join-Path (Join-Path `$env:USERPROFILE '.claude\projects') `$encodedCwd
@@ -159,11 +104,13 @@ function ipc {
                 `$sessionId = `$jsonlFiles[`$jsonlIndex].BaseName
                 `$claudeArgs += @('--resume', `$sessionId)
             }
-        } elseif (`$resumeValue -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`$') {
-            `$claudeArgs += @('--resume', `$resumeValue)
         } else {
-            Write-Error "-resume must be 0, a positive HEAD~N index, or a session UUID. Negative indexes like -1 are not supported; use 0 for latest."
-            return
+            if (`$resumeValue -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`$') {
+                `$claudeArgs += @('--resume', `$resumeValue)
+            } else {
+                Write-Error "-resume must be 0, a positive HEAD~N index, or a session UUID. Negative indexes like -1 are not supported; use 0 for latest."
+                return
+            }
         }
     } else {
         if (`$rest.Count -gt 0) {
@@ -179,6 +126,100 @@ function ipc {
     } finally {
         Pop-Location
     }
+}
+
+function Get-IpcSessionJsonls {
+    param(
+        [Parameter(Mandatory)][string]`$Name,
+        [Parameter(Mandatory)][string]`$JsonlDir
+    )
+
+    # Marker must include the stderr JSON boundary to avoid transcript text false positives.
+    # Real hook stderr: ,"stderr":"[session-state-writer] throttle skip for ipc_name=<name>\r\n"
+    # False-positive sample has escaped quotes: \",\"stderr\":\"[session-state-writer]...
+    `$markers = @(
+        ",``"stderr``":``"[session-state-writer] throttle skip for ipc_name=`$Name\r\n``"",
+        ",``"stderr``":``"[session-state-writer] throttle skip for IPC_NAME=`$Name\r\n``"",
+        "``"ipc_name``":``"`$Name``"",
+        "``"ipcName``":``"`$Name``"",
+        "``"IPC_NAME``":``"`$Name``""
+    )
+
+    `$rg = Get-Command rg -ErrorAction SilentlyContinue
+    if (`$null -ne `$rg) {
+        `$rgArgs = @('--files-with-matches', '--fixed-strings', '--glob', '*.jsonl')
+        foreach (`$marker in `$markers) {
+            `$rgArgs += @('-e', `$marker)
+        }
+        `$rgArgs += @('--', `$JsonlDir)
+
+        `$paths = @(& `$rg.Source @rgArgs 2>`$null)
+        `$rgMatches = @(
+            `$paths |
+                Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) } |
+                Sort-Object -Unique |
+                ForEach-Object { Get-Item -LiteralPath `$_ -ErrorAction SilentlyContinue } |
+                Where-Object { `$null -ne `$_ } |
+                Sort-Object LastWriteTime -Descending
+        )
+        if (`$rgMatches.Count -gt 0) {
+            return @(`$rgMatches)
+        }
+    }
+
+    `$matches = @()
+    foreach (`$jsonl in (Get-ChildItem -Path `$JsonlDir -Filter '*.jsonl' -File | Sort-Object LastWriteTime -Descending)) {
+        # The marker is written periodically and can appear anywhere in the transcript.
+        # Full-file ReadAllBytes + UTF8 + Contains keeps the fallback fast.
+        try {
+            `$bytes = [System.IO.File]::ReadAllBytes(`$jsonl.FullName)
+            `$text = [System.Text.Encoding]::UTF8.GetString(`$bytes)
+            foreach (`$marker in `$markers) {
+                if (`$text.Contains(`$marker)) {
+                    `$matches += `$jsonl
+                    break
+                }
+            }
+        } catch {}
+    }
+
+    return @(`$matches)
+}
+
+function Get-OnlineSessionId {
+    param([Parameter(Mandatory)][string]`$Name)
+
+    try {
+        `$response = Invoke-WebRequest -Uri 'http://127.0.0.1:3179/sessions' -TimeoutSec 2 -UseBasicParsing
+        `$sessions = `$response.Content | ConvertFrom-Json
+        foreach (`$session in @(`$sessions)) {
+            if ((`$session.name -eq `$Name) -and
+                (-not ([string]::IsNullOrWhiteSpace([string]`$session.transcriptPath))) -and
+                (-not ([string]::IsNullOrWhiteSpace([string]`$session.sessionId)))) {
+                return [string]`$session.sessionId
+            }
+        }
+    } catch {}
+
+    return `$null
+}
+
+function Get-IpcSessionsByNameFromHub {
+    param(
+        [Parameter(Mandatory)][string]`$Name,
+        [Parameter()][int]`$Limit = 10
+    )
+
+    try {
+        `$encodedName = [System.Uri]::EscapeDataString(`$Name)
+        `$response = Invoke-WebRequest -Uri "http://127.0.0.1:3179/sessions-history?name=`$encodedName&limit=`$Limit" -TimeoutSec 2 -UseBasicParsing
+        `$rows = `$response.Content | ConvertFrom-Json
+        return @(`$rows | Where-Object {
+            (`$_.name -eq `$Name) -and (-not ([string]::IsNullOrWhiteSpace([string]`$_.sessionId)))
+        })
+    } catch {}
+
+    return @()
 }
 "@
 
@@ -283,14 +324,53 @@ function Install-VSCodeTerminalTabTitle {
     Write-Host 'VSCode settings.json patched: tabs.title + tabs.description = ${sequence}'
 }
 
+function Remove-IpcProfileBlocks {
+    param([Parameter(Mandatory)][string]$Content)
+
+    $lines = $Content -split "`r?`n"
+    $output = New-Object System.Collections.Generic.List[string]
+    $skip = $false
+    $depth = 0
+    foreach ($line in $lines) {
+        if (-not $skip -and $line -match '^function (ipc|Get-IpcSessionJsonls|Get-OnlineSessionId|Get-IpcSessionsByNameFromHub)\s*\{') {
+            $skip = $true
+            $depth = 0
+        }
+
+        if ($skip) {
+            $depth += ([regex]::Matches($line, '\{')).Count
+            $depth -= ([regex]::Matches($line, '\}')).Count
+            if ($depth -le 0) {
+                $skip = $false
+                $depth = 0
+            }
+            continue
+        }
+
+        $output.Add($line)
+    }
+
+    return ($output -join [Environment]::NewLine).TrimEnd()
+}
+
 foreach ($p in $profilesToInstall) {
     $dir = Split-Path $p -Parent
     if (!(Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     if (!(Test-Path $p)) { New-Item -Path $p -Force | Out-Null }
 
-    if (!(Select-String -Path $p -Pattern '^function ipc\s*\{' -Quiet -ErrorAction SilentlyContinue)) {
+    $ipcMatches = @(Select-String -Path $p -Pattern '^function ipc\s*\{' -ErrorAction SilentlyContinue)
+    $hasIpc = $ipcMatches.Count -gt 0
+    $needsIpcUpgrade = $hasIpc -and (
+        ($ipcMatches.Count -gt 1) -or
+        !(Select-String -Path $p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue) -or
+        !(Select-String -Path $p -Pattern 'Get-IpcSessionsByNameFromHub' -Quiet -ErrorAction SilentlyContinue)
+    )
+
+    if ($needsIpcUpgrade) {
+        $cleanedProfile = Remove-IpcProfileBlocks -Content (Get-Content -Path $p -Raw -ErrorAction SilentlyContinue)
+        Set-Content -Path $p -Value $cleanedProfile -Encoding UTF8
         Add-Content -Path $p -Value "`n$funcCode"
-    } elseif (!(Select-String -Path $p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue)) {
+    } elseif (!($hasIpc)) {
         Add-Content -Path $p -Value "`n$funcCode"
     }
     if (!(Select-String -Path $p -Pattern '^function ipcx' -Quiet -ErrorAction SilentlyContinue)) {

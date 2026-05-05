@@ -42,10 +42,10 @@ try {
     $testerNewPath = Join-Path $jsonlDir "$testerNewId.jsonl"
     $unrelatedPath = Join-Path $jsonlDir "$unrelatedId.jsonl"
 
-    Set-Content -Path $directorOldPath -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-director\r\n"}'
-    Set-Content -Path $directorNewPath -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-director\r\n"}'
-    Set-Content -Path $testerNewPath -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-tester\r\n"}'
-    Set-Content -Path $unrelatedPath -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=other-name\r\n"}'
+    Set-Content -Path $directorOldPath -Encoding UTF8 -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-director\r\n"}'
+    Set-Content -Path $directorNewPath -Encoding UTF8 -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-director\r\n"}'
+    Set-Content -Path $testerNewPath -Encoding UTF8 -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-tester\r\n"}'
+    Set-Content -Path $unrelatedPath -Encoding UTF8 -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=other-name\r\n"}'
 
     (Get-Item $directorOldPath).LastWriteTime = (Get-Date).AddMinutes(-30)
     (Get-Item $directorNewPath).LastWriteTime = (Get-Date).AddMinutes(-20)

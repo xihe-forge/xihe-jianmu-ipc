@@ -135,7 +135,7 @@ test('install.ps1 ipc parses optional -resume through remaining arguments', () =
   assert.match(ipcFunc, /\$index = \[int\]`\$resumeValue/);
   assert.match(ipcFunc, /-replace '\[\/\\\\\]'/);
   assert.match(ipcFunc, /function Get-IpcSessionJsonls/);
-  assert.match(ipcFunc, /"ipc_name=`\$Name"/);
+  assert.match(ipcFunc, /ipc_name=`\$Name\\r\\n/);
   assert.match(ipcFunc, /Get-Command rg -ErrorAction SilentlyContinue/);
   assert.match(ipcFunc, /--files-with-matches/);
   assert.match(ipcFunc, /--fixed-strings/);
@@ -143,11 +143,15 @@ test('install.ps1 ipc parses optional -resume through remaining arguments', () =
   assert.match(ipcFunc, /\[System\.Text\.Encoding\]::UTF8\.GetString\(`\$bytes\)/);
   assert.match(ipcFunc, /`\$text\.Contains\(`\$marker\)/);
   assert.match(ipcFunc, /function Get-OnlineSessionId/);
+  assert.match(ipcFunc, /function Get-IpcSessionsByNameFromHub/);
   assert.match(ipcFunc, /Invoke-WebRequest -Uri 'http:\/\/127\.0\.0\.1:3179\/sessions' -TimeoutSec 2 -UseBasicParsing/);
+  assert.match(ipcFunc, /sessions-history\?name=`\$encodedName&limit=`\$Limit/);
   assert.match(ipcFunc, /ConvertFrom-Json/);
   assert.match(ipcFunc, /`\$session\.name -eq `\$Name/);
   assert.match(ipcFunc, /`\$session\.transcriptPath/);
   assert.match(ipcFunc, /`\$session\.sessionId/);
+  assert.match(ipcFunc, /\$historySessions = @\(Get-IpcSessionsByNameFromHub -Name `\$Name -Limit 10\)/);
+  assert.match(ipcFunc, /\$historyIndex = `\$index - 1/);
   assert.match(ipcFunc, /\$jsonlFiles = @\(Get-IpcSessionJsonls -Name `\$Name -JsonlDir `\$jsonlDir\)/);
   assert.match(ipcFunc, /\$onlineSessionId = Get-OnlineSessionId -Name `\$Name/);
   assert.match(ipcFunc, /\$jsonlIndex = `\$index - 1/);
@@ -216,10 +220,10 @@ test('install.ps1 exits with a clear error when no PowerShell binary is detected
 
 test('install.ps1 installs ipc and ipcx idempotently for each selected profile', () => {
   assert.match(installPs1, /foreach \(\$p in \$profilesToInstall\)/);
-  assert.match(
-    installPs1,
-    /Select-String -Path \$p -Pattern '\^function ipc\\s\*\\\{' -Quiet -ErrorAction SilentlyContinue/,
-  );
+  assert.match(installPs1, /\$ipcMatches = @\(Select-String -Path \$p -Pattern '\^function ipc\\s\*\\\{'/);
+  assert.match(installPs1, /\$hasIpc = \$ipcMatches\.Count -gt 0/);
+  assert.match(installPs1, /\$ipcMatches\.Count -gt 1/);
+  assert.match(installPs1, /function Remove-IpcProfileBlocks/);
   assert.match(
     installPs1,
     /Add-Content -Path \$p -Value "`n\$funcCode"/,
@@ -227,6 +231,10 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
   assert.match(
     installPs1,
     /Select-String -Path \$p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue/,
+  );
+  assert.match(
+    installPs1,
+    /Select-String -Path \$p -Pattern 'Get-IpcSessionsByNameFromHub' -Quiet -ErrorAction SilentlyContinue/,
   );
   assert.match(
     installPs1,

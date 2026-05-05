@@ -968,7 +968,11 @@ async function pushLocalCodexInboundViaAppServer(msg) {
   try {
     const status = localAppServerClient.threadStatus(localAppServerThreadId);
     if (status.activeTurnId) {
-      await localAppServerClient.turnSteer(localAppServerThreadId, status.activeTurnId, content);
+      await localAppServerClient.turnSteer(
+        localAppServerThreadId,
+        status.activeTurnId,
+        `${content}\n\n上面注入的 IPC 消息·请将首行 \`← ipc:\` 完整原样回显到下条 reply 顶部·然后接续当前任务`,
+      );
       mcpTrace('codex_app_server_steer_ok', { msg_id: msg.id, turn_id: status.activeTurnId });
     } else {
       await localAppServerClient.threadInjectItems(localAppServerThreadId, [
@@ -981,7 +985,7 @@ async function pushLocalCodexInboundViaAppServer(msg) {
         try {
           const wakeResult = await localAppServerClient.turnStart(
             localAppServerThreadId,
-            '上方 history 已 inject IPC 消息·user 已能看到 ← ipc 行。请你正常处理这条 IPC（如需 reply 用 ipc_send）。无需主动 echo·已自动可见。',
+            '上方 history 刚 inject 一条 IPC 消息（格式 `[IPC-INBOUND from <发送方>] <内容>`）。请你做两步：第一·把这条 IPC 用 `← ipc: [<时间> from: <发送方>] <内容>` 格式直接回显到 reply 第一行·让用户在 codex CLI UI 看到 IPC 抵达；第二·正常处理这条 IPC（如需 reply 给发送方·用 ipc_send 工具）。',
           );
           mcpTrace('codex_app_server_idle_wake_ok', {
             msg_id: msg.id,

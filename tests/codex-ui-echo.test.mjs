@@ -106,15 +106,14 @@ test('idle codex IPC inject content carries UI-visible ipc line', async () => {
     const turnStartCalls = calls.filter((call) => call.method === 'turnStart');
     assert.equal(turnStartCalls.length, 1);
     assert.equal(turnStartCalls[0].threadId, 'thread-idle');
-    assert.match(turnStartCalls[0].input, /user 已能看到 ← ipc 行/);
-    assert.match(turnStartCalls[0].input, /无需主动 echo/);
-    assert.doesNotMatch(turnStartCalls[0].input, /回显到 reply 第一行/);
+    assert.match(turnStartCalls[0].input, /← ipc:/);
+    assert.match(turnStartCalls[0].input, /回显到 reply 第一行/);
   } finally {
     await harness.cleanup();
   }
 });
 
-test('active turn codex IPC turnSteer content carries ipc line without echo instruction', async () => {
+test('active turn codex IPC turnSteer content carries ipc line with echo instruction', async () => {
   const harness = await importMcpServerWithLocalAppServerHook('active');
   try {
     const { client, calls } = createMockAppServerClient({
@@ -134,7 +133,7 @@ test('active turn codex IPC turnSteer content carries ipc line without echo inst
       /^← ipc: \[2026-04-30 10:25:00\+00:00 from: jianmu-pm\] codex UI echo marker/,
     );
     assert.match(turnSteerCalls[0].input, /\[IPC-INBOUND from jianmu-pm\]/);
-    assert.doesNotMatch(turnSteerCalls[0].input, /回显到 reply 第一行/);
+    assert.match(turnSteerCalls[0].input, /完整原样回显到下条 reply 顶部/);
   } finally {
     await harness.cleanup();
   }

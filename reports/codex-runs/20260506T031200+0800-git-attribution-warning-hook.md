@@ -66,5 +66,7 @@
 ## Deployment Notes
 
 - User settings merge completed via install-hooks. Existing sessions may require settings reload/new session before Claude Code hook runtime re-reads the new command.
+- IPC ack to `jianmu-pm`: `msg_1778010610942_1bfbd2`, accepted.
+- Portfolio broadcast: `msg_1778010610998_a47024`, accepted.
 - No force push, no filter-branch, no reset hard.
 - Git identity verified: `Xihe <xihe-ai@lumidrivetech.com>`.

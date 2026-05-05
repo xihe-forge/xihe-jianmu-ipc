@@ -75,7 +75,8 @@ Fixes:
 
 ## Commit and push
 
-- Commit hash: pending at report creation.
-- Push status: pending at report creation.
+- jianmu commit: `d42438d` (`fix(mcp): require real transcript for session history`).
+- harness commit: `11ccee7` (`fix(hooks): register history only for real transcripts`).
+- Push status: pending at report update.
 
 EXIT 0

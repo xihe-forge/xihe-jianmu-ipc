@@ -37,6 +37,49 @@ function ipc {
     `$projectRoot = 'D:\workspace\ai\research\xiheAi'
     `$claudeArgs = @()
 
+    function Get-IpcSessionJsonls {
+        param(
+            [Parameter(Mandatory)][string]`$Name,
+            [Parameter(Mandatory)][string]`$JsonlDir
+        )
+
+        `$markers = @(
+            "ipc_name=`$Name",
+            "IPC_NAME=`$Name",
+            "``"ipc_name``":``"`$Name``"",
+            "``"ipcName``":``"`$Name``"",
+            "``"IPC_NAME``":``"`$Name``""
+        )
+
+        `$rg = Get-Command rg -ErrorAction SilentlyContinue
+        if (`$null -ne `$rg) {
+            `$rgArgs = @('--files-with-matches', '--fixed-strings', '--glob', '*.jsonl')
+            foreach (`$marker in `$markers) {
+                `$rgArgs += @('-e', `$marker)
+            }
+            `$rgArgs += @('--', `$JsonlDir)
+
+            `$paths = @(& `$rg.Source @rgArgs 2>`$null)
+            return @(
+                `$paths |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) } |
+                    Sort-Object -Unique |
+                    ForEach-Object { Get-Item -LiteralPath `$_ -ErrorAction SilentlyContinue } |
+                    Where-Object { `$null -ne `$_ } |
+                    Sort-Object LastWriteTime -Descending
+            )
+        }
+
+        `$matches = @()
+        foreach (`$jsonl in (Get-ChildItem -Path `$JsonlDir -Filter '*.jsonl' -File | Sort-Object LastWriteTime -Descending)) {
+            if (Select-String -Path `$jsonl.FullName -Pattern `$markers -SimpleMatch -Quiet -ErrorAction SilentlyContinue) {
+                `$matches += `$jsonl
+            }
+        }
+
+        return @(`$matches)
+    }
+
     if (`$rest.Count -gt 1) {
         Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
         return
@@ -62,11 +105,16 @@ function ipc {
                 return
             }
 
-            `$jsonlFiles = @(Get-ChildItem -Path `$jsonlDir -Filter '*.jsonl' -File | Sort-Object LastWriteTime -Descending)
+            `$jsonlFiles = @(Get-IpcSessionJsonls -Name `$Name -JsonlDir `$jsonlDir)
             `$index = [int]`$resumeValue
 
+            if (`$jsonlFiles.Count -eq 0) {
+                Write-Error "IPC name '`$Name' has no historical session in `$jsonlDir. Use fresh: ipc `$Name"
+                return
+            }
+
             if ((`$index -lt 0) -or (`$index -ge `$jsonlFiles.Count)) {
-                Write-Error "-resume `$resumeValue is out of range. Found `$(`$jsonlFiles.Count) jsonl session(s) in `$jsonlDir. Use 0 for latest, 1 for HEAD~1."
+                Write-Error "-resume `$resumeValue is out of range for IPC name '`$Name'. Found `$(`$jsonlFiles.Count) matching jsonl session(s) in `$jsonlDir. Use 0 for latest, 1 for HEAD~1."
                 return
             }
 

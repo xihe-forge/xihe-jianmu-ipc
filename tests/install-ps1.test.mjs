@@ -134,7 +134,16 @@ test('install.ps1 ipc parses optional -resume through remaining arguments', () =
   assert.match(ipcFunc, /\$resumeValue -match '\^\\d\+`\$'/);
   assert.match(ipcFunc, /\$index = \[int\]`\$resumeValue/);
   assert.match(ipcFunc, /-replace '\[\/\\\\\]'/);
+  assert.match(ipcFunc, /function Get-IpcSessionJsonls/);
+  assert.match(ipcFunc, /"ipc_name=`\$Name"/);
+  assert.match(ipcFunc, /Get-Command rg -ErrorAction SilentlyContinue/);
+  assert.match(ipcFunc, /--files-with-matches/);
+  assert.match(ipcFunc, /--fixed-strings/);
+  assert.match(ipcFunc, /Select-String -Path `\$jsonl\.FullName -Pattern `\$markers -SimpleMatch -Quiet/);
+  assert.match(ipcFunc, /\$jsonlFiles = @\(Get-IpcSessionJsonls -Name `\$Name -JsonlDir `\$jsonlDir\)/);
   assert.match(ipcFunc, /Sort-Object LastWriteTime -Descending/);
+  assert.match(ipcFunc, /has no historical session/);
+  assert.match(ipcFunc, /out of range for IPC name/);
   assert.match(ipcFunc, /\$claudeArgs \+= @\('--resume', `\$sessionId\)/);
   assert.match(ipcFunc, /\$claudeArgs \+= @\('--resume', `\$resumeValue\)/);
 });

@@ -76,7 +76,8 @@ Fixes:
 ## Commit and push
 
 - jianmu commit: `d42438d` (`fix(mcp): require real transcript for session history`).
+- jianmu pushed head after remote rebase: `69f2e93`.
 - harness commit: `11ccee7` (`fix(hooks): register history only for real transcripts`).
-- Push status: pending at report update.
+- Push status: jianmu pushed to `origin/master`; harness pushed to `origin/main`.
 
 EXIT 0

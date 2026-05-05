@@ -57,6 +57,8 @@ Decision: main path is valid. Use `account.uuid` as stable `user_id`; store emai
 
 - jianmu-ipc RED: `847eb6d` `test: 复现 statusline 身份指纹切换失效`
 - jianmu-ipc GREEN: `726c914` `fix: statusline 改用用户身份指纹`
+- jianmu-ipc report: `74cd3a2` `docs: 记录 statusline 用户身份指纹 v2 报告`
+- jianmu-ipc report push-status update: `7168dc4` `docs: 更新 statusline v2 推送状态`
 - harness sync: `6dff0c2` `docs: 同步 statusline 用户身份指纹 v2`
 
 ## Push status

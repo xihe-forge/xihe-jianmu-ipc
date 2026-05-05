@@ -17,6 +17,7 @@
 - Harness commits pushed:
   - `211bb76 feat(hooks): git attribution warning advisory`
   - `e54bb0e test(hooks): cover UTF-8 IPC payload`
+  - `07c8d5a fix(hooks): keep attribution warning direct to harness`
 - Updated install-hooks regression expectations from 9 to 10 PowerShell hooks.
 - Ran `node tools/install-hooks.mjs`; user settings now includes one `git-attribution-warning.ps1` PreToolUse Bash command.
 
@@ -56,14 +57,14 @@
 - Warning:
   - `[git-attribution-warning] commit 暂存区含 1 文件不属本 session/scope·attribution drift 风险·scope=docs(pm)·reason=scope-owner-mismatch:docs(pm)·files=docs/spec/F07-team-management/fake-designer.md·建议 git commit -m '...' -- <specific path>`
 - IPC harness evidence:
-  - `msg_1778010054210_0a140c`
+  - `msg_1778012174583_63c644`
   - status `delivered`
-  - topic `git-attribution-warning`
-  - created at `2026-05-06T03:40:54+08:00` (Hub stored UTC `2026-05-05 19:40:54`)
+  - topic `null` (direct `to=harness`, no topic fanout)
+  - created at `2026-05-06T04:16:14+08:00` (Hub stored UTC `2026-05-05 20:16:14`)
 - Hub audit evidence:
-  - `git_attribution_warning_hook` entry at `2026-05-06T03:40:54+08:00`
-  - IPC audit entry includes `id=msg_1778010054210_0a140c`
-  - Hub ack audit recorded `ack_received` from `harness`, `rtt_ms=2503`
+  - `git_attribution_warning_hook` entry at `2026-05-06T04:16:14+08:00`
+  - IPC audit entry includes `id=msg_1778012174583_63c644`
+  - Hub ack audit recorded `ack_received` from `harness`, `rtt_ms=1108`
 - Encoding fix verified: first dogfood IPC exposed PS5 UTF-8 body corruption; hook now sends explicit UTF-8 bytes with `application/json; charset=utf-8`, and the second dogfood message stored Chinese content correctly.
 
 ## Deployment Notes

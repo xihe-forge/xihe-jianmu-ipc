@@ -168,8 +168,9 @@ function getSelfCachePath({
   homeDir = null,
   env = process.env,
   ipcName = IPC_NAME,
+  startedAt = MCP_STARTED_AT,
 } = {}) {
-  return join(getSelfCacheDir({ homeDir, env }), `parent-${ppid}-${ipcName}.json`);
+  return join(getSelfCacheDir({ homeDir, env }), `parent-${ppid}-${ipcName}-${startedAt}.json`);
 }
 
 function loadCachedSelfTranscript(options = {}) {
@@ -177,7 +178,11 @@ function loadCachedSelfTranscript(options = {}) {
   if (!existsSync(cachePath)) return null;
   try {
     const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
-    if (typeof cached?.transcriptPath === 'string' && existsSync(cached.transcriptPath)) {
+    if (
+      typeof cached?.transcriptPath === 'string' &&
+      existsSync(cached.transcriptPath) &&
+      (!cached?.sessionId || basename(cached.transcriptPath, '.jsonl') === cached.sessionId)
+    ) {
       return cached.transcriptPath;
     }
   } catch {}
@@ -197,6 +202,7 @@ function persistSelfTranscript({ transcriptPath, sessionId }, options = {}) {
         detectedAt: Date.now(),
         ppid: options.ppid ?? process.ppid,
         ipcName: options.ipcName ?? IPC_NAME,
+        startedAt: options.startedAt ?? MCP_STARTED_AT,
       }),
       'utf8',
     );
@@ -246,6 +252,7 @@ export function findSelfTranscriptPath({
   env = process.env,
   now = Date.now,
   ppid = process.ppid,
+  startedAt = MCP_STARTED_AT,
 } = {}) {
   const envPath = env.CLAUDE_TRANSCRIPT_PATH || env.TRANSCRIPT_PATH;
   if (envPath) return envPath;
@@ -255,6 +262,7 @@ export function findSelfTranscriptPath({
     homeDir,
     env,
     ipcName: env.IPC_NAME || env.IPC_DEFAULT_NAME || IPC_NAME,
+    startedAt,
   };
   const cached = loadCachedSelfTranscript(cacheOptions);
   if (cached) return cached;
@@ -278,8 +286,10 @@ export function findSelfTranscriptPath({
           projectDir,
           `${state.sessionId}.jsonl`,
         );
-        persistSelfTranscript({ transcriptPath, sessionId: state.sessionId }, cacheOptions);
-        return transcriptPath;
+        if (existsSync(transcriptPath)) {
+          persistSelfTranscript({ transcriptPath, sessionId: state.sessionId }, cacheOptions);
+          return transcriptPath;
+        }
       }
     }
   } catch {}

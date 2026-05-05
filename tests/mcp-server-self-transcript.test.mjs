@@ -43,8 +43,8 @@ function setBirthtime(filePath, timestampMs) {
   );
 }
 
-function cachePath(homeDir, ppid = process.ppid, ipcName = 'jianmu-pm') {
-  return join(homeDir, '.claude', 'mcp-server-cache', `parent-${ppid}-${ipcName}.json`);
+function cachePath(homeDir, ppid = process.ppid, ipcName = 'jianmu-pm', startedAt = 1_777_275_599_000) {
+  return join(homeDir, '.claude', 'mcp-server-cache', `parent-${ppid}-${ipcName}-${startedAt}.json`);
 }
 
 describe('AC-MCP-SELF-TRANSCRIPT-001 self transcript 识别 + 缓存', { skip: windowsOnly }, () => {
@@ -104,22 +104,23 @@ describe('AC-MCP-SELF-TRANSCRIPT-001 self transcript 识别 + 缓存', { skip: w
     }
   });
 
-  test('AC-MCP-SELF-TRANSCRIPT-001-d: cache 持久化 + 跨 respawn 复用', () => {
+  test('AC-MCP-SELF-TRANSCRIPT-001-d: cache 持久化 + 同启动实例复用', () => {
     const fixture = makeFixture();
     try {
       const now = 1_777_275_600_000;
+      const startedAt = now - 1_000;
       const selfPath = transcriptPath(fixture.projectDir, 'self-session');
       setBirthtime(selfPath, now - 5_000);
 
-      const first = findSelfTranscriptPath({ cwd: fixture.cwd, homeDir: fixture.homeDir, env: fixture.env, now: () => now });
+      const first = findSelfTranscriptPath({ cwd: fixture.cwd, homeDir: fixture.homeDir, env: fixture.env, now: () => now, startedAt });
       assert.equal(first, selfPath);
-      assert.ok(existsSync(cachePath(fixture.homeDir)));
+      assert.ok(existsSync(cachePath(fixture.homeDir, process.ppid, 'jianmu-pm', startedAt)));
 
       rmSync(fixture.projectDir, { recursive: true, force: true });
-      const cached = JSON.parse(readFileSync(cachePath(fixture.homeDir), 'utf8'));
+      const cached = JSON.parse(readFileSync(cachePath(fixture.homeDir, process.ppid, 'jianmu-pm', startedAt), 'utf8'));
       mkdirSync(fixture.projectDir, { recursive: true });
       writeFileSync(cached.transcriptPath, 'cached still exists\n');
-      const second = findSelfTranscriptPath({ cwd: fixture.cwd, homeDir: fixture.homeDir, env: fixture.env, now: () => now + 60 * 60 * 1000 });
+      const second = findSelfTranscriptPath({ cwd: fixture.cwd, homeDir: fixture.homeDir, env: fixture.env, now: () => now + 60 * 60 * 1000, startedAt });
 
       assert.equal(second, selfPath);
     } finally {
@@ -131,15 +132,63 @@ describe('AC-MCP-SELF-TRANSCRIPT-001 self transcript 识别 + 缓存', { skip: w
     const fixture = makeFixture();
     try {
       const now = 1_777_275_600_000;
+      const startedAt = now - 1_000;
       mkdirSync(join(fixture.homeDir, '.claude', 'mcp-server-cache'), { recursive: true });
-      writeFileSync(cachePath(fixture.homeDir), JSON.stringify({ transcriptPath: join(fixture.projectDir, 'missing.jsonl') }));
+      writeFileSync(cachePath(fixture.homeDir, process.ppid, 'jianmu-pm', startedAt), JSON.stringify({ transcriptPath: join(fixture.projectDir, 'missing.jsonl') }));
       const selfPath = transcriptPath(fixture.projectDir, 'self-session');
       setBirthtime(selfPath, now - 5_000);
 
-      const found = findSelfTranscriptPath({ cwd: fixture.cwd, homeDir: fixture.homeDir, env: fixture.env, now: () => now });
+      const found = findSelfTranscriptPath({ cwd: fixture.cwd, homeDir: fixture.homeDir, env: fixture.env, now: () => now, startedAt });
 
       assert.equal(found, selfPath);
-      assert.equal(JSON.parse(readFileSync(cachePath(fixture.homeDir), 'utf8')).sessionId, basename(selfPath, '.jsonl'));
+      assert.equal(JSON.parse(readFileSync(cachePath(fixture.homeDir, process.ppid, 'jianmu-pm', startedAt), 'utf8')).sessionId, basename(selfPath, '.jsonl'));
+    } finally {
+      rmSync(fixture.homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-MCP-SELF-TRANSCRIPT-001-f: old startup cache is not reused by a new startup', () => {
+    const fixture = makeFixture();
+    try {
+      const now = 1_777_275_600_000;
+      const oldStartedAt = now - 60 * 60 * 1000;
+      const newStartedAt = now - 1_000;
+      mkdirSync(join(fixture.homeDir, '.claude', 'mcp-server-cache'), { recursive: true });
+      const oldPath = transcriptPath(fixture.projectDir, 'old-session');
+      setBirthtime(oldPath, now - 60 * 60 * 1000);
+      writeFileSync(
+        cachePath(fixture.homeDir, process.ppid, 'jianmu-pm', oldStartedAt),
+        JSON.stringify({ transcriptPath: oldPath, sessionId: basename(oldPath, '.jsonl') }),
+      );
+      const selfPath = transcriptPath(fixture.projectDir, 'self-session');
+      setBirthtime(selfPath, now - 5_000);
+
+      const found = findSelfTranscriptPath({ cwd: fixture.cwd, homeDir: fixture.homeDir, env: fixture.env, now: () => now, startedAt: newStartedAt });
+
+      assert.equal(found, selfPath);
+    } finally {
+      rmSync(fixture.homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-MCP-SELF-TRANSCRIPT-001-g: pid sessionId fallback requires existing transcript file', () => {
+    const fixture = makeFixture();
+    try {
+      const now = 1_777_275_600_000;
+      writeFileSync(
+        join(fixture.homeDir, '.claude', 'sessions', '1234.json'),
+        JSON.stringify({ pid: 1234, sessionId: 'not-created-yet', cwd: fixture.cwd }),
+      );
+
+      const found = findSelfTranscriptPath({
+        pid: 1234,
+        cwd: fixture.cwd,
+        homeDir: fixture.homeDir,
+        env: fixture.env,
+        now: () => now,
+      });
+
+      assert.equal(found, null);
     } finally {
       rmSync(fixture.homeDir, { recursive: true, force: true });
     }

@@ -3,6 +3,7 @@
 ts: 2026-05-06T04:34:00+08:00
 ship-tier: e2e-dogfood
 EXIT: 0 after commit/push
+main-fix-commit: 9c8eb10
 
 ## Summary
 

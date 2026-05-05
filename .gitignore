@@ -15,6 +15,18 @@ temp/
 .test-tmp/
 .tmp/
 
+# atomic handoff 自动生成的 handover MD（按 epoch ms 时间戳命名）
+handover/HANDOVER-*-1[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].md
+handover/HANDOVER-session-*-1[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].md
+
+# codex 临时工作目录
+.codex-tmp-*/
+.codex-app-server-bridge-*
+
+# 运行日志目录（*.log 已 ignore，目录本身也跳过）
+log/
+logs/
+
 # 天枢 Harness（本地方法论，不上传）
 .tianshu/
 CLAUDE.md

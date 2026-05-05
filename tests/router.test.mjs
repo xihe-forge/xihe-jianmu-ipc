@@ -469,6 +469,53 @@ test('routeMessage: 在线 Codex 优先走 ws，让本地 MCP/PTY 接管 push', 
   );
 });
 
+test('routeMessage: 离线 Codex app-server fallback 注入单段可见 ipc 行', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  const injectCalls = [];
+  ctx.codexAppServerFallbackEnabled = true;
+  ctx.appServerClients = new Map([
+    [
+      'codex-agent',
+      {
+        threadStatus: async () => ({ activeTurnId: null }),
+        threadInjectItems: async (threadId, items) => injectCalls.push({ threadId, items }),
+      },
+    ],
+  ]);
+  const { routeMessage } = createRouter(ctx);
+  ctx.sessions.set('codex-agent', {
+    name: 'codex-agent',
+    runtime: 'codex',
+    ws: null,
+    connectedAt: Date.now(),
+    topics: new Set(),
+    inbox: [],
+    inboxExpiry: null,
+    appServerThreadId: 'thread-route',
+  });
+
+  routeMessage(
+    {
+      id: 'codex-fallback-single-ipc-line',
+      type: 'message',
+      from: 'alice',
+      to: 'codex-agent',
+      content: 'route marker',
+      ts: '2026-04-30T10:25:00.123Z',
+    },
+    { name: 'alice' },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(injectCalls.length, 1);
+  assert.equal(injectCalls[0].threadId, 'thread-route');
+  assert.equal(
+    injectCalls[0].items[0].content[0].text,
+    '← ipc: [2026-04-30 10:25:00+00:00 from: alice] route marker',
+  );
+  assert.doesNotMatch(injectCalls[0].items[0].content[0].text, /IPC-INBOUND/);
+});
+
 
 test('routeMessage: records push_deliver when direct send succeeds', { timeout: 5000 }, () => {
   const ctx = createMockCtx();

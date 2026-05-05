@@ -8,7 +8,7 @@
 
 ## K.I original text
 
-`上方 history 刚 inject 一条 IPC 消息（格式 `[IPC-INBOUND from <发送方>] <内容>`）。请你做两步：第一·把这条 IPC 用 `← ipc: [<时间> from: <发送方>] <内容>` 格式直接回显到 reply 第一行·让用户在 codex CLI UI 看到 IPC 抵达；第二·正常处理这条 IPC（如需 reply 给发送方·用 ipc_send 工具）。`
+2026-05-05 原文使用旧 bracket inbound marker；2026-05-06 起已迁到单段 `← ipc:` 格式，避免 content 重复占 token。
 
 ## K.Y-1 reversed text
 

@@ -121,14 +121,15 @@ test('idle codex IPC injects history, starts a wake turn, and emits wake trace',
     const injectedText = injectCalls[0].items[0].content[0].text;
     assert.match(
       injectedText,
-      /^← ipc: \[2026-04-30 10:25:00\+00:00 from: jianmu-pm\] idle wake marker/,
+      /^← ipc: \[2026-04-30 10:25:00\+00:00 from: jianmu-pm\] idle wake marker$/,
     );
-    assert.match(injectedText, /\n\n\[IPC-INBOUND from jianmu-pm\] idle wake marker$/);
+    assert.doesNotMatch(injectedText, /IPC-INBOUND/);
 
     const turnStartCalls = calls.filter((call) => call.method === 'turnStart');
     assert.equal(turnStartCalls.length, 1);
     assert.equal(turnStartCalls[0].threadId, 'thread-idle');
     assert.match(turnStartCalls[0].input, /← ipc:/);
+    assert.doesNotMatch(turnStartCalls[0].input, /IPC-INBOUND/);
     assert.match(turnStartCalls[0].input, /回显到 reply 第一行/);
 
     const events = await readTraceEvents(harness.tracePath);
@@ -158,6 +159,7 @@ test('active turn codex IPC uses turnSteer without inject or wake turn', async (
       turnSteerCalls[0].input,
       /^← ipc: \[2026-04-30 10:25:00\+00:00 from: jianmu-pm\] idle wake marker/,
     );
+    assert.doesNotMatch(turnSteerCalls[0].input, /IPC-INBOUND/);
     assert.match(turnSteerCalls[0].input, /完整原样回显到下条 reply 顶部/);
     assert.equal(calls.filter((call) => call.method === 'threadInjectItems').length, 0);
     assert.equal(calls.filter((call) => call.method === 'turnStart').length, 0);

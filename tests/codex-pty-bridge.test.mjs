@@ -20,8 +20,8 @@ test('formatCodexPtyPrompt carries visible ipc line and reply instruction', () =
   });
 
   assert.match(prompt, /^← ipc: \[2026-05-05 18:46:47\+00:00 from: jianmu-pm\] dogfood\\nack/);
-  assert.match(prompt, /\[IPC-INBOUND from jianmu-pm\] dogfood\\nack/);
-  assert.match(prompt, /U\+2190 LEFTWARDS ARROW/);
+  assert.doesNotMatch(prompt, /IPC-INBOUND/);
+  assert.match(prompt, /完整原样回显/);
   assert.match(prompt, /ipc_send\(to="jianmu-pm"/);
 });
 

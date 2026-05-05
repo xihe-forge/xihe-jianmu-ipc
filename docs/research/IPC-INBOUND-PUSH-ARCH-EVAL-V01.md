@@ -387,12 +387,12 @@ T0  codex-test session 闲置·model 没在跑 turn·等老板下次输入
 T1  另一 session（harness）派 IPC 给 codex-test
 T2  Hub routeMessage·codex-test.runtime==='codex' + active turn 不存在
     → App Server thread/inject_items 把消息注 codex-test thread history
-    → marker 内容：[IPC-INBOUND from harness] <消息体>
+    → marker 内容：旧 bracket inbound marker <消息体>（2026-05-06 后迁到单段 `← ipc:`）
 T3  codex-test 收到 inject_items 但当前没 turn 在跑·等待
 
 T4  老板下次和 codex-test 互动（输入新指令 / 或 watchdog 触发 wake）
 T5  codex-test 起新 turn·model 看 thread history
-T6  history 末尾包含 [IPC-INBOUND from harness] marker
+T6  history 末尾包含旧 bracket inbound marker
 T7  model 处理 marker 后再处理老板输入
 T8  老板看到 codex-test 输出包含「我刚收到 harness 的消息: ...」
     总耗时：T0→T8 = idle 期 + 新 turn 起·通常 <60 秒
@@ -636,7 +636,7 @@ function formatInjectItem(text) {
 async function pushViaAppServer(targetSession, msg) {
   const client = appServerClient.get(targetSession.name);
   const threadId = targetSession.appServerThreadId;
-  const content = formatChannelMarker(msg);  // [IPC-INBOUND from <sender>] <body>
+  const content = formatChannelMarker(msg);  // legacy bracket inbound marker; 2026-05-06+ uses single `← ipc:` line
 
   try {
     const status = await client.threadStatus(threadId);

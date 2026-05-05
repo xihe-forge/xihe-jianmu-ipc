@@ -10,9 +10,10 @@ function sanitizeTraceName(name) {
   return name.replace(/[^\w.-]/g, '_');
 }
 
-async function importMcpServerWithBridgeSkipHook(testName) {
+async function importMcpServerWithBridgeSkipHook(testName, { fallback = '1' } = {}) {
   const originalName = process.env.IPC_NAME;
   const originalRuntime = process.env.IPC_RUNTIME;
+  const originalFallback = process.env.IPC_CODEX_APP_SERVER_FALLBACK;
   const ipcName = `codex-app-server-bridge-skip-trace-${process.pid}-${testName}`;
   const sourcePath = resolve('mcp-server.mjs');
   const tempPath = resolve(
@@ -40,6 +41,11 @@ export const __codexAppServerBridgeSkipTraceTest = {
   await rm(tracePath, { force: true });
   process.env.IPC_NAME = ipcName;
   process.env.IPC_RUNTIME = 'codex';
+  if (fallback === null) {
+    delete process.env.IPC_CODEX_APP_SERVER_FALLBACK;
+  } else {
+    process.env.IPC_CODEX_APP_SERVER_FALLBACK = fallback;
+  }
   await writeFile(tempPath, `${source}\n${testHook}`, 'utf8');
   const mod = await import(`${pathToFileURL(tempPath).href}?case=${importSeq}`);
 
@@ -57,6 +63,11 @@ export const __codexAppServerBridgeSkipTraceTest = {
         delete process.env.IPC_RUNTIME;
       } else {
         process.env.IPC_RUNTIME = originalRuntime;
+      }
+      if (originalFallback === undefined) {
+        delete process.env.IPC_CODEX_APP_SERVER_FALLBACK;
+      } else {
+        process.env.IPC_CODEX_APP_SERVER_FALLBACK = originalFallback;
       }
       await rm(tempPath, { force: true });
       await rm(tracePath, { force: true });
@@ -94,6 +105,27 @@ test('codex app-server bridge skip emits trace when runtime is not codex', async
     assert.equal(skipEvents[0].resolved_runtime, 'unknown');
     assert.equal(skipEvents[0].ipc_name, harness.ipcName);
     assert.deepEqual(skipEvents[0].mcp_client_info, { name: 'plain-client' });
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('codex app-server bridge is disabled by default when PTY bridge is missing', async () => {
+  const harness = await importMcpServerWithBridgeSkipHook('fallback-disabled', {
+    fallback: null,
+  });
+  try {
+    harness.api.setResolveRuntime(() => 'codex');
+
+    const bridge = await harness.api.ensureLocalCodexAppServer();
+
+    assert.equal(bridge, null);
+    const events = await readTraceEvents(harness.tracePath);
+    const skipEvents = events.filter(
+      (event) => event.event === 'codex_app_server_bridge_skip',
+    );
+    assert.equal(skipEvents.length, 1);
+    assert.equal(skipEvents[0].reason, 'pty-bridge-missing-fallback-disabled');
   } finally {
     await harness.cleanup();
   }

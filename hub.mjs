@@ -298,6 +298,7 @@ const ctx = {
     registryMaintainer.updateSessionProjects(payload, options),
   sessionReclaim,
   appServerClients,
+  codexAppServerFallbackEnabled: process.env.IPC_CODEX_APP_SERVER_FALLBACK === '1',
 };
 
 const {

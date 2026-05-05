@@ -62,7 +62,8 @@ describe('ADR-012 ipc_spawn runtime=codex support', () => {
     assert.equal(payload.runtime, 'codex');
     assert.match(payload.command_hint, /^wt\.exe /);
     assert.match(payload.command_hint, /cmd \/k /);
-    assert.match(payload.command_hint, /codex --dangerously-bypass-approvals-and-sandbox/);
+    assert.match(payload.command_hint, /codex-title-wrapper\.mjs/);
+    assert.match(payload.command_hint, /codex\.cmd" --dangerously-bypass-approvals-and-sandbox/);
     assert.match(payload.command_hint, /-c 'mcp_servers\.jianmu-ipc\.env\.IPC_NAME=\\"codex-1\\"'/);
   });
 
@@ -81,6 +82,7 @@ describe('ADR-012 ipc_spawn runtime=codex support', () => {
     assert.match(payload.command_hint, /^codex exec /);
     assert.match(payload.command_hint, /--skip-git-repo-check/);
     assert.match(payload.command_hint, /--dangerously-bypass-approvals-and-sandbox/);
+    assert.match(payload.command_hint, /model_reasoning_effort="xhigh"/);
     assert.match(payload.command_hint, /send result to harness/);
   });
 
@@ -118,16 +120,31 @@ describe('ADR-012 ipc_spawn runtime=codex support', () => {
 
     assert.equal(argv[dashIdx + 1], 'cmd');
     assert.equal(argv[dashIdx + 2], '/k');
-    assert.match(argv[dashIdx + 3], /cd \/d "D:\\workspace\\test" && codex /);
+    assert.match(argv[dashIdx + 3], /set "IPC_NAME=codex-cwd"/);
+    assert.match(argv[dashIdx + 3], /set "IPC_RUNTIME=codex"/);
+    assert.match(argv[dashIdx + 3], /cd \/d "D:\\workspace\\test" && ".*node(?:\.exe)?"/);
+    assert.match(argv[dashIdx + 3], /codex-title-wrapper\.mjs"/);
+    assert.match(argv[dashIdx + 3], /%APPDATA%\\npm\\codex\.cmd"/);
   });
 
   test('AC-6 codex IPC_NAME comes from -c override, not parent env injection', () => {
     const launch = mcpServer.buildCodexLaunchArgs({ sessionName: 'codex-ipc' });
 
     assert.match(launch, /--dangerously-bypass-approvals-and-sandbox/);
+    assert.match(launch, /-c 'model_reasoning_effort="xhigh"'/);
     assert.match(launch, /-c 'mcp_servers\.jianmu-ipc\.env\.IPC_NAME="codex-ipc"'/);
     assert.doesNotMatch(launch, /set IPC_NAME=/);
     assert.doesNotMatch(launch, /\$env:IPC_NAME/);
+  });
+
+  test('AC-6b codex IPC launch pins xhigh reasoning before IPC overrides', () => {
+    const launch = mcpServer.buildCodexLaunchArgs({ sessionName: 'codex-ipc' });
+    const reasoningIdx = launch.indexOf(`-c 'model_reasoning_effort="xhigh"'`);
+    const ipcNameIdx = launch.indexOf(`-c 'mcp_servers.jianmu-ipc.env.IPC_NAME="codex-ipc"'`);
+
+    assert.notEqual(reasoningIdx, -1);
+    assert.notEqual(ipcNameIdx, -1);
+    assert.ok(reasoningIdx < ipcNameIdx);
   });
 
   test('AC-7 codex exec dryRun documents child exit cleanup path', async () => {

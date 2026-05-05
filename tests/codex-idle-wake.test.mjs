@@ -25,6 +25,9 @@ export const __codexIdleWakeTest = {
     localAppServerClient = client;
     localAppServerThreadId = threadId;
   },
+  setWs(mockWs) {
+    ws = mockWs;
+  },
   pushLocalCodexInboundViaAppServer,
 };
 `;
@@ -52,6 +55,10 @@ export const __codexIdleWakeTest = {
 function createMockAppServerClient({
   statuses = [{ activeTurnId: null }],
   turnStart = async () => ({ turnId: 'wake-turn-1' }),
+  waitForTurnCompleted = async () => ({
+    completed: true,
+    lastAgentMessage: '',
+  }),
 } = {}) {
   const calls = [];
   let statusIndex = 0;
@@ -71,6 +78,10 @@ function createMockAppServerClient({
     async turnStart(threadId, input, params) {
       calls.push({ method: 'turnStart', threadId, input, params });
       return await turnStart(threadId, input, params);
+    },
+    async waitForTurnCompleted(threadId, turnId, options) {
+      calls.push({ method: 'waitForTurnCompleted', threadId, turnId, options });
+      return await waitForTurnCompleted(threadId, turnId, options);
     },
   };
   return { client, calls };
@@ -196,6 +207,54 @@ test('idle wake turnStart failure falls back to injected history success', async
       events.some(
         (event) =>
           event.event === 'codex_app_server_idle_wake_failed' && event.error === 'wake boom',
+      ),
+      true,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('idle wake forwards completed app-server answer as IPC reply to sender', async () => {
+  const harness = await importMcpServerWithLocalAppServerHook('reply-forward');
+  try {
+    const sent = [];
+    harness.api.setWs({
+      readyState: 1,
+      send(payload) {
+        sent.push(JSON.parse(payload));
+      },
+    });
+    const { client, calls } = createMockAppServerClient({
+      statuses: [{ activeTurnId: null }, { activeTurnId: null }],
+      turnStart: async () => ({ turnId: 'wake-turn-reply' }),
+      waitForTurnCompleted: async () => ({
+        completed: true,
+        threadId: 'thread-reply',
+        turnId: 'wake-turn-reply',
+        lastAgentMessage: '← ipc: reply marker ACK',
+      }),
+    });
+    harness.api.setLocalAppServer(client, 'thread-reply');
+
+    const pushed = await harness.api.pushLocalCodexInboundViaAppServer(sampleMessage);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(pushed, true);
+    assert.equal(calls.filter((call) => call.method === 'waitForTurnCompleted').length, 1);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].type, 'message');
+    assert.equal(sent[0].from, process.env.IPC_NAME);
+    assert.equal(sent[0].to, 'jianmu-pm');
+    assert.equal(sent[0].content, '← ipc: reply marker ACK');
+
+    const events = await readTraceEvents(harness.tracePath);
+    assert.equal(
+      events.some(
+        (event) =>
+          event.event === 'codex_app_server_reply_sent' &&
+          event.reply_msg_id === sent[0].id &&
+          event.msg_id === sampleMessage.id,
       ),
       true,
     );

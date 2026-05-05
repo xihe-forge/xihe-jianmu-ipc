@@ -158,4 +158,61 @@ describe('codex App Server JSON-RPC client', () => {
     assert.deepEqual(notifications, ['turn/started', 'item/agentMessage/delta', 'turn/completed']);
     assert.equal(client.threadStatus('t').activeTurnId, null);
   });
+
+  test('waitForTurnCompleted resolves with captured assistant delta text', async () => {
+    const { client, child } = createClient((request) => ({ id: request.id, result: {} }));
+
+    child.stdout.write(
+      `${JSON.stringify({ method: 'turn/started', params: { threadId: 't', turn: { id: 'u' } } })}\n`,
+    );
+    const wait = client.waitForTurnCompleted('t', 'u', { timeoutMs: 1000 });
+    child.stdout.write(
+      `${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 't', turnId: 'u', delta: 'hello ' } })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 't', turnId: 'u', delta: 'ipc' } })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({ method: 'turn/completed', params: { threadId: 't', turn: { id: 'u' } } })}\n`,
+    );
+
+    const result = await wait;
+
+    assert.equal(result.completed, true);
+    assert.equal(result.threadId, 't');
+    assert.equal(result.turnId, 'u');
+    assert.equal(result.lastAgentMessage, 'hello ipc');
+    assert.equal(result.timedOut, undefined);
+  });
+
+  test('waitForTurnCompleted captures final assistant message item', async () => {
+    const { client, child } = createClient((request) => ({ id: request.id, result: {} }));
+
+    child.stdout.write(
+      `${JSON.stringify({ method: 'turn/started', params: { threadId: 't', turn: { id: 'u' } } })}\n`,
+    );
+    const wait = client.waitForTurnCompleted('t', 'u', { timeoutMs: 1000 });
+    child.stdout.write(
+      `${JSON.stringify({
+        method: 'response_item',
+        params: {
+          threadId: 't',
+          turnId: 'u',
+          item: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'final ipc reply' }],
+          },
+        },
+      })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({ method: 'turn/completed', params: { threadId: 't', turn: { id: 'u' } } })}\n`,
+    );
+
+    const result = await wait;
+
+    assert.equal(result.completed, true);
+    assert.equal(result.lastAgentMessage, 'final ipc reply');
+  });
 });

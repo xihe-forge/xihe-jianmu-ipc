@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import * as pty from '@lydell/node-pty';
+import { watch } from 'node:fs';
+import {
+  createCodexPtyBridgeReady,
+  processCodexPtyBridgeQueue,
+} from '../lib/codex-pty-bridge.mjs';
 
 const [, , codexBin, ...codexArgs] = process.argv;
 
@@ -24,7 +29,13 @@ try {
 
 const OSC_TITLE_PATTERN = /\x1B\][012];[^\x07\x1B]*(?:\x07|\x1B\\)/g;
 const ipcName = (process.env.IPC_NAME ?? '').trim();
+const codexPtySubmitDelayMs = parseNonNegativeInteger(
+  process.env.IPC_CODEX_PTY_SUBMIT_DELAY_MS,
+  1000,
+);
 let exited = false;
+let ptyBridgeProcessing = false;
+let ptyBridgeWatcher = null;
 
 function titleSequence(title) {
   return `\x1b]0;${title}\x07`;
@@ -41,6 +52,11 @@ function exitOnce(code) {
   process.exit(code);
 }
 
+function parseNonNegativeInteger(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 child.onData((data) => {
   process.stdout.write(rewriteTitle(data));
 });
@@ -52,6 +68,42 @@ child.onExit(({ exitCode }) => {
 if (ipcName) {
   process.stdout.write(titleSequence(ipcName));
 }
+
+async function processPtyBridgeQueueOnce() {
+  if (!ipcName || ptyBridgeProcessing || exited) return;
+  ptyBridgeProcessing = true;
+  try {
+    await processCodexPtyBridgeQueue(ipcName, {
+      writePrompt: async (prompt) => child.write(prompt),
+      submitDelayMs: codexPtySubmitDelayMs,
+    });
+  } catch (error) {
+    process.stderr.write(`[codex-title-wrapper] pty bridge queue failed: ${error?.message ?? error}\n`);
+  } finally {
+    ptyBridgeProcessing = false;
+  }
+}
+
+async function startPtyBridge() {
+  if (!ipcName) return;
+  try {
+    const { paths } = await createCodexPtyBridgeReady(ipcName);
+    ptyBridgeWatcher = watch(paths.queueDir, () => {
+      void processPtyBridgeQueueOnce();
+    });
+    void processPtyBridgeQueueOnce();
+    setInterval(() => {
+      void createCodexPtyBridgeReady(ipcName).catch(() => {});
+    }, 5000).unref();
+    setInterval(() => {
+      void processPtyBridgeQueueOnce();
+    }, 500).unref();
+  } catch (error) {
+    process.stderr.write(`[codex-title-wrapper] pty bridge unavailable: ${error?.message ?? error}\n`);
+  }
+}
+
+void startPtyBridge();
 
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
@@ -65,6 +117,9 @@ process.stdout.on('resize', () => {
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
+    try {
+      ptyBridgeWatcher?.close?.();
+    } catch {}
     try {
       child.kill();
     } catch {}

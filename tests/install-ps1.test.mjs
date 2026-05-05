@@ -34,6 +34,7 @@ function makeTempInstallEnv(tempRoot) {
 
   return {
     appData,
+    userProfile,
     env: {
       ...process.env,
       APPDATA: appData,
@@ -75,6 +76,7 @@ test('install.ps1 defines ipcx codex session function', () => {
   assert.match(installPs1, /function ipcx\s*\{/);
   assert.match(installPs1, /codex-title-wrapper\.mjs/);
   assert.match(installPs1, /--dangerously-bypass-approvals-and-sandbox/);
+  assert.match(installPs1, /model_reasoning_effort/);
   assert.match(installPs1, /mcp_servers\.jianmu-ipc\.env\.IPC_NAME/);
 });
 
@@ -114,6 +116,7 @@ test('install.ps1 ipcx runs Codex through the title wrapper with IPC_NAME in env
   assert.match(ipcxFunc, /\$wrapper = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc\\bin\\codex-title-wrapper\.mjs'/);
   assert.match(ipcxFunc, /\$codexBin = "`?\$env:APPDATA\\npm\\codex\.cmd"/);
   assert.match(ipcxFunc, /& `?\$node `?\$wrapper `?\$codexBin --dangerously-bypass-approvals-and-sandbox/);
+  assert.match(ipcxFunc, /model_reasoning_effort=``"xhigh``""/);
   assert.match(ipcxFunc, /mcp_servers\.jianmu-ipc\.env\.IPC_NAME=``"`\$Name``""/);
 });
 
@@ -244,6 +247,56 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
     installPs1,
     /Add-Content -Path \$p -Value "`n\$ipcxFuncCode"/,
   );
+  assert.match(installPs1, /function Remove-IpcxProfileBlocks/);
+  assert.match(installPs1, /\$needsIpcxUpgrade = \$hasIpcx -and !\(/);
+  assert.match(installPs1, /-Pattern 'model_reasoning_effort'/);
+});
+
+test('install.ps1 upgrades stale ipcx profile functions to pin xhigh reasoning', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows PowerShell is required for install.ps1 behavior tests');
+    return;
+  }
+  if (process.env.IPC_SKIP_POWERSHELL_SPAWN_TESTS === '1') {
+    t.skip('PowerShell child process spawning is blocked in this sandbox');
+    return;
+  }
+
+  withTempInstallEnv(({ env, userProfile }) => {
+    const ps5Profile = join(
+      userProfile,
+      'Documents',
+      'WindowsPowerShell',
+      'Microsoft.PowerShell_profile.ps1',
+    );
+    const ps7Profile = join(
+      userProfile,
+      'Documents',
+      'PowerShell',
+      'Microsoft.PowerShell_profile.ps1',
+    );
+    const oldIpcx = [
+      'function ipcx {',
+      '    param([Parameter(Mandatory)][string]$Name)',
+      '    & codex --dangerously-bypass-approvals-and-sandbox -c "mcp_servers.jianmu-ipc.env.IPC_NAME=`"$Name`""',
+      '}',
+      '',
+    ].join('\n');
+
+    for (const profile of [ps5Profile, ps7Profile]) {
+      mkdirSync(dirname(profile), { recursive: true });
+      writeFileSync(profile, oldIpcx, 'utf8');
+    }
+
+    runInstallPs1(env);
+
+    for (const profile of [ps5Profile, ps7Profile]) {
+      const content = readFileSync(profile, 'utf8');
+      const ipcxMatches = content.match(/^function ipcx\s*\{/gm) ?? [];
+      assert.equal(ipcxMatches.length, 1);
+      assert.match(content, /model_reasoning_effort=.*xhigh/);
+    }
+  });
 });
 
 test('install.ps1 reports selected profiles and detected shells', () => {

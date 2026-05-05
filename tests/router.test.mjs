@@ -425,6 +425,50 @@ test('routeMessage: 发送到在线 session — 目标 ws 收到消息', { timeo
   assert.equal(wsTarget._sent[0].content, 'direct msg');
 });
 
+test('routeMessage: 在线 Codex 优先走 ws，让本地 MCP/PTY 接管 push', { timeout: 5000 }, async () => {
+  const ctx = createMockCtx();
+  const appServerCalls = [];
+  ctx.appServerClients = new Map([
+    [
+      'codex-agent',
+      {
+        threadStatus: () => ({ activeTurnId: null }),
+        threadInjectItems: async () => appServerCalls.push('inject'),
+      },
+    ],
+  ]);
+  const { routeMessage } = createRouter(ctx);
+  const wsTarget = createMockWs();
+  ctx.sessions.set('codex-agent', {
+    ...createOnlineSession('codex-agent', wsTarget),
+    runtime: 'codex',
+    appServerThreadId: 'thread-hidden-sidecar',
+  });
+
+  routeMessage(
+    {
+      id: 'codex-visible-pty',
+      type: 'message',
+      from: 'alice',
+      to: 'codex-agent',
+      content: 'visible pty please',
+    },
+    { name: 'alice' },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(wsTarget._sent.length, 1);
+  assert.equal(wsTarget._sent[0].content, 'visible pty please');
+  assert.deepEqual(appServerCalls, []);
+  assert.ok(
+    ctx._audits.some(
+      (entry) =>
+        entry.event === 'codex_ws_preferred_over_app_server' &&
+        entry.target === 'codex-agent',
+    ),
+  );
+});
+
 
 test('routeMessage: records push_deliver when direct send succeeds', { timeout: 5000 }, () => {
   const ctx = createMockCtx();

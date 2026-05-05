@@ -9,6 +9,7 @@ let importSeq = 0;
 async function importMcpServerWithBridgeRetryHook(testName) {
   const originalName = process.env.IPC_NAME;
   const originalRuntime = process.env.IPC_RUNTIME;
+  const originalFallback = process.env.IPC_CODEX_APP_SERVER_FALLBACK;
   const ipcName = `codex-app-server-bridge-retry-${process.pid}-${testName}`;
   const sourcePath = resolve('mcp-server.mjs');
   const tempPath = resolve(
@@ -41,6 +42,7 @@ export const __codexAppServerBridgeRetryTest = {
 `;
 
   process.env.IPC_NAME = ipcName;
+  process.env.IPC_CODEX_APP_SERVER_FALLBACK = '1';
   delete process.env.IPC_RUNTIME;
   await writeFile(tempPath, `${source}\n${testHook}`, 'utf8');
   const mod = await import(`${pathToFileURL(tempPath).href}?case=${importSeq}`);
@@ -57,6 +59,11 @@ export const __codexAppServerBridgeRetryTest = {
         delete process.env.IPC_RUNTIME;
       } else {
         process.env.IPC_RUNTIME = originalRuntime;
+      }
+      if (originalFallback === undefined) {
+        delete process.env.IPC_CODEX_APP_SERVER_FALLBACK;
+      } else {
+        process.env.IPC_CODEX_APP_SERVER_FALLBACK = originalFallback;
       }
       await rm(tempPath, { force: true });
     },
@@ -99,4 +106,12 @@ test('codex app-server bridge retries when register resolves codex after early u
   } finally {
     await harness.cleanup();
   }
+});
+
+test('codex app-server bridge pins xhigh reasoning through app-server config', async () => {
+  const source = await readFile(resolve('mcp-server.mjs'), 'utf8');
+
+  assert.match(source, /const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';/);
+  assert.match(source, /args:\s*\[\s*'app-server',\s*'--listen',\s*'stdio:\/\/',\s*'-c',/);
+  assert.match(source, /model_reasoning_effort="\$\{DEFAULT_CODEX_REASONING_EFFORT\}"/);
 });

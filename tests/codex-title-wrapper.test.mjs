@@ -93,8 +93,15 @@ export function spawn(command, args, options) {
 
 before(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'codex-title-wrapper-'));
-  wrapperPath = join(tempDir, 'codex-title-wrapper.mjs');
+  await mkdir(join(tempDir, 'bin'), { recursive: true });
+  await mkdir(join(tempDir, 'lib'), { recursive: true });
+  wrapperPath = join(tempDir, 'bin', 'codex-title-wrapper.mjs');
   await writeFile(wrapperPath, await readFile(sourceWrapperPath, 'utf8'), 'utf8');
+  await writeFile(
+    join(tempDir, 'lib', 'codex-pty-bridge.mjs'),
+    await readFile(join(projectRoot, 'lib', 'codex-pty-bridge.mjs'), 'utf8'),
+    'utf8',
+  );
   await writeFakePtyPackage('@lydell/node-pty');
 });
 
@@ -249,5 +256,41 @@ describe('Phase 2 K.S Codex title wrapper', () => {
 
     assert.equal(result.code, 0);
     assert.deepEqual(writeEvents(result).map((event) => event.data), ['hello\r']);
+  });
+
+  test('Codex PTY bridge queue writes IPC prompts into the visible pty', async () => {
+    const bridgeRoot = join(tempDir, 'bridge');
+    const sessionName = `test-bridge-${Date.now()}`;
+    const sessionDir = join(bridgeRoot, sessionName);
+    const queueDir = join(sessionDir, 'queue');
+    const ackDir = join(sessionDir, 'ack');
+    const queueName = '001-msg-test.json';
+    await mkdir(queueDir, { recursive: true });
+    await mkdir(ackDir, { recursive: true });
+    await writeFile(
+      join(queueDir, queueName),
+      `${JSON.stringify({ msgId: 'msg-test', prompt: '← ipc: test bridge prompt' })}\n`,
+      'utf8',
+    );
+
+    const result = await runWrapper({
+      env: {
+        IPC_NAME: sessionName,
+        IPC_CODEX_PTY_BRIDGE_DIR: bridgeRoot,
+        IPC_CODEX_PTY_SUBMIT_DELAY_MS: '0',
+        PTY_MOCK_EXIT_MS: '200',
+      },
+    });
+
+    assert.equal(result.code, 0);
+    assert.deepEqual(writeEvents(result).map((event) => event.data), [
+      '← ipc: test bridge prompt',
+      '\r',
+    ]);
+    const ack = JSON.parse(await readFile(join(ackDir, `${queueName}.ack.json`), 'utf8'));
+    assert.equal(ack.ok, true);
+    assert.equal(ack.msgId, 'msg-test');
+    assert.equal(ack.submitDelayMs, 0);
+    assert.equal(ack.writeCount, 2);
   });
 });

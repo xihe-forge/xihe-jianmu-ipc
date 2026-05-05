@@ -19,11 +19,15 @@ import {
   formatInjectItem,
   resolveSpawnSpec,
 } from './lib/codex-app-server-client.mjs';
+import {
+  enqueueCodexPtyPrompt,
+  readCodexPtyBridgeReady,
+} from './lib/codex-pty-bridge.mjs';
 import { createThreadKeepalive } from './lib/codex-thread-keepalive.mjs';
 import { createMcpTools } from './lib/mcp-tools.mjs';
 import { estimateContextPctFromTranscript } from './lib/context-usage-auto-handover.mjs';
 import { getClaudeDir, getHomeDir } from './lib/claude-paths.mjs';
-import { createRegisterMessage } from './lib/protocol.mjs';
+import { createMessage, createRegisterMessage } from './lib/protocol.mjs';
 import { allowsTransientDebugName, validateSessionName } from './lib/session-names.mjs';
 import {
   DEFAULT_PORT,
@@ -389,17 +393,107 @@ function getParentCommandLine({ ppid = process.ppid, platform = process.platform
   return '';
 }
 
+function getLinuxParentPid(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const match = stat.match(/\)\s+\S+\s+(\d+)/);
+    return match ? Number.parseInt(match[1], 10) : null;
+  } catch {}
+  return null;
+}
+
+function getWindowsAncestorCommandLines({ ppid, maxDepth }) {
+  const script = `
+$pidValue = ${Number(ppid)};
+$processes = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CommandLine, ExecutablePath, Name;
+$byPid = @{};
+foreach ($process in $processes) {
+  $byPid[[int]$process.ProcessId] = $process;
+}
+$rows = @();
+for ($i = 0; $i -lt ${Number(maxDepth)} -and $pidValue -gt 0; $i++) {
+  $p = $byPid[[int]$pidValue];
+  if ($null -eq $p) { break }
+  $rows += [pscustomobject]@{
+    ProcessId = $p.ProcessId;
+    ParentProcessId = $p.ParentProcessId;
+    CommandLine = $p.CommandLine;
+    ExecutablePath = $p.ExecutablePath;
+    Name = $p.Name
+  };
+  $pidValue = [int]$p.ParentProcessId;
+}
+$rows | ConvertTo-Json -Compress
+`;
+  try {
+    const raw = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    }).trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    return rows
+      .map((row) =>
+        [row?.CommandLine, row?.ExecutablePath, row?.Name].filter(Boolean).join(' '),
+      )
+      .filter(Boolean);
+  } catch {}
+  return [];
+}
+
+export function getAncestorCommandLines({
+  ppid = process.ppid,
+  platform = process.platform,
+  maxDepth = 6,
+} = {}) {
+  if (!ppid || !Number.isInteger(ppid) || ppid <= 0) return [];
+  if (platform === 'win32') {
+    const lines = getWindowsAncestorCommandLines({ ppid, maxDepth });
+    if (lines.length > 0) return lines;
+    const parent = getParentCommandLine({ ppid, platform });
+    return parent ? [parent] : [];
+  }
+
+  const lines = [];
+  let currentPid = ppid;
+  for (let depth = 0; depth < maxDepth && currentPid > 0; depth += 1) {
+    const cmdlinePath = `/proc/${currentPid}/cmdline`;
+    try {
+      if (existsSync(cmdlinePath)) {
+        const line = readFileSync(cmdlinePath, 'utf8').replace(/\0/g, ' ').trim();
+        if (line) lines.push(line);
+      }
+    } catch {}
+    const parentPid = getLinuxParentPid(currentPid);
+    if (!parentPid || parentPid === currentPid) break;
+    currentPid = parentPid;
+  }
+  return lines;
+}
+
 export function resolveRuntime({
   env = process.env,
   ppid = process.ppid,
   platform = process.platform,
   clientInfo = mcpClientInfo,
+  ancestorCommandLines = null,
 } = {}) {
   const fromEnv = normalizeRuntimeName(env.IPC_RUNTIME);
   if (fromEnv !== 'unknown') return fromEnv;
 
-  const fromParent = runtimeFromText(getParentCommandLine({ ppid, platform }));
-  if (fromParent !== 'unknown') return fromParent;
+  const processCommandLines = Array.isArray(ancestorCommandLines)
+    ? ancestorCommandLines
+    : getAncestorCommandLines({ ppid, platform });
+  const candidateCommandLines =
+    processCommandLines.length > 0
+      ? processCommandLines
+      : [getParentCommandLine({ ppid, platform })];
+  for (const commandLine of candidateCommandLines) {
+    const fromProcess = runtimeFromText(commandLine);
+    if (fromProcess !== 'unknown') return fromProcess;
+  }
 
   const fromClientInfo = runtimeFromText(clientInfo?.name ?? '');
   if (fromClientInfo !== 'unknown') return fromClientInfo;
@@ -409,7 +503,16 @@ export function resolveRuntime({
 
 function createCurrentRegisterMessage() {
   const runtime = resolveRuntime();
-  maybeEnsureLocalCodexAppServer('register', runtime);
+  const ptyBridgeState =
+    runtime === 'codex' ? readCodexPtyBridgeReady(IPC_NAME, { maxAgeMs: 30_000 }) : null;
+  if (runtime !== 'codex' || !ptyBridgeState?.ready) {
+    maybeEnsureLocalCodexAppServer('register', runtime);
+  } else {
+    mcpTrace('codex_app_server_bridge_skip', {
+      reason: 'pty-bridge-ready',
+      pty_bridge_wrapper_pid: ptyBridgeState.readyInfo?.wrapperPid ?? null,
+    });
+  }
   const transcriptPath = findSelfTranscriptPath();
   const sessionId = transcriptPath ? basename(transcriptPath, '.jsonl') : null;
   const message = createRegisterMessage({
@@ -423,6 +526,13 @@ function createCurrentRegisterMessage() {
     runtime,
     subprocess: IPC_NAME_IS_FALLBACK,
     appServerThreadId: localAppServerThreadId,
+    codexPtyBridge: ptyBridgeState
+      ? {
+          ready: ptyBridgeState.ready,
+          reason: ptyBridgeState.reason,
+          wrapperPid: ptyBridgeState.readyInfo?.wrapperPid ?? null,
+        }
+      : null,
     startedAt: MCP_STARTED_AT,
     startupSource: resolveStartupSource(),
     label: IPC_NAME,
@@ -729,6 +839,7 @@ const DEFAULT_CLAUDE_BIN =
 const DEFAULT_SPAWN_FALLBACK_CWD = 'D:/workspace/ai/research/xiheAi/xihe-tianshu-harness';
 const VSCODE_URI_BRIEF_LIMIT_BYTES = 5 * 1024;
 const SPAWN_TASK_PROMPT_DIR = join(tmpdir(), 'jianmu-ipc-spawn-prompts');
+const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';
 
 function getClaudeBinPath() {
   return process.env.CLAUDE_CLI_PATH || DEFAULT_CLAUDE_BIN;
@@ -740,7 +851,7 @@ function buildClaudeLaunchArgs({ model } = {}) {
 
 export function buildCodexLaunchArgs({ sessionName, cmdEscaped = false }) {
   const ipcNameValue = cmdEscaped ? `\\"${sessionName}\\"` : `"${sessionName}"`;
-  return `--dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=${ipcNameValue}' -c 'mcp_servers.jianmu-ipc.env.IPC_RUNTIME="codex"'`;
+  return `--dangerously-bypass-approvals-and-sandbox -c 'model_reasoning_effort="${DEFAULT_CODEX_REASONING_EFFORT}"' -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=${ipcNameValue}' -c 'mcp_servers.jianmu-ipc.env.IPC_RUNTIME="codex"'`;
 }
 
 function quoteForShellSingle(value) {
@@ -850,8 +961,19 @@ function formatInboundIpcContent(msg) {
   return `← ipc: [${ts} from: ${from}] ${content}\n\n[IPC-INBOUND from ${from}] ${content}`;
 }
 
+function shouldUseCodexAppServerFallback() {
+  return process.env.IPC_CODEX_APP_SERVER_FALLBACK === '1';
+}
+
 async function startCodexAppServerBridge({ sessionName, cwd }) {
   const client = createAppServerClient({
+    args: [
+      'app-server',
+      '--listen',
+      'stdio://',
+      '-c',
+      `model_reasoning_effort="${DEFAULT_CODEX_REASONING_EFFORT}"`,
+    ],
     cwd,
     env: buildAppServerEnv(),
     requestTimeoutMs: 60_000,
@@ -885,6 +1007,21 @@ async function ensureLocalCodexAppServer() {
       resolved_runtime: resolvedRuntime,
       ipc_name: process.env.IPC_NAME ?? null,
       mcp_client_info: mcpClientInfo ? { name: mcpClientInfo.name ?? null } : null,
+    });
+    return null;
+  }
+  const ptyBridgeState = readCodexPtyBridgeReady(IPC_NAME, { maxAgeMs: 30_000 });
+  if (ptyBridgeState.ready) {
+    mcpTrace('codex_app_server_bridge_skip', {
+      reason: 'pty-bridge-ready',
+      pty_bridge_wrapper_pid: ptyBridgeState.readyInfo?.wrapperPid ?? null,
+    });
+    return null;
+  }
+  if (!shouldUseCodexAppServerFallback()) {
+    mcpTrace('codex_app_server_bridge_skip', {
+      reason: 'pty-bridge-missing-fallback-disabled',
+      pty_bridge_reason: ptyBridgeState.reason,
     });
     return null;
   }
@@ -943,6 +1080,21 @@ function maybeEnsureLocalCodexAppServer(reason, resolvedRuntime = resolveRuntime
   if (resolvedRuntime !== 'codex') return false;
   if (localAppServerClient && localAppServerThreadId) return false;
   if (localAppServerEnsurePromise) return false;
+  const ptyBridgeState = readCodexPtyBridgeReady(IPC_NAME, { maxAgeMs: 30_000 });
+  if (ptyBridgeState.ready) {
+    mcpTrace('codex_app_server_bridge_skip', {
+      reason: 'pty-bridge-ready',
+      pty_bridge_wrapper_pid: ptyBridgeState.readyInfo?.wrapperPid ?? null,
+    });
+    return false;
+  }
+  if (!shouldUseCodexAppServerFallback()) {
+    mcpTrace('codex_app_server_bridge_skip', {
+      reason: 'pty-bridge-missing-fallback-disabled',
+      pty_bridge_reason: ptyBridgeState.reason,
+    });
+    return false;
+  }
   mcpTrace('codex_app_server_bridge_retry', {
     reason,
     resolved_runtime: resolvedRuntime,
@@ -1021,6 +1173,142 @@ export function getCodexThreadKeepaliveState(sessionName) {
   };
 }
 
+async function pushLocalCodexInboundViaPty(msg) {
+  try {
+    const result = await enqueueCodexPtyPrompt(IPC_NAME, msg, {
+      waitForAckMs: 3000,
+      readyMaxAgeMs: 30_000,
+    });
+    if (!result?.ok) {
+      mcpTrace('codex_pty_push_failed', {
+        msg_id: msg.id,
+        error: result?.error ?? 'pty bridge ack was not ok',
+      });
+      return false;
+    }
+    mcpTrace('codex_pty_push_ok', {
+      msg_id: msg.id,
+      wrapper_pid: result.wrapperPid ?? null,
+      prompt_chars: result.promptChars ?? null,
+      queue_path: result.queuePath ?? null,
+      ack_path: result.ackPath ?? null,
+    });
+    return true;
+  } catch (error) {
+    const readyState = error?.readyState ?? null;
+    mcpTrace('codex_pty_push_unavailable', {
+      msg_id: msg.id,
+      error: error?.message ?? String(error),
+      reason: readyState?.reason ?? null,
+      ready_path: readyState?.paths?.readyPath ?? null,
+    });
+    return false;
+  }
+}
+
+const CODEX_APP_SERVER_REPLY_TIMEOUT_MS_RAW = Number.parseInt(
+  process.env.IPC_CODEX_APP_SERVER_REPLY_TIMEOUT_MS ?? '55000',
+  10,
+);
+const CODEX_APP_SERVER_REPLY_TIMEOUT_MS = Number.isFinite(CODEX_APP_SERVER_REPLY_TIMEOUT_MS_RAW)
+  ? CODEX_APP_SERVER_REPLY_TIMEOUT_MS_RAW
+  : 55_000;
+
+function scheduleCodexAppServerIpcReplyForward({
+  msg,
+  threadId = localAppServerThreadId,
+  turnId,
+  reason,
+}) {
+  const replyTo = typeof msg?.from === 'string' ? msg.from.trim() : '';
+  if (!replyTo || replyTo === IPC_NAME) {
+    mcpTrace('codex_app_server_reply_skipped', {
+      msg_id: msg?.id ?? null,
+      turn_id: turnId ?? null,
+      reason: 'missing-or-self-sender',
+    });
+    return false;
+  }
+  if (!threadId || !turnId || typeof localAppServerClient?.waitForTurnCompleted !== 'function') {
+    mcpTrace('codex_app_server_reply_skipped', {
+      msg_id: msg?.id ?? null,
+      turn_id: turnId ?? null,
+      reason: 'turn-wait-unavailable',
+    });
+    return false;
+  }
+
+  const startedAt = Date.now();
+  mcpTrace('codex_app_server_reply_wait_begin', {
+    msg_id: msg?.id ?? null,
+    to: replyTo,
+    thread_id: threadId,
+    turn_id: turnId,
+    reason,
+    timeout_ms: CODEX_APP_SERVER_REPLY_TIMEOUT_MS,
+  });
+
+  void (async () => {
+    try {
+      const result = await localAppServerClient.waitForTurnCompleted(threadId, turnId, {
+        timeoutMs: CODEX_APP_SERVER_REPLY_TIMEOUT_MS,
+      });
+      if (result?.timedOut) {
+        mcpTrace('codex_app_server_reply_wait_timeout', {
+          msg_id: msg?.id ?? null,
+          to: replyTo,
+          thread_id: threadId,
+          turn_id: turnId,
+          elapsed_ms: Date.now() - startedAt,
+          captured_chars: String(result?.lastAgentMessage ?? '').length,
+        });
+        return;
+      }
+
+      const content = String(result?.lastAgentMessage ?? '').trim();
+      if (!content) {
+        mcpTrace('codex_app_server_reply_skipped', {
+          msg_id: msg?.id ?? null,
+          to: replyTo,
+          thread_id: threadId,
+          turn_id: turnId,
+          reason: 'empty-agent-message',
+          elapsed_ms: Date.now() - startedAt,
+        });
+        return;
+      }
+
+      const reply = createMessage({
+        from: IPC_NAME,
+        to: replyTo,
+        content,
+      });
+      const wsSent = wsSend(reply);
+      mcpTrace('codex_app_server_reply_sent', {
+        msg_id: msg?.id ?? null,
+        reply_msg_id: reply.id,
+        to: replyTo,
+        thread_id: threadId,
+        turn_id: turnId,
+        elapsed_ms: Date.now() - startedAt,
+        content_chars: content.length,
+        ws_sent: wsSent,
+      });
+    } catch (error) {
+      mcpTrace('codex_app_server_reply_failed', {
+        msg_id: msg?.id ?? null,
+        to: replyTo,
+        thread_id: threadId,
+        turn_id: turnId,
+        elapsed_ms: Date.now() - startedAt,
+        error: error?.message ?? String(error),
+      });
+    }
+  })();
+
+  return true;
+}
+
 async function pushLocalCodexInboundViaAppServer(msg) {
   if (!localAppServerClient || !localAppServerThreadId) return false;
   const content = formatInboundIpcContent(msg);
@@ -1033,6 +1321,11 @@ async function pushLocalCodexInboundViaAppServer(msg) {
         `${content}\n\n上面注入的 IPC 消息·请将首行 \`← ipc:\` 完整原样回显到下条 reply 顶部·然后接续当前任务`,
       );
       mcpTrace('codex_app_server_steer_ok', { msg_id: msg.id, turn_id: status.activeTurnId });
+      scheduleCodexAppServerIpcReplyForward({
+        msg,
+        turnId: status.activeTurnId,
+        reason: 'active-steer',
+      });
     } else {
       await localAppServerClient.threadInjectItems(localAppServerThreadId, [
         formatInjectItem(content),
@@ -1050,12 +1343,23 @@ async function pushLocalCodexInboundViaAppServer(msg) {
             msg_id: msg.id,
             turn_id: wakeResult?.turnId ?? null,
           });
+          scheduleCodexAppServerIpcReplyForward({
+            msg,
+            turnId: wakeResult?.turnId ?? null,
+            reason: 'idle-wake',
+          });
         } catch (wakeError) {
           mcpTrace('codex_app_server_idle_wake_failed', {
             msg_id: msg.id,
             error: wakeError?.message ?? String(wakeError),
           });
         }
+      } else {
+        scheduleCodexAppServerIpcReplyForward({
+          msg,
+          turnId: statusAfterInject.activeTurnId,
+          reason: 'post-inject-active',
+        });
       }
     }
     return true;
@@ -1172,7 +1476,13 @@ export function buildWtSpawnArgs({ sessionName, model, cwd, taskPromptFile = nul
 export function buildCodexWtCommand({ sessionName, cwd }) {
   const normalizedCwd = typeof cwd === 'string' ? cwd.replace(/\//g, '\\') : cwd;
   const cdSegment = normalizedCwd ? `cd /d ${quoteForCmd(normalizedCwd)} && ` : '';
-  const innerCmd = `${cdSegment}codex ${buildCodexLaunchArgs({ sessionName, cmdEscaped: true })}`;
+  const wrapperPath = join(PROJECT_DIR, 'bin', 'codex-title-wrapper.mjs');
+  const codexCmd = '%APPDATA%\\npm\\codex.cmd';
+  const innerCmd = [
+    `set "IPC_NAME=${sessionName}"`,
+    'set "IPC_RUNTIME=codex"',
+    `${cdSegment}${quoteForCmd(process.execPath)} ${quoteForCmd(wrapperPath)} ${quoteForCmd(codexCmd)} ${buildCodexLaunchArgs({ sessionName, cmdEscaped: true })}`,
+  ].join(' && ');
   return ['--window', 'last', 'new-tab', '--title', sessionName, '--', 'cmd', '/k', innerCmd];
 }
 
@@ -1181,6 +1491,8 @@ function buildCodexExecArgs({ sessionName, prompt }) {
     'exec',
     '--dangerously-bypass-approvals-and-sandbox',
     '--skip-git-repo-check',
+    '-c',
+    `model_reasoning_effort="${DEFAULT_CODEX_REASONING_EFFORT}"`,
     '-c',
     `mcp_servers.jianmu-ipc.env.IPC_NAME="${sessionName}"`,
     '-c',
@@ -2069,11 +2381,30 @@ async function handleWsMessage(event) {
     }
 
     if (resolveRuntime() === 'codex') {
-      await ensureLocalCodexAppServer();
-      if (await pushLocalCodexInboundViaAppServer(msg)) {
+      if (await pushLocalCodexInboundViaPty(msg)) {
         ackInboundMessage(msg);
         process.stderr.write(
-          `[ipc] pushed codex App Server inbound from ${msg.from ?? '(unknown)'}\n`,
+          `[ipc] pushed codex PTY inbound from ${msg.from ?? '(unknown)'}\n`,
+        );
+        return;
+      }
+      if (shouldUseCodexAppServerFallback()) {
+        await ensureLocalCodexAppServer();
+        if (await pushLocalCodexInboundViaAppServer(msg)) {
+          ackInboundMessage(msg);
+          process.stderr.write(
+            `[ipc] pushed codex App Server inbound from ${msg.from ?? '(unknown)'}\n`,
+          );
+          return;
+        }
+      } else {
+        mcpTrace('codex_visible_push_unavailable', {
+          msg_id: msg.id,
+          from: msg.from,
+          reason: 'pty-bridge-unavailable-and-app-server-fallback-disabled',
+        });
+        process.stderr.write(
+          `[ipc] codex visible push unavailable for ${msg.id ?? '(no id)'}; restart this ipcx session to load the PTY bridge\n`,
         );
         return;
       }

@@ -236,7 +236,7 @@ function ipcx {
 
     Push-Location `$projectRoot
     try {
-        & `$node `$wrapper `$codexBin --dangerously-bypass-approvals-and-sandbox -c "mcp_servers.jianmu-ipc.env.IPC_NAME=``"`$Name``"" -c "mcp_servers.jianmu-ipc.env.IPC_RUNTIME=``"codex``""
+        & `$node `$wrapper `$codexBin --dangerously-bypass-approvals-and-sandbox -c "model_reasoning_effort=``"xhigh``"" -c "mcp_servers.jianmu-ipc.env.IPC_NAME=``"`$Name``"" -c "mcp_servers.jianmu-ipc.env.IPC_RUNTIME=``"codex``""
     } finally {
         Pop-Location
     }
@@ -353,6 +353,37 @@ function Remove-IpcProfileBlocks {
     return ($output -join [Environment]::NewLine).TrimEnd()
 }
 
+function Remove-IpcxProfileBlocks {
+    param([string]$Content)
+
+    if ([string]::IsNullOrEmpty($Content)) { return "" }
+
+    $lines = $Content -split "`r?`n"
+    $output = New-Object System.Collections.Generic.List[string]
+    $skip = $false
+    $depth = 0
+    foreach ($line in $lines) {
+        if (-not $skip -and $line -match '^function ipcx\s*\{') {
+            $skip = $true
+            $depth = 0
+        }
+
+        if ($skip) {
+            $depth += ([regex]::Matches($line, '\{')).Count
+            $depth -= ([regex]::Matches($line, '\}')).Count
+            if ($depth -le 0) {
+                $skip = $false
+                $depth = 0
+            }
+            continue
+        }
+
+        $output.Add($line)
+    }
+
+    return ($output -join [Environment]::NewLine).TrimEnd()
+}
+
 foreach ($p in $profilesToInstall) {
     $dir = Split-Path $p -Parent
     if (!(Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -373,7 +404,15 @@ foreach ($p in $profilesToInstall) {
     } elseif (!($hasIpc)) {
         Add-Content -Path $p -Value "`n$funcCode"
     }
-    if (!(Select-String -Path $p -Pattern '^function ipcx' -Quiet -ErrorAction SilentlyContinue)) {
+    $hasIpcx = Select-String -Path $p -Pattern '^function ipcx' -Quiet -ErrorAction SilentlyContinue
+    $needsIpcxUpgrade = $hasIpcx -and !(
+        Select-String -Path $p -Pattern 'model_reasoning_effort' -Quiet -ErrorAction SilentlyContinue
+    )
+    if ($needsIpcxUpgrade) {
+        $cleanedProfile = Remove-IpcxProfileBlocks -Content (Get-Content -Path $p -Raw -ErrorAction SilentlyContinue)
+        Set-Content -Path $p -Value $cleanedProfile -Encoding UTF8
+        Add-Content -Path $p -Value "`n$ipcxFuncCode"
+    } elseif (!($hasIpcx)) {
         Add-Content -Path $p -Value "`n$ipcxFuncCode"
     }
 }

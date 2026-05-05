@@ -13,6 +13,7 @@ function sanitizeTraceName(name) {
 async function importMcpServerWithBridgeHook(testName) {
   const originalName = process.env.IPC_NAME;
   const originalRuntime = process.env.IPC_RUNTIME;
+  const originalFallback = process.env.IPC_CODEX_APP_SERVER_FALLBACK;
   const ipcName = `codex-app-server-bridge-trace-${process.pid}-${testName}`;
   const sourcePath = resolve('mcp-server.mjs');
   const tempPath = resolve(
@@ -32,6 +33,7 @@ export const __codexAppServerBridgeTraceTest = {
   await rm(tracePath, { force: true });
   process.env.IPC_NAME = ipcName;
   process.env.IPC_RUNTIME = 'codex';
+  process.env.IPC_CODEX_APP_SERVER_FALLBACK = '1';
   await writeFile(tempPath, `${source}\n${testHook}`, 'utf8');
   const mod = await import(`${pathToFileURL(tempPath).href}?case=${importSeq}`);
 
@@ -48,6 +50,11 @@ export const __codexAppServerBridgeTraceTest = {
         delete process.env.IPC_RUNTIME;
       } else {
         process.env.IPC_RUNTIME = originalRuntime;
+      }
+      if (originalFallback === undefined) {
+        delete process.env.IPC_CODEX_APP_SERVER_FALLBACK;
+      } else {
+        process.env.IPC_CODEX_APP_SERVER_FALLBACK = originalFallback;
       }
       await rm(tempPath, { force: true });
       await rm(tracePath, { force: true });

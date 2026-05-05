@@ -14,6 +14,9 @@
   - registers `git-attribution-warning.ps1` under PreToolUse Bash;
   - fixes old bad `pre-commit-author-check.ps1` path from `${CLAUDE_PROJECT_DIR}/domains/...` to `D:/workspace/ai/research/xiheAi/xihe-tianshu-harness/domains/...`.
 - Patched existing `pre-commit-author-check.ps1` IPC send path to use explicit UTF-8 bytes, matching the new hook and avoiding PS5 JSON body mojibake.
+- Harness commits pushed:
+  - `211bb76 feat(hooks): git attribution warning advisory`
+  - `e54bb0e test(hooks): cover UTF-8 IPC payload`
 - Updated install-hooks regression expectations from 9 to 10 PowerShell hooks.
 - Ran `node tools/install-hooks.mjs`; user settings now includes one `git-attribution-warning.ps1` PreToolUse Bash command.
 
@@ -36,10 +39,10 @@
 
 ## Verification
 
-- PS5: `powershell.exe -File domains/software/hooks/git-attribution-warning.test.ps1` -> 9/9 PASS.
-- PS7: `pwsh -File domains/software/hooks/git-attribution-warning.test.ps1` -> 9/9 PASS.
-- PS5: `pre-commit-author-check.test.ps1` -> 7/7 PASS.
-- PS7: `pre-commit-author-check.test.ps1` -> 7/7 PASS.
+- PS5: `powershell.exe -File domains/software/hooks/git-attribution-warning.test.ps1` -> 10/10 PASS.
+- PS7: `pwsh -File domains/software/hooks/git-attribution-warning.test.ps1` -> 10/10 PASS.
+- PS5: `pre-commit-author-check.test.ps1` -> 8/8 PASS.
+- PS7: `pre-commit-author-check.test.ps1` -> 8/8 PASS.
 - Node: `node --test tests/install-hooks.test.mjs` -> 8/8 PASS.
 - Node: `node --test tests/task-agent-bind-ps1.test.mjs` -> 4/4 PASS.
 

@@ -171,7 +171,7 @@
 
 ### 2026-05-06
 
-- [x] **jianmu-ipc Hub git attribution warning hook v0.1 trial 上线**（harness 仓实现 + jianmu-ipc 落报告）。新增 `git-attribution-warning.ps1` PreToolUse Bash advisory hook：拦 `git add` 裸 add / `-A|-a|--all|.`，`git commit` 无 `--` 时用 recent-add state + commit message scope→path prefix 映射检测 owner mix；drift 只 warning + Hub audit + IPC harness，不 block。修 `templates/hooks-snippet.json` 中 pre-commit path 从错误 `${CLAUDE_PROJECT_DIR}/domains/...` 改为 harness 绝对路径并新增 hook 注册；`node tools/install-hooks.mjs` 已 merge 到 `C:\Users\jolen\.claude\settings.json`。验证：PS5/PS7 `git-attribution-warning.test.ps1` 9/9 PASS，pre-commit-author-check 7/7 PASS，install-hooks 8/8 PASS，task-agent-bind 4/4 PASS；dogfood fake `IPC_NAME=fake-jianmu-pm` + `docs(pm)` staged mix 触发 warning，harness IPC `msg_1778010054210_0a140c` delivered，Hub audit `git_attribution_warning_hook` 命中。
+- [x] **jianmu-ipc Hub git attribution warning hook v0.1 trial 上线**（harness 仓实现 + jianmu-ipc 落报告）。新增 `git-attribution-warning.ps1` PreToolUse Bash advisory hook：拦 `git add` 裸 add / `-A|-a|--all|.`，`git commit` 无 `--` 时用 recent-add state + commit message scope→path prefix 映射检测 owner mix；drift 只 warning + Hub audit + IPC harness，不 block。修 `templates/hooks-snippet.json` 中 pre-commit path 从错误 `${CLAUDE_PROJECT_DIR}/domains/...` 改为 harness 绝对路径并新增 hook 注册；`node tools/install-hooks.mjs` 已 merge 到 `C:\Users\jolen\.claude\settings.json`。验证：PS5/PS7 `git-attribution-warning.test.ps1` 10/10 PASS，pre-commit-author-check 8/8 PASS，install-hooks 8/8 PASS，task-agent-bind 4/4 PASS；dogfood fake `IPC_NAME=fake-jianmu-pm` + `docs(pm)` staged mix 触发 warning，harness IPC `msg_1778010054210_0a140c` delivered，Hub audit `git_attribution_warning_hook` 命中。
 
 ### 2026-05-05
 

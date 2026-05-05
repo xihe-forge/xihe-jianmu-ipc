@@ -26,7 +26,8 @@ $funcCode = @"
 function ipc {
     param(
         [Parameter(Mandatory)][string]`$Name,
-        [string]`$resume = `$null
+        [Parameter()][switch]`$resume,
+        [Parameter(ValueFromRemainingArguments=`$true)][object[]]`$rest
     )
     `$env:IPC_NAME = `$Name
 
@@ -36,9 +37,24 @@ function ipc {
     `$projectRoot = 'D:\workspace\ai\research\xiheAi'
     `$claudeArgs = @()
 
-    if (-not [string]::IsNullOrWhiteSpace(`$resume)) {
-        if (`$resume -match '^-\d+`$') {
-            `$encodedCwd = ((`$projectRoot -replace ':', '-') -replace '[\\/]', '-') -replace '\s', '-'
+    if (`$rest.Count -gt 1) {
+        Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
+        return
+    }
+
+    if (`$resume) {
+        `$resumeValue = '0'
+        if (`$rest.Count -eq 1) {
+            `$resumeValue = [string]`$rest[0]
+        }
+
+        if (`$resumeValue -match '^-\d+`$') {
+            Write-Error "-resume `$resumeValue is not supported. Use -resume 0 for latest, -resume 1 for HEAD~1."
+            return
+        }
+
+        if (`$resumeValue -match '^\d+`$') {
+            `$encodedCwd = ((`$projectRoot -replace ':', '-') -replace '[/\\]', '-') -replace '\s', '-'
             `$jsonlDir = Join-Path (Join-Path `$env:USERPROFILE '.claude\projects') `$encodedCwd
 
             if (-not (Test-Path -Path `$jsonlDir -PathType Container)) {
@@ -47,21 +63,24 @@ function ipc {
             }
 
             `$jsonlFiles = @(Get-ChildItem -Path `$jsonlDir -Filter '*.jsonl' -File | Sort-Object LastWriteTime -Descending)
-            `$index = -[int]`$resume - 1
+            `$index = [int]`$resumeValue
 
             if ((`$index -lt 0) -or (`$index -ge `$jsonlFiles.Count)) {
-                Write-Error "-resume `$resume is out of range. Found `$(`$jsonlFiles.Count) jsonl session(s) in `$jsonlDir"
+                Write-Error "-resume `$resumeValue is out of range. Found `$(`$jsonlFiles.Count) jsonl session(s) in `$jsonlDir. Use 0 for latest, 1 for HEAD~1."
                 return
             }
 
             `$sessionId = `$jsonlFiles[`$index].BaseName
             `$claudeArgs += @('--resume', `$sessionId)
-        } elseif (`$resume -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`$') {
-            `$claudeArgs += @('--resume', `$resume)
+        } elseif (`$resumeValue -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`$') {
+            `$claudeArgs += @('--resume', `$resumeValue)
         } else {
-            Write-Error "-resume must be a negative index like -1 or a session UUID."
+            Write-Error "-resume must be 0, a positive HEAD~N index, or a session UUID. Negative indexes like -1 are not supported; use 0 for latest."
             return
         }
+    } elseif (`$rest.Count -gt 0) {
+        Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
+        return
     }
     `$claudeArgs += @('--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:ipc')
 
@@ -182,7 +201,7 @@ foreach ($p in $profilesToInstall) {
 
     if (!(Select-String -Path $p -Pattern '^function ipc\s*\{' -Quiet -ErrorAction SilentlyContinue)) {
         Add-Content -Path $p -Value "`n$funcCode"
-    } elseif (!(Select-String -Path $p -Pattern '\[string\]\$resume\s*=' -Quiet -ErrorAction SilentlyContinue)) {
+    } elseif (!(Select-String -Path $p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue)) {
         Add-Content -Path $p -Value "`n$funcCode"
     }
     if (!(Select-String -Path $p -Pattern '^function ipcx' -Quiet -ErrorAction SilentlyContinue)) {

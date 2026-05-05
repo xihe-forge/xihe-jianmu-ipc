@@ -124,6 +124,35 @@ test('install.ps1 ipcx marks Codex runtime in parent env and MCP config', () => 
   assert.match(ipcxFunc, /mcp_servers\.jianmu-ipc\.env\.IPC_RUNTIME=``"codex``""/);
 });
 
+test('install.ps1 ipc parses optional -resume through remaining arguments', () => {
+  const ipcFunc = extractHereStringVar('funcCode');
+
+  assert.match(ipcFunc, /ValueFromRemainingArguments=`\$true/);
+  assert.match(ipcFunc, /\[object\[\]\]`\$rest/);
+  assert.match(ipcFunc, /\[switch\]`\$resume/);
+  assert.match(ipcFunc, /\$resumeValue = '0'/);
+  assert.match(ipcFunc, /\$resumeValue -match '\^\\d\+`\$'/);
+  assert.match(ipcFunc, /\$index = \[int\]`\$resumeValue/);
+  assert.match(ipcFunc, /-replace '\[\/\\\\\]'/);
+  assert.match(ipcFunc, /Sort-Object LastWriteTime -Descending/);
+  assert.match(ipcFunc, /\$claudeArgs \+= @\('--resume', `\$sessionId\)/);
+  assert.match(ipcFunc, /\$claudeArgs \+= @\('--resume', `\$resumeValue\)/);
+});
+
+test('install.ps1 ipc rejects old negative -resume indexes clearly', () => {
+  const ipcFunc = extractHereStringVar('funcCode');
+
+  assert.match(ipcFunc, /\$resumeValue -match '\^-\\d\+`\$'/);
+  assert.match(
+    ipcFunc,
+    /-resume `\$resumeValue is not supported\. Use -resume 0 for latest, -resume 1 for HEAD~1\./,
+  );
+  assert.match(
+    ipcFunc,
+    /Negative indexes like -1 are not supported; use 0 for latest\./,
+  );
+});
+
 test('package.json publishes the Codex title wrapper used by ipcx', () => {
   assert.ok(packageJson.files.includes('bin/codex-title-wrapper.mjs'));
 });
@@ -178,6 +207,10 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
   );
   assert.match(
     installPs1,
+    /Select-String -Path \$p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue/,
+  );
+  assert.match(
+    installPs1,
     /Select-String -Path \$p -Pattern '\^function ipcx' -Quiet -ErrorAction SilentlyContinue/,
   );
   assert.match(
@@ -194,6 +227,10 @@ test('install.ps1 reports selected profiles and detected shells', () => {
 test('install.ps1 patches VSCode tab settings without overwriting existing settings', (t) => {
   if (process.platform !== 'win32') {
     t.skip('Windows PowerShell is required for install.ps1 behavior tests');
+    return;
+  }
+  if (process.env.IPC_SKIP_POWERSHELL_SPAWN_TESTS === '1') {
+    t.skip('PowerShell child process spawning is blocked in this sandbox');
     return;
   }
 
@@ -236,6 +273,10 @@ test('install.ps1 patches VSCode tab settings without overwriting existing setti
 test('install.ps1 skips missing or unparsable VSCode settings without failing install', (t) => {
   if (process.platform !== 'win32') {
     t.skip('Windows PowerShell is required for install.ps1 behavior tests');
+    return;
+  }
+  if (process.env.IPC_SKIP_POWERSHELL_SPAWN_TESTS === '1') {
+    t.skip('PowerShell child process spawning is blocked in this sandbox');
     return;
   }
 

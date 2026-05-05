@@ -29,6 +29,7 @@
     "bin/cc-a.bat",
     "bin/cc-b.bat",
     "bin/cc-save.bat",
+    "bin/update-claude-account-identity.ps1",
     "bin/install.ps1",
     "patches/claude-hud-jianmu-priority.patch",
     "README.md",

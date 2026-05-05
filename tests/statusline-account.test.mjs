@@ -55,7 +55,7 @@ test('statusline ignores stale marker when fingerprint mismatches current creden
       'utf8',
     );
 
-    assert.equal(await resolveAccount({ claudeDir }), 'a');
+    assert.equal(await resolveAccount({ claudeDir, fetchProfileIdentity: async () => null }), 'a');
   });
 });
 
@@ -63,7 +63,7 @@ test('statusline fallback resolves missing marker by matching credentials to vau
   await withAccountFixture(async ({ claudeDir, accountB }) => {
     await writeFile(join(claudeDir, '.credentials.json'), JSON.stringify(accountB), 'utf8');
 
-    assert.equal(await resolveAccount({ claudeDir }), 'b');
+    assert.equal(await resolveAccount({ claudeDir, fetchProfileIdentity: async () => null }), 'b');
   });
 });
 
@@ -75,7 +75,7 @@ test('statusline fallback resolves missing refresh token by matching access toke
       'utf8',
     );
 
-    assert.equal(await resolveAccount({ claudeDir }), 'b');
+    assert.equal(await resolveAccount({ claudeDir, fetchProfileIdentity: async () => null }), 'b');
   });
 });
 

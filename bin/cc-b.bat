@@ -12,7 +12,7 @@ if not exist "%VAULT%" (
 )
 
 copy /Y "%VAULT%" "%TARGET%" >nul
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$c=Get-Content -Raw -LiteralPath '%VAULT%' | ConvertFrom-Json; $t=[string]$c.claudeAiOauth.refreshToken; if (-not $t) { throw 'missing refreshToken in Account B vault' }; $tail=$t.Substring([Math]::Max(0, $t.Length - 16)); $sha=[Security.Cryptography.SHA256]::Create(); $hash=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($tail))).Replace('-', '').ToLowerInvariant().Substring(0,16); @{ which='b'; fingerprint=$hash } | ConvertTo-Json -Compress | Set-Content -LiteralPath '%MARKER%' -NoNewline -Encoding UTF8"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\update-claude-account-identity.ps1" -Which b -VaultPath "%VAULT%" -CredentialsPath "%TARGET%" -MarkerPath "%MARKER%"
 if errorlevel 1 exit /b 1
 title Claude Code [Account B]
 claude %*

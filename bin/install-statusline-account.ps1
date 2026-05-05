@@ -22,7 +22,7 @@ $statuslineTarget = Join-Path $claudeDir 'statusline-account.mjs'
 Backup-IfExists $statuslineTarget
 Copy-Item -LiteralPath $statuslineSource -Destination $statuslineTarget -Force
 
-foreach ($name in @('cc-a.bat', 'cc-b.bat', 'cc-save.bat')) {
+foreach ($name in @('cc-a.bat', 'cc-b.bat', 'cc-save.bat', 'update-claude-account-identity.ps1')) {
   $source = Join-Path $RepoRoot "bin\$name"
   $target = Join-Path $UserHome $name
   Backup-IfExists $target

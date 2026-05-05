@@ -22,4 +22,6 @@ if not exist "%SRC%" (
 
 if not exist "%USERPROFILE%\.claude\.creds-vault" mkdir "%USERPROFILE%\.claude\.creds-vault"
 copy /Y "%SRC%" "%DST%" >nul
+powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\update-claude-account-identity.ps1" -Which %1 -VaultPath "%DST%" -CredentialsPath "%SRC%" -MarkerPath "%USERPROFILE%\.claude\.current-account"
+if errorlevel 1 exit /b 1
 echo [OK] Current login saved as Account %1 -^> %DST%

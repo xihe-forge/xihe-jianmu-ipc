@@ -33,11 +33,6 @@ export function accountFingerprint(credentials) {
   return tokenFingerprint(oauthFromCredentials(credentials).refreshToken);
 }
 
-function fallbackTokenFingerprint(credentials) {
-  const oauth = oauthFromCredentials(credentials);
-  return accountFingerprint(credentials) ?? tokenFingerprint(oauth.accessToken);
-}
-
 function readMarker(markerPath) {
   if (!existsSync(markerPath)) return null;
   try {
@@ -51,8 +46,9 @@ function readMarker(markerPath) {
 }
 
 function resolveByVaultFingerprint(credentials, claudeDir) {
-  const currentRefreshFingerprint = accountFingerprint(credentials);
-  const currentAnyFingerprint = fallbackTokenFingerprint(credentials);
+  const currentOauth = oauthFromCredentials(credentials);
+  const currentRefreshFingerprint = tokenFingerprint(currentOauth.refreshToken);
+  const currentAccessFingerprint = tokenFingerprint(currentOauth.accessToken);
   const vaultDir = join(claudeDir, '.creds-vault');
 
   for (const which of ['a', 'b']) {
@@ -60,13 +56,14 @@ function resolveByVaultFingerprint(credentials, claudeDir) {
     if (!existsSync(vaultPath)) continue;
     try {
       const vaultCredentials = readJson(vaultPath);
-      const vaultRefreshFingerprint = accountFingerprint(vaultCredentials);
+      const vaultOauth = oauthFromCredentials(vaultCredentials);
+      const vaultRefreshFingerprint = tokenFingerprint(vaultOauth.refreshToken);
       if (currentRefreshFingerprint && currentRefreshFingerprint === vaultRefreshFingerprint) {
         return which;
       }
 
-      const vaultAnyFingerprint = fallbackTokenFingerprint(vaultCredentials);
-      if (currentAnyFingerprint && currentAnyFingerprint === vaultAnyFingerprint) {
+      const vaultAccessFingerprint = tokenFingerprint(vaultOauth.accessToken);
+      if (currentAccessFingerprint && currentAccessFingerprint === vaultAccessFingerprint) {
         return which;
       }
     } catch {}

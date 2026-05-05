@@ -60,3 +60,15 @@ test('statusline fallback resolves missing marker by matching credentials to vau
     assert.equal(resolveAccount({ claudeDir }), 'b');
   });
 });
+
+test('statusline fallback resolves missing refresh token by matching access token to vault', async () => {
+  await withAccountFixture(async ({ claudeDir, accountB }) => {
+    await writeFile(
+      join(claudeDir, '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: accountB.claudeAiOauth.accessToken, subscriptionType: 'max' } }),
+      'utf8',
+    );
+
+    assert.equal(resolveAccount({ claudeDir }), 'b');
+  });
+});

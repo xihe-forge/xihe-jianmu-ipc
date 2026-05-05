@@ -381,6 +381,16 @@ ipc_sessions()  // see what tools are connected
 
 The `xihe-jianmu-ipc` skill is available in ClawHub. Search for `jianmu` to install it directly from within OpenClaw.
 
+### claude-hud patch auto-apply
+
+`claude-hud` may be reinstalled under a new `~/.claude/plugins/cache/claude-hud/claude-hud/0.0.X/` directory. To keep statusline usage checks routed through Jianmu Hub `/usage` first, install the hourly patch task:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\install-hud-patch.ps1 -RegisterTask
+```
+
+The script scans every installed `claude-hud` version, applies `patches/claude-hud-jianmu-priority.patch` when missing, runs `npm ci`, rebuilds with `npm run build`, and registers `JianmuClaudeHudPatch` in Windows Task Scheduler for hourly re-application.
+
 双向通信已验证 / Bidirectional OpenClaw ↔ Claude Code communication has been tested and verified:
 
 - OpenClaw → Hub → Claude Code: delivered via WebSocket, wakes Claude Code via Channel notification
@@ -1227,14 +1237,13 @@ The MCP Registry package name is `io.github.xihe-forge/jianmu-ipc`; it must stay
 
 ## Claude HUD Jianmu Usage Patch
 
-When `claude-hud` is reinstalled or upgraded, reapply the local Jianmu usage-priority patch before rebuilding the plugin:
+For current and future `claude-hud` plugin versions, use the auto-apply installer:
 
 ```powershell
-cd $env:USERPROFILE\.claude\plugins\cache\claude-hud\claude-hud\0.0.7
-git apply D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\patches\claude-hud-jianmu-priority.patch
-npm ci
-npm run build
+powershell -NoProfile -ExecutionPolicy Bypass -File D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\install-hud-patch.ps1 -RegisterTask
 ```
+
+The patch suppresses direct Anthropic usage fallback when Jianmu Hub is unavailable, so concurrent HUD renders do not recreate a direct `/api/oauth/usage` storm.
 
 ---
 

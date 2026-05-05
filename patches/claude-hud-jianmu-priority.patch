@@ -1,3 +1,16 @@
+diff --git a/src/index.ts b/src/index.ts
+index e20523a..d37cb30 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -10,6 +10,8 @@ import type { RenderContext } from './types.js';
+ import { fileURLToPath } from 'node:url';
+ import { realpathSync } from 'node:fs';
+ 
++export const JIANMU_USAGE_ENDPOINT = 'http://127.0.0.1:3179/usage';
++
+ export type MainDeps = {
+   readStdin: typeof readStdin;
+   parseTranscript: typeof parseTranscript;
 diff --git a/src/usage-api.ts b/src/usage-api.ts
 index bf14b4c..17da5c1 100644
 --- a/src/usage-api.ts
@@ -49,21 +62,13 @@ index bf14b4c..17da5c1 100644
    });
  }
  
-+async function fetchUsageApiWithJianmu(accessToken: string): Promise<UsageApiResult> {
++async function fetchUsageApiWithJianmu(_accessToken: string): Promise<UsageApiResult> {
 +  const jianmuResult = await fetchJianmuUsageApi();
 +  if (jianmuResult.data) {
 +    return jianmuResult;
 +  }
 +
-+  if (
-+    jianmuResult.error === 'jianmu-network' ||
-+    jianmuResult.error === 'jianmu-timeout' ||
-+    jianmuResult.error === 'jianmu-parse'
-+  ) {
-+    debug('Jianmu usage unavailable, falling back to Anthropic direct:', jianmuResult.error);
-+    return fetchUsageApi(accessToken);
-+  }
-+
++  debug('Jianmu usage unavailable, direct Anthropic fallback suppressed:', jianmuResult.error);
 +  return jianmuResult;
 +}
 +

@@ -118,6 +118,10 @@ import {
   updateSessionLastSeen,
   markSessionEnded,
   getSessionsByName,
+  listSessionsHistory,
+  deleteSessionById,
+  deleteSessionsByName,
+  cleanupSessionsHistory,
 } from './lib/db.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
@@ -262,6 +266,10 @@ const ctx = {
   updateSessionLastSeen,
   markSessionEnded,
   getSessionsByName,
+  listSessionsHistory,
+  deleteSessionById,
+  deleteSessionsByName,
+  cleanupSessionsHistory,
   checkAuth,
   authTokens,
   AUTH_TOKEN,

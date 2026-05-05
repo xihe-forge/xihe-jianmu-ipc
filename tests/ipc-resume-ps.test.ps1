@@ -33,6 +33,7 @@ try {
 
     $directorOldId = '11111111-1111-1111-1111-111111111111'
     $directorNewId = '22222222-2222-2222-2222-222222222222'
+    $directorOnlineId = '7ef7424e-0000-0000-0000-000000000000'
     $testerNewId = '33333333-3333-3333-3333-333333333333'
     $unrelatedId = '44444444-4444-4444-4444-444444444444'
 
@@ -41,10 +42,10 @@ try {
     $testerNewPath = Join-Path $jsonlDir "$testerNewId.jsonl"
     $unrelatedPath = Join-Path $jsonlDir "$unrelatedId.jsonl"
 
-    Set-Content -Path $directorOldPath -Value '{"stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-director\r\n"}'
-    Set-Content -Path $directorNewPath -Value '{"stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-director\r\n"}'
-    Set-Content -Path $testerNewPath -Value '{"stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-tester\r\n"}'
-    Set-Content -Path $unrelatedPath -Value '{"stderr":"[session-state-writer] throttle skip for ipc_name=other-name\r\n"}'
+    Set-Content -Path $directorOldPath -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-director\r\n"}'
+    Set-Content -Path $directorNewPath -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-director\r\n"}'
+    Set-Content -Path $testerNewPath -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=taiwei-tester\r\n"}'
+    Set-Content -Path $unrelatedPath -Value '{"type":"system","stderr":"[session-state-writer] throttle skip for ipc_name=other-name\r\n"}'
 
     (Get-Item $directorOldPath).LastWriteTime = (Get-Date).AddMinutes(-30)
     (Get-Item $directorNewPath).LastWriteTime = (Get-Date).AddMinutes(-20)
@@ -53,14 +54,36 @@ try {
 
     $ErrorActionPreference = 'Continue'
     $quotedProfilePath = "'" + ($profilePath -replace "'", "''") + "'"
+    $hubOnline = @"
+function Invoke-WebRequest {
+    param([string]`$Uri, [int]`$TimeoutSec, [switch]`$UseBasicParsing)
+    Write-Output "HUB_TIMEOUT=`$TimeoutSec"
+    [pscustomobject]@{ Content = '[{"name":"taiwei-director","sessionId":"$directorOnlineId","transcriptPath":"D:/tmp/current-director.jsonl"},{"name":"taiwei-tester","sessionId":"99999999-9999-9999-9999-999999999999","transcriptPath":null}]' }
+}
+"@
+    $hubEmpty = @"
+function Invoke-WebRequest {
+    param([string]`$Uri, [int]`$TimeoutSec, [switch]`$UseBasicParsing)
+    Write-Output "HUB_TIMEOUT=`$TimeoutSec"
+    [pscustomobject]@{ Content = '[]' }
+}
+"@
+    $hubOffline = @"
+function Invoke-WebRequest {
+    param([string]`$Uri, [int]`$TimeoutSec, [switch]`$UseBasicParsing)
+    Write-Output "HUB_TIMEOUT=`$TimeoutSec"
+    throw 'hub offline'
+}
+"@
     $cases = @(
-        @{ Name = 'fresh'; Command = ". $quotedProfilePath; ipc taiwei-director"; Expect = 'NO_RESUME' },
-        @{ Name = 'director-latest'; Command = ". $quotedProfilePath; ipc taiwei-director -resume"; Expect = "--resume|$directorNewId" },
-        @{ Name = 'tester-latest'; Command = ". $quotedProfilePath; ipc taiwei-tester -resume 0"; Expect = "--resume|$testerNewId" },
-        @{ Name = 'director-head1'; Command = ". $quotedProfilePath; ipc taiwei-director -resume 1"; Expect = "--resume|$directorOldId" },
-        @{ Name = 'guid'; Command = ". $quotedProfilePath; ipc taiwei-director -resume $testerNewId"; Expect = "--resume|$testerNewId" },
-        @{ Name = 'range'; Command = ". $quotedProfilePath; ipc taiwei-tester -resume 1"; Expect = 'out of range for IPC name' },
-        @{ Name = 'missing-name'; Command = ". $quotedProfilePath; ipc missing-name -resume 0"; Expect = 'has no historical session' }
+        @{ Name = 'fresh'; Command = "$hubOnline`n. $quotedProfilePath; ipc taiwei-director"; Expect = 'NO_RESUME' },
+        @{ Name = 'hub-latest'; Command = "$hubOnline`n. $quotedProfilePath; ipc taiwei-director -resume"; Expect = "--resume|$directorOnlineId" },
+        @{ Name = 'hub-head1-marker-latest'; Command = "$hubOnline`n. $quotedProfilePath; ipc taiwei-director -resume 1"; Expect = "--resume|$directorNewId" },
+        @{ Name = 'offline-fallback-latest'; Command = "$hubOffline`n. $quotedProfilePath; ipc taiwei-director -resume 0"; Expect = "--resume|$directorNewId" },
+        @{ Name = 'offline-fallback-head1'; Command = "$hubOffline`n. $quotedProfilePath; ipc taiwei-director -resume 1"; Expect = "--resume|$directorOldId" },
+        @{ Name = 'empty-fallback-tester'; Command = "$hubEmpty`n. $quotedProfilePath; ipc taiwei-tester -resume 0"; Expect = "--resume|$testerNewId" },
+        @{ Name = 'guid'; Command = "$hubOnline`n. $quotedProfilePath; ipc taiwei-director -resume $testerNewId"; Expect = "--resume|$testerNewId"; ExtraReject = 'HUB_TIMEOUT=' },
+        @{ Name = 'missing-name'; Command = "$hubEmpty`n. $quotedProfilePath; ipc missing-name -resume 0"; Expect = 'has no historical session' }
     )
 
     $failed = $false
@@ -75,6 +98,12 @@ try {
             $pass = ($output -match 'CLAUDE_ARGS=--dangerously-skip-permissions') -and ($output -notmatch '--resume')
         } else {
             $pass = $output -match [regex]::Escape($case.Expect)
+        }
+        if ($pass -and $case.ContainsKey('ExtraExpect')) {
+            $pass = $output -match [regex]::Escape($case.ExtraExpect)
+        }
+        if ($pass -and $case.ContainsKey('ExtraReject')) {
+            $pass = $output -notmatch [regex]::Escape($case.ExtraReject)
         }
 
         if (-not $pass) {

@@ -92,6 +92,24 @@ function ipc {
         return @(`$matches)
     }
 
+    function Get-OnlineSessionId {
+        param([Parameter(Mandatory)][string]`$Name)
+
+        try {
+            `$response = Invoke-WebRequest -Uri 'http://127.0.0.1:3179/sessions' -TimeoutSec 2 -UseBasicParsing
+            `$sessions = `$response.Content | ConvertFrom-Json
+            foreach (`$session in @(`$sessions)) {
+                if ((`$session.name -eq `$Name) -and
+                    (-not ([string]::IsNullOrWhiteSpace([string]`$session.transcriptPath))) -and
+                    (-not ([string]::IsNullOrWhiteSpace([string]`$session.sessionId)))) {
+                    return [string]`$session.sessionId
+                }
+            }
+        } catch {}
+
+        return `$null
+    }
+
     if (`$rest.Count -gt 1) {
         Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
         return
@@ -109,38 +127,49 @@ function ipc {
         }
 
         if (`$resumeValue -match '^\d+`$') {
-            `$encodedCwd = ((`$projectRoot -replace ':', '-') -replace '[/\\]', '-') -replace '\s', '-'
-            `$jsonlDir = Join-Path (Join-Path `$env:USERPROFILE '.claude\projects') `$encodedCwd
-
-            if (-not (Test-Path -Path `$jsonlDir -PathType Container)) {
-                Write-Error "Claude project history directory not found: `$jsonlDir"
-                return
-            }
-
-            `$jsonlFiles = @(Get-IpcSessionJsonls -Name `$Name -JsonlDir `$jsonlDir)
             `$index = [int]`$resumeValue
+            `$onlineSessionId = Get-OnlineSessionId -Name `$Name
+            if ((`$index -eq 0) -and (-not ([string]::IsNullOrWhiteSpace(`$onlineSessionId)))) {
+                `$claudeArgs += @('--resume', `$onlineSessionId)
+            } else {
+                `$encodedCwd = ((`$projectRoot -replace ':', '-') -replace '[/\\]', '-') -replace '\s', '-'
+                `$jsonlDir = Join-Path (Join-Path `$env:USERPROFILE '.claude\projects') `$encodedCwd
 
-            if (`$jsonlFiles.Count -eq 0) {
-                Write-Error "IPC name '`$Name' has no historical session in `$jsonlDir. Use fresh: ipc `$Name"
-                return
+                if (-not (Test-Path -Path `$jsonlDir -PathType Container)) {
+                    Write-Error "Claude project history directory not found: `$jsonlDir"
+                    return
+                }
+
+                `$jsonlFiles = @(Get-IpcSessionJsonls -Name `$Name -JsonlDir `$jsonlDir)
+                `$jsonlIndex = `$index
+                if (-not ([string]::IsNullOrWhiteSpace(`$onlineSessionId))) {
+                    `$jsonlIndex = `$index - 1
+                }
+
+                if (`$jsonlFiles.Count -eq 0) {
+                    Write-Error "IPC name '`$Name' has no historical session in `$jsonlDir. Use fresh: ipc `$Name"
+                    return
+                }
+
+                if ((`$jsonlIndex -lt 0) -or (`$jsonlIndex -ge `$jsonlFiles.Count)) {
+                    Write-Error "-resume `$resumeValue is out of range for IPC name '`$Name'. Found `$(`$jsonlFiles.Count) matching jsonl session(s) in `$jsonlDir. Use 0 for latest, 1 for HEAD~1."
+                    return
+                }
+
+                `$sessionId = `$jsonlFiles[`$jsonlIndex].BaseName
+                `$claudeArgs += @('--resume', `$sessionId)
             }
-
-            if ((`$index -lt 0) -or (`$index -ge `$jsonlFiles.Count)) {
-                Write-Error "-resume `$resumeValue is out of range for IPC name '`$Name'. Found `$(`$jsonlFiles.Count) matching jsonl session(s) in `$jsonlDir. Use 0 for latest, 1 for HEAD~1."
-                return
-            }
-
-            `$sessionId = `$jsonlFiles[`$index].BaseName
-            `$claudeArgs += @('--resume', `$sessionId)
         } elseif (`$resumeValue -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`$') {
             `$claudeArgs += @('--resume', `$resumeValue)
         } else {
             Write-Error "-resume must be 0, a positive HEAD~N index, or a session UUID. Negative indexes like -1 are not supported; use 0 for latest."
             return
         }
-    } elseif (`$rest.Count -gt 0) {
-        Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
-        return
+    } else {
+        if (`$rest.Count -gt 0) {
+            Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
+            return
+        }
     }
     `$claudeArgs += @('--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:ipc')
 

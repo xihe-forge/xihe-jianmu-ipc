@@ -104,6 +104,68 @@ test('atomic handover real swap notifies old session to quit after prepare-rebin
   }
 });
 
+test('atomic handover records lineage and pending sessions_history before spawn', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'handover-history-real-'));
+  try {
+    const events = [];
+    const lineageRecords = [];
+    const sessionHistoryRecords = [];
+    const trigger = createAtomicHandoverTrigger({
+      name: 'taiwei-director',
+      cwd: dir,
+      handoverDir: dir,
+      now: () => 1_777_232_746_089,
+      dryRun: false,
+      parentSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      lineage: {
+        record: (payload) => {
+          events.push('lineage');
+          lineageRecords.push(payload);
+        },
+      },
+      recordSessionSpawn: (payload) => {
+        events.push('sessions-history');
+        sessionHistoryRecords.push(payload);
+      },
+      renameSession: async () => {
+        events.push('prepare-rebind');
+        return { ok: true, status: 200 };
+      },
+      notifyOldSessionQuit: async ({ name }) => {
+        events.push(`quit:${name}`);
+        return { ok: true, status: 200 };
+      },
+      spawnSession: async () => {
+        events.push('spawn');
+        return { spawned: true };
+      },
+    });
+
+    await trigger();
+
+    assert.deepEqual(events, [
+      'prepare-rebind',
+      'quit:taiwei-director',
+      'lineage',
+      'sessions-history',
+      'spawn',
+    ]);
+    assert.deepEqual(lineageRecords[0], {
+      childName: 'taiwei-director',
+      parentName: 'taiwei-director',
+      parentSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      reason: 'atomic-handoff',
+    });
+    assert.equal(sessionHistoryRecords[0].sessionId, 'pending-1777232746089');
+    assert.equal(sessionHistoryRecords[0].name, 'taiwei-director');
+    assert.equal(sessionHistoryRecords[0].parentName, 'taiwei-director');
+    assert.equal(sessionHistoryRecords[0].parentSessionId, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    assert.equal(sessionHistoryRecords[0].spawnReason, 'atomic-handoff');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('atomic handover dry-run does not notify old session quit', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'handover-quit-dryrun-'));
   try {

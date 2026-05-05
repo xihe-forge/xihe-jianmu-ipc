@@ -64,6 +64,7 @@ import { getSessionState } from '../lib/session-state-reader.mjs';
 import {
   getWakeRecord,
   listSuspendedSessions,
+  recordSessionSpawn,
   suspendSession,
   upsertWakeRecord,
 } from '../lib/db.mjs';
@@ -1372,6 +1373,9 @@ export function createNetworkWatchdog({
                 handoverDir: handoverConfig?.handoverDir,
                 dryRun: handoverDryRun,
                 stderr,
+                lineage,
+                recordSessionSpawn,
+                parentSessionId: typeof session.sessionId === 'string' ? session.sessionId : null,
                 notifyPreSpawnReview: async (review) => {
                   const content = `[pre-spawn-review] ${JSON.stringify(review)}`;
                   await fetchImpl(`${buildHubUrl(ipcPort)}/send`, {

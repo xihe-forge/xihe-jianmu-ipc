@@ -43,9 +43,12 @@ function ipc {
             [Parameter(Mandatory)][string]`$JsonlDir
         )
 
+        # marker 必须含完整 stderr JSON 边界·避免命中 IPC 对话 transcript 里粘的字面字符串
+        # 真 hook stderr：,"stderr":"[session-state-writer] throttle skip for ipc_name=<name>\r\n"
+        # 误命中样本：\",\"stderr\":\"[session-state-writer]... (json escape 后的字面值)·有反斜杠 escape 区分
         `$markers = @(
-            "ipc_name=`$Name",
-            "IPC_NAME=`$Name",
+            ",``"stderr``":``"[session-state-writer] throttle skip for ipc_name=`$Name``\r``\n``"",
+            ",``"stderr``":``"[session-state-writer] throttle skip for IPC_NAME=`$Name``\r``\n``"",
             "``"ipc_name``":``"`$Name``"",
             "``"ipcName``":``"`$Name``"",
             "``"IPC_NAME``":``"`$Name``""

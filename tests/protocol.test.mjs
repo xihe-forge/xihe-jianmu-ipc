@@ -74,10 +74,11 @@ test('createTask: 支持自定义 priority 和 description', () => {
 
 // ── TASK_STATUSES ─────────────────────────────────────────────────────────────
 
-test('TASK_STATUSES: 包含5个状态', () => {
-  assert.equal(TASK_STATUSES.length, 5);
+test('TASK_STATUSES: 包含 agent-bound task statuses', () => {
+  assert.equal(TASK_STATUSES.length, 6);
   assert.ok(TASK_STATUSES.includes('pending'));
   assert.ok(TASK_STATUSES.includes('started'));
+  assert.ok(TASK_STATUSES.includes('in_progress'));
   assert.ok(TASK_STATUSES.includes('completed'));
   assert.ok(TASK_STATUSES.includes('failed'));
   assert.ok(TASK_STATUSES.includes('cancelled'));

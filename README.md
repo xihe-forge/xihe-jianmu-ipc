@@ -521,7 +521,7 @@ Structured task management — create, update, and list tasks.
 | `priority`    | string | no       | `"low"`, `"normal"`, `"high"`, `"urgent"`                          |
 | `deadline`    | string | no       | ISO 8601 deadline                                                  |
 | `taskId`      | string | update   | Task ID to update                                                  |
-| `status`      | string | update   | `"pending"`, `"started"`, `"completed"`, `"failed"`, `"cancelled"` |
+| `status`      | string | update   | `"pending"`, `"started"`, `"in_progress"`, `"completed"`, `"failed"`, `"cancelled"` |
 
 ```
 ipc_task(action="create", to="worker", title="Fix login bug", priority=4)
@@ -917,7 +917,7 @@ Task list with statistics.
 | Param    | Type   | Description                                                                 |
 | -------- | ------ | --------------------------------------------------------------------------- |
 | `agent`  | string | Filter by agent name                                                        |
-| `status` | string | Filter by status (`pending`, `started`, `completed`, `failed`, `cancelled`) |
+| `status` | string | Filter by status (`pending`, `started`, `in_progress`, `completed`, `failed`, `cancelled`) |
 | `limit`  | number | Max results                                                                 |
 
 #### `GET /tasks/:id`

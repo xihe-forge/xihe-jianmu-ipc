@@ -943,7 +943,7 @@ test('PATCH /tasks/:id: 无效状态返回 400 且不改动任务', { timeout: T
   assert.equal(patchResponse.statusCode, 400);
   assert.equal(
     patchResponse.body.error,
-    'invalid status, must be one of: pending, started, completed, failed, cancelled',
+    'invalid status, must be one of: pending, started, in_progress, completed, failed, cancelled',
   );
 
   const getResponse = await httpRequest(hub.port, {

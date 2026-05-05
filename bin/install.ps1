@@ -72,9 +72,21 @@ function ipc {
 
         `$matches = @()
         foreach (`$jsonl in (Get-ChildItem -Path `$JsonlDir -Filter '*.jsonl' -File | Sort-Object LastWriteTime -Descending)) {
-            if (Select-String -Path `$jsonl.FullName -Pattern `$markers -SimpleMatch -Quiet -ErrorAction SilentlyContinue) {
-                `$matches += `$jsonl
-            }
+            # 性能优化：marker 通常在 jsonl 头部 (session-state-writer 启动时写)·只扫前 200 行
+            # 不是 -TotalCount 200·因为大 jsonl read 200 行也几十 MB·改成读首 64KB 字节
+            try {
+                `$fs = [System.IO.File]::Open(`$jsonl.FullName, 'Open', 'Read', 'ReadWrite')
+                `$buf = New-Object byte[] 65536
+                `$read = `$fs.Read(`$buf, 0, `$buf.Length)
+                `$fs.Close()
+                `$head = [System.Text.Encoding]::UTF8.GetString(`$buf, 0, `$read)
+                foreach (`$marker in `$markers) {
+                    if (`$head.Contains(`$marker)) {
+                        `$matches += `$jsonl
+                        break
+                    }
+                }
+            } catch {}
         }
 
         return @(`$matches)

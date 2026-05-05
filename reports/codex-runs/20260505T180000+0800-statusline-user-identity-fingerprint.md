@@ -61,7 +61,8 @@ Decision: main path is valid. Use `account.uuid` as stable `user_id`; store emai
 
 ## Push status
 
-Pending at report creation; final task notification will include pushed refs or failure.
+- jianmu-ipc: pushed `master` to `origin` (`8da6a62..74cd3a2`).
+- harness: pushed `main` to `origin` (`46db59b..6dff0c2`).
 
 ## IPC
 

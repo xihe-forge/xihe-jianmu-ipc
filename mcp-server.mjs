@@ -467,6 +467,7 @@ const RECONNECT_BASE_DELAY = 3000;
 const RECONNECT_MAX_DELAY = 60000;
 let isShuttingDown = false;
 const reconnectTimers = new Set();
+const registerWaiters = new Set();
 
 const outgoingQueue = []; // queued while disconnected
 
@@ -476,6 +477,47 @@ function disconnectWs() {
     ws.close();
   } catch {}
   ws = null;
+}
+
+function terminateWs() {
+  if (!ws) return;
+  const socket = ws;
+  ws = null;
+  try {
+    if (typeof socket.terminate === 'function') {
+      socket.terminate();
+    } else {
+      socket.close(1000, 'rename');
+    }
+  } catch {}
+}
+
+function waitForRegisteredName(name, timeoutMs = 5_000) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+
+    const waiter = {
+      name,
+      finish,
+    };
+    registerWaiters.add(waiter);
+
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      registerWaiters.delete(waiter);
+      resolve(ok);
+    }
+  });
+}
+
+function notifyRegistered(name) {
+  for (const waiter of [...registerWaiters]) {
+    if (waiter.name === name) waiter.finish(true);
+  }
 }
 
 function closeHubWs(timeoutMs = 500) {
@@ -510,9 +552,11 @@ function closeHubWs(timeoutMs = 500) {
 }
 
 function reconnectHub() {
-  if (isShuttingDown) return;
+  if (isShuttingDown) return Promise.resolve(false);
   reconnectAttempts = 0;
+  const registeredName = IPC_NAME;
   connect();
+  return waitForRegisteredName(registeredName);
 }
 
 function clearContextUsagePctTimer() {
@@ -654,6 +698,7 @@ const mcpTools = createMcpTools({
   },
   getWs: () => ws,
   disconnectWs,
+  terminateWs,
   reconnect: reconnectHub,
   getPendingOutgoingCount: () => outgoingQueue.length,
   wsSend,
@@ -2051,6 +2096,9 @@ async function handleWsMessage(event) {
     }
   } else if (msg.type === 'ack') {
     process.stderr.write(`[ipc] delivery confirmed: ${msg.messageId} by ${msg.confirmedBy}\n`);
+  } else if (msg.type === 'registered') {
+    notifyRegistered(msg.name);
+    process.stderr.write(`[ipc] registered as ${msg.name}\n`);
   } else if (msg.type === 'inbox') {
     const messages = Array.isArray(msg.messages) ? msg.messages : [];
     for (const m of messages) {
@@ -2111,6 +2159,7 @@ function connect() {
     if (isShuttingDown) return;
     mcpTrace('ws_disconnect', { code: event.code, reason: event.reason });
     process.stderr.write(`[ipc] disconnected from hub (code=${event.code})\n`);
+    if (ws !== socket) return;
     ws = null;
     stopAllCodexThreadKeepalives('ws-close');
     scheduleReconnect();
@@ -2174,6 +2223,7 @@ async function initialConnect() {
           if (isShuttingDown) return;
           mcpTrace('ws_disconnect', { code: ev.code, reason: ev.reason });
           process.stderr.write(`[ipc] disconnected from hub (code=${ev.code})\n`);
+          if (ws !== socket) return;
           ws = null;
           stopAllCodexThreadKeepalives('ws-close');
           scheduleReconnect();

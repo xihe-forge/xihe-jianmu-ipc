@@ -882,6 +882,10 @@ wss.on('connection', async (ws, req) => {
   };
 
   ws.on('close', () => {
+    const current = sessions.get(name);
+    if (current?.ws === ws && current !== session) {
+      sessions.delete(name);
+    }
     if (session.ws !== ws) return;
     if (session.sessionId) {
       markSessionEnded(session.sessionId, Date.now());

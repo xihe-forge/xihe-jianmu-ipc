@@ -169,6 +169,10 @@
 
 ## 已完成（按日期倒排，最近 14 天）
 
+### 2026-05-06
+
+- [x] **jianmu-ipc Hub git attribution warning hook v0.1 trial 上线**（harness 仓实现 + jianmu-ipc 落报告）。新增 `git-attribution-warning.ps1` PreToolUse Bash advisory hook：拦 `git add` 裸 add / `-A|-a|--all|.`，`git commit` 无 `--` 时用 recent-add state + commit message scope→path prefix 映射检测 owner mix；drift 只 warning + Hub audit + IPC harness，不 block。修 `templates/hooks-snippet.json` 中 pre-commit path 从错误 `${CLAUDE_PROJECT_DIR}/domains/...` 改为 harness 绝对路径并新增 hook 注册；`node tools/install-hooks.mjs` 已 merge 到 `C:\Users\jolen\.claude\settings.json`。验证：PS5/PS7 `git-attribution-warning.test.ps1` 9/9 PASS，pre-commit-author-check 7/7 PASS，install-hooks 8/8 PASS，task-agent-bind 4/4 PASS；dogfood fake `IPC_NAME=fake-jianmu-pm` + `docs(pm)` staged mix 触发 warning，harness IPC `msg_1778010054210_0a140c` delivered，Hub audit `git_attribution_warning_hook` 命中。
+
 ### 2026-05-05
 
 - [x] **statusline v3 零 profile API + vault auto-sync 保留** TDD Red→Green（RED `37e22ec` + GREEN 本轮提交）。删除 `statusline-account.mjs` profile endpoint / fetch / user_id cache / vault identity match；`update-claude-account-identity.ps1` 改本地 refreshToken fingerprint marker + atomic JSON write；`start-claude-account.ps1` 启动即写 v1 风格 marker，后台 sync 仍 8 秒首跑 + 60 秒周期。验证：profile grep 0 命中；focused 9/9 PASS；`npm test` 全绿；临时 `claude` shim 跑 start-script 8s 首 sync + 60s token rotation sync，vault 与 marker 均追上；resolver temp A/B 均正确。
@@ -242,3 +246,4 @@
 | 2026-04-26T02:14+08:00 | jianmu-pm | P0 全面重置（响应 boss 88% 周限额 + harness 02:10 todo 频次升级硬规矩）：(1) ADR-008 Phase 2 P0 标 done（harness 已 ship session-cold-start.md v1.3 切换 · 移已完成）；(2) 新 P0 = 切账号窗口待 trigger · spawn fix v2 keystone 已解锁（5b9a6b9+0967749+df9de3a · 7/7 PASS）· runtime cache 是 reload trigger 不是 prerequisite；(3) 新 P0 = ADR-009 / API rate limit 治理 gap 4 SOP（boss 21:34 派 · successor 接班后做）；(4) 已完成段加 2026-04-26 spawn fix v2 + 2026-04-25 晚 P0 spawn 链 11 条目（fix v1 / portfolio acceptance e2e ship gate / hook PS native v2 / hub-uptime baseline v0.2 / handover schema v2 / dependabot fix / ADR-003-gap-eval / cold-start-drill design）；(5) 双 user memory 沉淀 feedback_codex_log_dir_mkdir + feedback_mcp_server_no_hot_reload（mcp-server 改 ship ≠ portfolio runtime 生效 · 必须切账号 reload · 与 settings.json hot-reload 同源） |
 | 2026-04-26T14:21+08:00 | jianmu-pm | 自驱抓 backlog（response harness 14:07 信号 + boss 13:57 "活都干完了吗" critique）：(1) ADR-009 v0.1 design ship `cb38bc3` 4 SOP 完整（boss 21:34 派 P0 ack）；(2) ADR-006 Plan A codex `bwoknxtsk` 14:14 dispatched · TDD RED→GREEN broadcastNetworkUp 扩 stale session auto-wake；(3) ADR-006 Plan C 待 Plan A done 后接力 + 评估与 SOP-1 共派；P0 段重排：ADR-009 v0.1 design 已 ship 等 review / ADR-006 Plan A 实施中 / Plan C 待派 |
 | 2026-04-28T19:33:47+08:00 | codex-ke-impl | ADR-014 Phase 2 K.E sessions Map race fix GREEN 同步：per-name async-mutex、4 case race test、manual smoke、全量测试通过；report/dispatch-record 路径按 brief 落盘 |
+| 2026-05-06T03:42+08:00 | codex | git attribution warning hook v0.1 trial 上线：harness hook 实现 + snippet/install + user settings merge；dogfood staged owner mix 触发 warning、Hub audit 与 harness IPC `msg_1778010054210_0a140c`；报告 `reports/codex-runs/20260506T031200+0800-git-attribution-warning-hook.md` |

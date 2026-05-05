@@ -24,17 +24,50 @@ if ($profilesToInstall.Count -eq 0) {
 
 $funcCode = @"
 function ipc {
-    param([Parameter(Mandatory)][string]`$Name)
+    param(
+        [Parameter(Mandatory)][string]`$Name,
+        [string]`$resume = `$null
+    )
     `$env:IPC_NAME = `$Name
 
     `$node = 'D:\software\ide\nodejs\node.exe'
     `$helper = 'D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\claude-stdin-auto-accept.mjs'
     `$claudeBin = "`$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
     `$projectRoot = 'D:\workspace\ai\research\xiheAi'
+    `$claudeArgs = @()
+
+    if (-not [string]::IsNullOrWhiteSpace(`$resume)) {
+        if (`$resume -match '^-\d+`$') {
+            `$encodedCwd = ((`$projectRoot -replace ':', '-') -replace '[\\/]', '-') -replace '\s', '-'
+            `$jsonlDir = Join-Path (Join-Path `$env:USERPROFILE '.claude\projects') `$encodedCwd
+
+            if (-not (Test-Path -Path `$jsonlDir -PathType Container)) {
+                Write-Error "Claude project history directory not found: `$jsonlDir"
+                return
+            }
+
+            `$jsonlFiles = @(Get-ChildItem -Path `$jsonlDir -Filter '*.jsonl' -File | Sort-Object LastWriteTime -Descending)
+            `$index = -[int]`$resume - 1
+
+            if ((`$index -lt 0) -or (`$index -ge `$jsonlFiles.Count)) {
+                Write-Error "-resume `$resume is out of range. Found `$(`$jsonlFiles.Count) jsonl session(s) in `$jsonlDir"
+                return
+            }
+
+            `$sessionId = `$jsonlFiles[`$index].BaseName
+            `$claudeArgs += @('--resume', `$sessionId)
+        } elseif (`$resume -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`$') {
+            `$claudeArgs += @('--resume', `$resume)
+        } else {
+            Write-Error "-resume must be a negative index like -1 or a session UUID."
+            return
+        }
+    }
+    `$claudeArgs += @('--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:ipc')
 
     Push-Location `$projectRoot
     try {
-        & `$node `$helper `$claudeBin --dangerously-skip-permissions --dangerously-load-development-channels server:ipc
+        & `$node `$helper `$claudeBin @claudeArgs
     } finally {
         Pop-Location
     }
@@ -148,6 +181,8 @@ foreach ($p in $profilesToInstall) {
     if (!(Test-Path $p)) { New-Item -Path $p -Force | Out-Null }
 
     if (!(Select-String -Path $p -Pattern '^function ipc\s*\{' -Quiet -ErrorAction SilentlyContinue)) {
+        Add-Content -Path $p -Value "`n$funcCode"
+    } elseif (!(Select-String -Path $p -Pattern '\[string\]\$resume\s*=' -Quiet -ErrorAction SilentlyContinue)) {
         Add-Content -Path $p -Value "`n$funcCode"
     }
     if (!(Select-String -Path $p -Pattern '^function ipcx' -Quiet -ErrorAction SilentlyContinue)) {

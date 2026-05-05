@@ -42,8 +42,7 @@ jianmu-ipc:
 
 - `4057fca` `test: 覆盖 statusline 账号指纹解析`
 - `f2854a0` `fix: 根治 statusline 账号和 hud usage 直连`
-- `3d1984e` `docs: 记录 rename 原子交接修复报告` (concurrent report commit on branch)
-- `c5bf97a` `docs(report): 记录 statusline usage 根治报告`
+- report commits: `docs(report): 记录 statusline usage 根治报告` and follow-up report truth update (see `git log -- reports/codex-runs/20260505T172500+0800-statusline-usage-rootfix.md`).
 
 harness:
 
@@ -51,7 +50,7 @@ harness:
 
 ## Push status
 
-- `xihe-jianmu-ipc`: final report push succeeded; local `HEAD` equals `origin/master` at `c5bf97a32eaccceb424da8200c4019ee65da0057`.
+- `xihe-jianmu-ipc`: final report push succeeded; verify with `git rev-parse HEAD origin/master` returning the same commit.
 - `xihe-tianshu-harness`: `git push origin main` returned `Everything up-to-date`; local `HEAD` equals `origin/main` at `1cfae1e3ed74e386c33f828092ff173a5de63263`.
 
 ## 5-piece sync

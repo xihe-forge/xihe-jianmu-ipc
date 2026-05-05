@@ -39,6 +39,7 @@ function createHarness(options = {}) {
     wsSend: [],
     spawnSession: [],
     disconnectWs: 0,
+    terminateWs: 0,
     reconnect: 0,
     stderr: [],
   };
@@ -63,8 +64,16 @@ function createHarness(options = {}) {
       if (state.ws?.close) state.ws.close();
       state.ws = null;
     },
-    reconnect: () => {
+    terminateWs: () => {
+      calls.terminateWs += 1;
+      if (state.ws?.terminate) state.ws.terminate();
+      else if (state.ws?.close) state.ws.close();
+      state.ws = null;
+    },
+    reconnect: async () => {
       calls.reconnect += 1;
+      if (impl.reconnect) return impl.reconnect({ state, calls });
+      return true;
     },
     getPendingOutgoingCount: () => state.pendingOutgoingCount,
     wsSend: (payload) => {
@@ -626,7 +635,8 @@ test('ipc_rename: 更新 session 名并触发断开重连', async () => {
   const result = await tools.handleToolCall('ipc_rename', { name: 'worker-renamed' });
 
   assert.equal(state.sessionName, 'worker-renamed');
-  assert.equal(calls.disconnectWs, 1);
+  assert.equal(calls.disconnectWs, 0);
+  assert.equal(calls.terminateWs, 1);
   assert.equal(calls.reconnect, 1);
   assert.equal(calls.stderr.length, 1);
   assert.match(calls.stderr[0], /renamed: alpha/);
@@ -634,6 +644,33 @@ test('ipc_rename: 更新 session 名并触发断开重连', async () => {
     renamed: true,
     from: 'alpha',
     to: 'worker-renamed',
+  });
+});
+
+test('ipc_rename: 等待 reconnect 注册完成后再返回', async () => {
+  const events = [];
+  const { tools, calls } = createHarness({
+    impl: {
+      reconnect: async ({ state }) => {
+        events.push(`reconnect:${state.sessionName}`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        events.push(`registered:${state.sessionName}`);
+        return true;
+      },
+    },
+  });
+
+  const resultPromise = tools.handleToolCall('ipc_rename', { name: 'worker-ack' });
+  events.push('after-call');
+  const result = await resultPromise;
+
+  assert.deepEqual(events, ['reconnect:worker-ack', 'after-call', 'registered:worker-ack']);
+  assert.equal(calls.terminateWs, 1);
+  assert.equal(calls.reconnect, 1);
+  assert.deepEqual(getJson(result), {
+    renamed: true,
+    from: 'alpha',
+    to: 'worker-ack',
   });
 });
 

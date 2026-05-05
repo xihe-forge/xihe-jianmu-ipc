@@ -79,11 +79,11 @@ test('statusline fallback resolves missing refresh token by matching access toke
   });
 });
 
-test('statusline verifies marker user_id via profile API and survives rotated refresh token', async () => {
+test('statusline never calls profile API and falls through stale marker user_id to subscription fallback', async () => {
   await withAccountFixture(async ({ claudeDir }) => {
     await writeFile(
       join(claudeDir, '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { refreshToken: 'rotated-refresh-token', accessToken: 'access-b-live', subscriptionType: 'max' } }),
+      JSON.stringify({ claudeAiOauth: { refreshToken: 'unknown-refresh-token', accessToken: 'access-b-live', subscriptionType: 'pro' } }),
       'utf8',
     );
     await writeFile(
@@ -92,92 +92,37 @@ test('statusline verifies marker user_id via profile API and survives rotated re
       'utf8',
     );
 
-    let calls = 0;
     const which = await resolveAccount({
       claudeDir,
       fetchProfileIdentity: async () => {
-        calls += 1;
-        return { user_id: 'user-b', email: 'b@example.test' };
+        throw new Error('profile API must not be called');
       },
       now: () => 1_776_000_000_000,
     });
 
     assert.equal(which, 'b');
-    assert.equal(calls, 1);
   });
 });
 
-test('statusline user_id cache avoids profile API until access token prefix changes', async () => {
-  await withAccountFixture(async ({ claudeDir }) => {
+test('statusline returns null when marker, vault fingerprints, and subscription fallback all fail', async () => {
+  await withAccountFixture(async ({ claudeDir, accountB }) => {
     await writeFile(
       join(claudeDir, '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-cache-token-one', refreshToken: 'rotated-1', subscriptionType: 'max' } }),
+      JSON.stringify({ claudeAiOauth: { refreshToken: 'unknown-refresh-token', accessToken: 'unknown-access', subscriptionType: 'team' } }),
       'utf8',
     );
     await writeFile(
       join(claudeDir, '.current-account'),
-      JSON.stringify({ which: 'b', user_id: 'user-b', captured_at: '2026-05-05T10:00:00.000Z' }),
-      'utf8',
-    );
-
-    let calls = 0;
-    const first = await resolveAccount({
-      claudeDir,
-      fetchProfileIdentity: async () => {
-        calls += 1;
-        return { user_id: 'user-b', email: 'b@example.test' };
-      },
-      now: () => 1_776_000_000_000,
-    });
-    const second = await resolveAccount({
-      claudeDir,
-      fetchProfileIdentity: async () => {
-        calls += 1;
-        return { user_id: 'user-b', email: 'b@example.test' };
-      },
-      now: () => 1_776_000_001_000,
-    });
-
-    assert.equal(first, 'b');
-    assert.equal(second, 'b');
-    assert.equal(calls, 1);
-
-    await writeFile(
-      join(claudeDir, '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-token-two', refreshToken: 'rotated-2', subscriptionType: 'max' } }),
-      'utf8',
-    );
-    const third = await resolveAccount({
-      claudeDir,
-      fetchProfileIdentity: async () => {
-        calls += 1;
-        return { user_id: 'user-b', email: 'b@example.test' };
-      },
-      now: () => 1_776_000_002_000,
-    });
-
-    assert.equal(third, 'b');
-    assert.equal(calls, 2);
-
-    const cache = JSON.parse(await readFile(join(claudeDir, '.statusline-user-id-cache.json'), 'utf8'));
-    assert.equal(cache.user_id, 'user-b');
-    assert.equal(cache.access_token_prefix_16, 'sk-ant-oat01-tok');
-  });
-});
-
-test('statusline resolves missing marker by profile API user_id matched to vault', async () => {
-  await withAccountFixture(async ({ claudeDir }) => {
-    await writeFile(
-      join(claudeDir, '.credentials.json'),
-      JSON.stringify({ claudeAiOauth: { refreshToken: 'rotated-refresh-token', accessToken: 'access-a-live', subscriptionType: 'max' } }),
+      JSON.stringify({ which: 'b', fingerprint: accountFingerprint(accountB) }),
       'utf8',
     );
 
     assert.equal(await resolveAccount({
       claudeDir,
-      fetchProfileIdentity: async () => ({ user_id: 'user-a', email: 'a@example.test' }),
-      now: () => 1_776_000_000_000,
-    }), 'a');
+      fetchProfileIdentity: async () => {
+        throw new Error('profile API must not be called');
+      },
+    }), null);
   });
 });
 

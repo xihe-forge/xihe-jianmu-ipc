@@ -72,16 +72,13 @@ function ipc {
 
         `$matches = @()
         foreach (`$jsonl in (Get-ChildItem -Path `$JsonlDir -Filter '*.jsonl' -File | Sort-Object LastWriteTime -Descending)) {
-            # 性能优化：marker 通常在 jsonl 头部 (session-state-writer 启动时写)·只扫前 200 行
-            # 不是 -TotalCount 200·因为大 jsonl read 200 行也几十 MB·改成读首 64KB 字节
+            # marker 是 session-state-writer 周期写·散布在 transcript 全文·不在固定头部
+            # 全文 ReadAllBytes + UTF8 decode + Contains·实测 242 jsonl 2.4s（vs Select-String 22s 快 9x）
             try {
-                `$fs = [System.IO.File]::Open(`$jsonl.FullName, 'Open', 'Read', 'ReadWrite')
-                `$buf = New-Object byte[] 65536
-                `$read = `$fs.Read(`$buf, 0, `$buf.Length)
-                `$fs.Close()
-                `$head = [System.Text.Encoding]::UTF8.GetString(`$buf, 0, `$read)
+                `$bytes = [System.IO.File]::ReadAllBytes(`$jsonl.FullName)
+                `$text = [System.Text.Encoding]::UTF8.GetString(`$bytes)
                 foreach (`$marker in `$markers) {
-                    if (`$head.Contains(`$marker)) {
+                    if (`$text.Contains(`$marker)) {
                         `$matches += `$jsonl
                         break
                     }

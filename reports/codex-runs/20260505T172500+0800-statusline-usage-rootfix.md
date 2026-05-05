@@ -59,6 +59,6 @@ harness:
 - Harness PROJECT-PLAN updated.
 - Jianmu report written here.
 - Cross-repo commits present and pushed.
-- Completion IPC notification sent to `jianmu-pm`.
+- Completion notification sent to `jianmu-pm`: MCP `ipc_send` transport was closed, then Hub HTTP `/send` fallback accepted `msg_1777975231210_4b1a8d` with `online=true`.
 
 EXIT 0

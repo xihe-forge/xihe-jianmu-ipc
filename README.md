@@ -1225,6 +1225,19 @@ The MCP Registry package name is `io.github.xihe-forge/jianmu-ipc`; it must stay
 
 ---
 
+## Claude HUD Jianmu Usage Patch
+
+When `claude-hud` is reinstalled or upgraded, reapply the local Jianmu usage-priority patch before rebuilding the plugin:
+
+```powershell
+cd $env:USERPROFILE\.claude\plugins\cache\claude-hud\claude-hud\0.0.7
+git apply D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\patches\claude-hud-jianmu-priority.patch
+npm ci
+npm run build
+```
+
+---
+
 ## License
 
 MIT — by [xihe-forge](https://github.com/xihe-forge)

@@ -1,0 +1,131 @@
+diff --git a/src/usage-api.ts b/src/usage-api.ts
+index bf14b4c..17da5c1 100644
+--- a/src/usage-api.ts
++++ b/src/usage-api.ts
+@@ -2,6 +2,7 @@ import * as fs from 'fs';
+ import * as path from 'path';
+ import * as os from 'os';
+ import * as https from 'https';
++import * as http from 'http';
+ import { execFileSync } from 'child_process';
+ import type { UsageData } from './types.js';
+ import { createDebug } from './debug.js';
+@@ -35,6 +36,7 @@ interface UsageApiResponse {
+ interface UsageApiResult {
+   data: UsageApiResponse | null;
+   error?: string;
++  source?: 'jianmu' | 'anthropic';
+ }
+ 
+ // File-based cache (HUD runs as new process each render, so in-memory cache won't persist)
+@@ -42,6 +44,7 @@ const CACHE_TTL_MS = 60_000; // 60 seconds
+ const CACHE_FAILURE_TTL_MS = 15_000; // 15 seconds for failed requests
+ const KEYCHAIN_TIMEOUT_MS = 5000;
+ const KEYCHAIN_BACKOFF_MS = 60_000; // Backoff on keychain failures to avoid re-prompting
++const JIANMU_USAGE_TIMEOUT_MS = 1500;
+ 
+ interface CacheFile {
+   data: UsageData;
+@@ -106,7 +109,7 @@ export type UsageApiDeps = {
+ 
+ const defaultDeps: UsageApiDeps = {
+   homeDir: () => os.homedir(),
+-  fetchApi: fetchUsageApi,
++  fetchApi: fetchUsageApiWithJianmu,
+   now: () => Date.now(),
+   readKeychain: readKeychainCredentials,
+ };
+@@ -147,6 +150,9 @@ export async function getUsage(overrides: Partial<UsageApiDeps> = {}): Promise<U
+ 
+     // Fetch usage from API
+     const apiResult = await deps.fetchApi(accessToken);
++    if (apiResult.source === 'jianmu') {
++      debug('Using usage data from Jianmu hub');
++    }
+     if (!apiResult.data) {
+       // API call failed, cache the failure to prevent retry storms
+       const failureResult: UsageData = {
+@@ -439,6 +445,83 @@ function fetchUsageApi(accessToken: string): Promise<UsageApiResult> {
+   });
+ }
+ 
++async function fetchUsageApiWithJianmu(accessToken: string): Promise<UsageApiResult> {
++  const jianmuResult = await fetchJianmuUsageApi();
++  if (jianmuResult.data) {
++    return jianmuResult;
++  }
++
++  if (
++    jianmuResult.error === 'jianmu-network' ||
++    jianmuResult.error === 'jianmu-timeout' ||
++    jianmuResult.error === 'jianmu-parse'
++  ) {
++    debug('Jianmu usage unavailable, falling back to Anthropic direct:', jianmuResult.error);
++    return fetchUsageApi(accessToken);
++  }
++
++  return jianmuResult;
++}
++
++function fetchJianmuUsageApi(): Promise<UsageApiResult> {
++  return new Promise((resolve) => {
++    const req = http.request(
++      {
++        hostname: '127.0.0.1',
++        port: 3179,
++        path: '/usage',
++        method: 'GET',
++        timeout: JIANMU_USAGE_TIMEOUT_MS,
++      },
++      (res) => {
++        let data = '';
++
++        res.on('data', (chunk: Buffer) => {
++          data += chunk.toString();
++        });
++
++        res.on('end', () => {
++          if (res.statusCode !== 200) {
++            resolve({
++              data: null,
++              error: res.statusCode ? `jianmu-http-${res.statusCode}` : 'jianmu-http-error',
++            });
++            return;
++          }
++
++          try {
++            const parsed = JSON.parse(data);
++            if (parsed?.ok !== true) {
++              resolve({ data: null, error: 'jianmu-failure' });
++              return;
++            }
++
++            resolve({
++              data: {
++                five_hour: parsed.five_hour,
++                seven_day: parsed.seven_day,
++              },
++              source: 'jianmu',
++            });
++          } catch {
++            resolve({ data: null, error: 'jianmu-parse' });
++          }
++        });
++      }
++    );
++
++    req.on('error', () => {
++      resolve({ data: null, error: 'jianmu-network' });
++    });
++    req.on('timeout', () => {
++      req.destroy();
++      resolve({ data: null, error: 'jianmu-timeout' });
++    });
++
++    req.end();
++  });
++}
++
+ // Export for testing
+ export function clearCache(homeDir?: string): void {
+   if (homeDir) {

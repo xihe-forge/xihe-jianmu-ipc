@@ -114,6 +114,10 @@ import {
   listSuspendedSessions,
   clearSuspendedSessions,
   suspendSession,
+  recordSessionSpawn,
+  updateSessionLastSeen,
+  markSessionEnded,
+  getSessionsByName,
 } from './lib/db.mjs';
 
 const PORT = parseInt(process.env.IPC_PORT ?? DEFAULT_PORT, 10);
@@ -254,6 +258,10 @@ const ctx = {
   getRecipientRecent,
   clearInbox,
   suspendSession,
+  recordSessionSpawn,
+  updateSessionLastSeen,
+  markSessionEnded,
+  getSessionsByName,
   checkAuth,
   authTokens,
   AUTH_TOKEN,
@@ -771,11 +779,30 @@ wss.on('connection', async (ws, req) => {
         session.runtime = normalizeRuntime(msg.runtime);
         session.appServerPid = normalizePid(msg.appServerPid);
         session.appServerThreadId = normalizeAppServerThreadId(msg.appServerThreadId);
+        session.sessionId = normalizeOptionalString(msg.sessionId) ?? session.sessionId ?? null;
+        session.transcriptPath =
+          normalizeOptionalString(msg.transcriptPath) ?? session.transcriptPath ?? null;
         session.startedAt = normalizeStartedAt(msg.startedAt) ?? session.startedAt ?? session.connectedAt;
         session.startupSource =
           normalizeOptionalString(msg.startupSource) ??
           (msg.subprocess === true ? 'pid-fallback' : session.startupSource ?? 'unknown');
         session.label = normalizeOptionalString(msg.label) ?? session.label ?? session.name;
+        if (session.sessionId) {
+          try {
+            recordSessionSpawn({
+              sessionId: session.sessionId,
+              name: session.name,
+              spawnReason: 'fresh',
+              cwd: session.cwd,
+              runtime: session.runtime,
+              transcriptPath: session.transcriptPath,
+              spawnAt: session.startedAt ?? session.connectedAt,
+            });
+            updateSessionLastSeen(session.sessionId, Date.now());
+          } catch (error) {
+            stderr(`[ipc-hub] sessions_history ws register skipped: ${error?.message ?? error}`);
+          }
+        }
         send(ws, {
           type: 'registered',
           name: session.name,
@@ -790,6 +817,9 @@ wss.on('connection', async (ws, req) => {
         }
         if (Object.hasOwn(msg, 'pendingOutgoing')) {
           session.pendingOutgoing = normalizePendingOutgoing(msg.pendingOutgoing);
+        }
+        if (session.sessionId) {
+          updateSessionLastSeen(session.sessionId, Date.now());
         }
         send(ws, { type: 'updated', name: session.name, contextUsagePct: session.contextUsagePct });
         break;
@@ -845,6 +875,9 @@ wss.on('connection', async (ws, req) => {
 
   ws.on('close', () => {
     if (session.ws !== ws) return;
+    if (session.sessionId) {
+      markSessionEnded(session.sessionId, Date.now());
+    }
     session.ws = null;
     audit('session_disconnect', { name, inboxSize: session.inbox.length });
     stderr(`[ipc-hub] session disconnected: ${name} (inbox: ${session.inbox.length} msgs)`);

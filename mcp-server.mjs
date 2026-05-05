@@ -44,7 +44,7 @@ import {
 } from 'fs';
 import { execFileSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { tmpdir } from 'os';
 import http from 'http';
 
@@ -400,6 +400,8 @@ export function resolveRuntime({
 function createCurrentRegisterMessage() {
   const runtime = resolveRuntime();
   maybeEnsureLocalCodexAppServer('register', runtime);
+  const transcriptPath = findSelfTranscriptPath();
+  const sessionId = transcriptPath ? basename(transcriptPath, '.jsonl') : null;
   const message = createRegisterMessage({
     name: IPC_NAME,
     pid: process.pid,
@@ -414,6 +416,8 @@ function createCurrentRegisterMessage() {
     startedAt: MCP_STARTED_AT,
     startupSource: resolveStartupSource(),
     label: IPC_NAME,
+    sessionId,
+    transcriptPath,
   };
 }
 

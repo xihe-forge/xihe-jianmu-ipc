@@ -238,6 +238,64 @@ test('GET /sessions: 返回已连接的 session', { timeout: TEST_TIMEOUT }, asy
   }
 });
 
+test('POST /sessions/register-history + GET /sessions-history persist by IPC name', { timeout: TEST_TIMEOUT }, async () => {
+  const response = await httpRequest(hub.port, {
+    method: 'POST',
+    path: '/sessions/register-history',
+    json: {
+      name: 'taiwei-test',
+      sessionId: '66666666-6666-4666-8666-666666666666',
+      transcriptPath: 'C:/Users/jolen/.claude/projects/x/66666666-6666-4666-8666-666666666666.jsonl',
+      cwd: 'D:/workspace/ai/research/xiheAi',
+      runtime: 'claude',
+      spawnReason: 'hook-discovery',
+      spawnAt: 1000,
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.recorded, true);
+
+  const listResponse = await httpRequest(hub.port, {
+    method: 'GET',
+    path: '/sessions-history?name=taiwei-test&limit=10',
+  });
+
+  assert.equal(listResponse.statusCode, 200);
+  assert.deepEqual(listResponse.body.map(row => row.sessionId), [
+    '66666666-6666-4666-8666-666666666666',
+  ]);
+  assert.equal(listResponse.body[0].name, 'taiwei-test');
+  assert.equal(listResponse.body[0].spawnReason, 'hook-discovery');
+});
+
+test('WebSocket register with sessionId records sessions_history and close marks ended', { timeout: TEST_TIMEOUT }, async () => {
+  const sessionId = '77777777-7777-4777-8777-777777777777';
+  const ws = await connectSession(hub.port, 'taiwei-live', {
+    register: {
+      sessionId,
+      transcriptPath: `C:/Users/jolen/.claude/projects/x/${sessionId}.jsonl`,
+      runtime: 'claude',
+      startedAt: 2000,
+    },
+  });
+
+  await closeWebSocket(ws);
+  await new Promise(resolve => setTimeout(resolve, 25));
+
+  const listResponse = await httpRequest(hub.port, {
+    method: 'GET',
+    path: '/sessions-history?name=taiwei-live&limit=10',
+  });
+
+  assert.equal(listResponse.statusCode, 200);
+  assert.equal(listResponse.body.length, 1);
+  assert.equal(listResponse.body[0].sessionId, sessionId);
+  assert.equal(listResponse.body[0].spawnAt, 2000);
+  assert.ok(Number.isFinite(listResponse.body[0].endedAt));
+});
+
 test('POST /task: 创建任务并返回 taskId', { timeout: TEST_TIMEOUT }, async () => {
   const response = await httpRequest(hub.port, {
     method: 'POST',
@@ -448,7 +506,7 @@ function httpRequest(port, { method, path, json, body, headers = {} }) {
   });
 }
 
-function connectSession(port, name) {
+function connectSession(port, name, options = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}?name=${encodeURIComponent(name)}`);
     let settled = false;
@@ -476,7 +534,7 @@ function connectSession(port, name) {
 
     ws.once('open', () => {
       // Hub 的真实握手是 query 中的 name + register 消息。
-      ws.send(JSON.stringify({ type: 'register', name }));
+      ws.send(JSON.stringify({ type: 'register', name, ...options.register }));
     });
     ws.on('message', onMessage);
     ws.once('error', onError);

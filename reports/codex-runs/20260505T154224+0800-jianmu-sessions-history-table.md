@@ -82,7 +82,9 @@ Tianshu harness repo `main`, pushed to `origin/main`:
 
 - `0697f90` `feat(hooks): register IPC session history once`
 
-Report commit: pending at report creation time.
+Report commit, pushed to `origin/master`:
+
+- `b17d15e` `docs(report): record sessions history ship truth`
 
 ## Ship tier
 

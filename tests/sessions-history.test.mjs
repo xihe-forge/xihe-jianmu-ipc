@@ -42,6 +42,36 @@ test('recordSessionSpawn is idempotent by session_id', () => {
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sessions_history').get().count, 1);
 });
 
+test('hook-discovery upgrades an existing fresh WebSocket row', () => {
+  const sessionId = '12121212-1212-4121-8121-121212121212';
+  db.recordSessionSpawn({
+    sessionId,
+    name: 'taiwei-test',
+    spawnReason: 'fresh',
+    cwd: 'D:/workspace/old',
+    runtime: 'unknown',
+    transcriptPath: 'C:/Users/jolen/.claude/projects/x/old.jsonl',
+    spawnAt: 1000,
+  });
+
+  db.recordSessionSpawn({
+    sessionId,
+    name: 'taiwei-test',
+    spawnReason: 'hook-discovery',
+    cwd: 'D:/workspace/new',
+    runtime: 'claude',
+    transcriptPath: `C:/Users/jolen/.claude/projects/x/${sessionId}.jsonl`,
+    spawnAt: 2000,
+  });
+
+  const [row] = db.getSessionsByName('taiwei-test', 10);
+  assert.equal(row.spawnReason, 'hook-discovery');
+  assert.equal(row.runtime, 'claude');
+  assert.equal(row.cwd, 'D:/workspace/new');
+  assert.equal(row.transcriptPath, `C:/Users/jolen/.claude/projects/x/${sessionId}.jsonl`);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM sessions_history').get().count, 1);
+});
+
 test('getSessionsByName returns newest rows first and excludes pending placeholders', () => {
   db.recordSessionSpawn({
     sessionId: '22222222-2222-4222-8222-222222222222',
@@ -111,7 +141,7 @@ test('real child session inherits latest pending atomic handoff parent metadata'
   assert.equal(row.parentName, 'taiwei-director-old');
   assert.equal(row.parentSessionId, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   assert.equal(row.spawnReason, 'hook-discovery');
-  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM sessions_history WHERE session_id LIKE 'pending-%'").get().count, 0);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM sessions_history WHERE name = 'taiwei-director' AND session_id LIKE 'pending-%'").get().count, 0);
 });
 
 process.on('exit', () => {

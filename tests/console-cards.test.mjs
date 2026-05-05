@@ -7,6 +7,8 @@ import {
   buildReportCard,
   buildDispatchCard,
   buildErrorCard,
+  buildSessionsListCard,
+  buildSessionsCleanupApprovalCard,
 } from '../lib/console-cards.mjs';
 
 // ── 通用结构辅助断言 ──────────────────────────────────────────────────────────
@@ -166,6 +168,25 @@ test('buildDispatchCard: 离线缓冲', () => {
   assert.strictEqual(card.header.template, 'wathet');
   assert.ok(card.elements[0].text.content.includes('已缓冲'));
   assert.ok(card.elements[0].text.content.includes('aabbccdd'));
+});
+
+// ── sessions cards ───────────────────────────────────────────────────────────
+
+test('buildSessionsListCard: 渲染 session 表', () => {
+  const card = buildSessionsListCard([
+    { sessionId: 'session-1234567890', name: 'taiwei-test', spawnAt: Date.now() },
+  ], { total: 1 });
+  assertCardStructure(card);
+  assert.ok(card.header.title.content.includes('Session 列表'));
+  assert.ok(card.elements[0].text.content.includes('taiwei-test'));
+});
+
+test('buildSessionsCleanupApprovalCard: 确认按钮携带 cleanup action', () => {
+  const card = buildSessionsCleanupApprovalCard({ name: 'taiwei-test' });
+  assertCardStructure(card);
+  const action = card.elements[1].actions[0];
+  assert.equal(action.value.action, 'cleanup_sessions_confirm');
+  assert.equal(action.value.name, 'taiwei-test');
 });
 
 // ── buildErrorCard ────────────────────────────────────────────────────────────

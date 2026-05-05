@@ -2,6 +2,30 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCommand } from '../lib/command-parser.mjs';
 
+// ── sessions cleanup ─────────────────────────────────────────────────────────
+
+test('sessions: 清理 session 列表', () => {
+  assert.deepEqual(parseCommand('清理 session 列表'), { type: 'sessions_list' });
+});
+
+test('sessions: session 列表', () => {
+  assert.deepEqual(parseCommand('session 列表'), { type: 'sessions_list' });
+});
+
+test('sessions: 清理 session name 走审批请求', () => {
+  assert.deepEqual(parseCommand('清理 session taiwei-director'), {
+    type: 'sessions_cleanup_request',
+    name: 'taiwei-director',
+  });
+});
+
+test('sessions: 清理 session N 天前 走审批请求', () => {
+  assert.deepEqual(parseCommand('清理 session 30 天前'), {
+    type: 'sessions_cleanup_request',
+    olderThanDays: 30,
+  });
+});
+
 // ── status ────────────────────────────────────────────────────────────────────
 
 test('status: 中文"状态"', () => {

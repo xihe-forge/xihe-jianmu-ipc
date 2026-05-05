@@ -20,7 +20,18 @@ import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { parseCommand } from './lib/command-parser.mjs';
 import { startTracking, getAllStatus, getHubHealth, markActivity, onStatusChange } from './lib/agent-status.mjs';
-import { buildStatusCard, buildHelpCard, buildDispatchCard, buildBroadcastCard, buildApprovalCard, buildReportCard, buildHistoryCard, buildErrorCard } from './lib/console-cards.mjs';
+import {
+  buildStatusCard,
+  buildHelpCard,
+  buildDispatchCard,
+  buildBroadcastCard,
+  buildApprovalCard,
+  buildReportCard,
+  buildHistoryCard,
+  buildErrorCard,
+  buildSessionsListCard,
+  buildSessionsCleanupApprovalCard,
+} from './lib/console-cards.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HUB_HOST = process.env.IPC_HUB_HOST || '127.0.0.1';
@@ -493,6 +504,60 @@ async function handleConsoleCommand(cmd, msg) {
       break;
     }
 
+    case 'sessions_list': {
+      try {
+        const res = await fetch(`http://${HUB_HOST}:${parseInt(HUB_PORT)}/sessions-history?limit=20`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        const sessions = await res.json();
+        const list = Array.isArray(sessions) ? sessions : [];
+        const card = buildSessionsListCard(list, { total: list.length });
+        await sendStatusCard(appName, chatId, messageId, card);
+      } catch (err) {
+        const card = buildErrorCard('查询失败', `无法获取 session 列表: ${err.message}`);
+        await sendStatusCard(appName, chatId, messageId, card);
+      }
+      break;
+    }
+
+    case 'sessions_cleanup_request': {
+      const description = cmd.name
+        ? `请求清理 sessions_history 中 IPC name=${cmd.name} 的全部记录。`
+        : `请求清理 sessions_history 中 ended_at 早于 ${cmd.olderThanDays} 天前的记录。`;
+      try {
+        const taskBody = JSON.stringify({
+          from: `feishu:${appName}`,
+          to: 'jianmu-pm',
+          title: cmd.name ? `审批 session 清理: ${cmd.name}` : `审批 session 清理: ${cmd.olderThanDays} 天前`,
+          description,
+          priority: 1,
+          payload: {
+            source: 'feishu',
+            action: 'sessions_cleanup_approval',
+            chatId,
+            name: cmd.name ?? null,
+            olderThanDays: cmd.olderThanDays ?? null,
+          },
+        });
+        await fetch(`http://${HUB_HOST}:${parseInt(HUB_PORT)}/task`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(taskBody) },
+          body: taskBody,
+          signal: AbortSignal.timeout(5000),
+        });
+        const card = buildSessionsCleanupApprovalCard({
+          name: cmd.name,
+          olderThanDays: cmd.olderThanDays,
+          requestedBy: `feishu:${appName}`,
+        });
+        await sendStatusCard(appName, chatId, messageId, card);
+      } catch (err) {
+        const card = buildErrorCard('审批派单失败', err.message);
+        await sendStatusCard(appName, chatId, messageId, card);
+      }
+      break;
+    }
+
     case 'report': {
       const reportData = await generateReportData();
       const card = buildReportCard(reportData);
@@ -605,6 +670,44 @@ async function handleCardAction(data, appName) {
       if (notifyApp?.chatId) {
         await sendStatusCard(appName, notifyApp.chatId, null, card);
       }
+    }
+    return;
+  }
+
+  if (actionValue.action === 'cleanup_sessions_confirm') {
+    try {
+      const body = {
+        dryRun: false,
+        orphan: false,
+      };
+      if (actionValue.name) body.name = actionValue.name;
+      if (actionValue.olderThanDays) body.endedOlderThanDays = Number(actionValue.olderThanDays);
+      const res = await fetch(`http://${HUB_HOST}:${parseInt(HUB_PORT)}/sessions-history/cleanup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5000),
+      });
+      const result = await res.json();
+      const notifyApp = currentApps.find(a => a.name === appName);
+      if (notifyApp?.chatId) {
+        await sendFeishuStatus(appName, notifyApp.chatId, result.ok
+          ? `✅ Session 清理完成：${result.count} 条`
+          : `⚠️ Session 清理失败：${result.error || 'unknown error'}`);
+      }
+    } catch (err) {
+      const notifyApp = currentApps.find(a => a.name === appName);
+      if (notifyApp?.chatId) {
+        await sendFeishuStatus(appName, notifyApp.chatId, `⚠️ Session 清理失败：${err.message}`);
+      }
+    }
+    return;
+  }
+
+  if (actionValue.action === 'cleanup_sessions_cancel') {
+    const notifyApp = currentApps.find(a => a.name === appName);
+    if (notifyApp?.chatId) {
+      await sendFeishuStatus(appName, notifyApp.chatId, '已取消 session 清理');
     }
     return;
   }

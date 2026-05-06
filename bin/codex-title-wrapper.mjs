@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import {
   createCodexPtyBridgeReady,
+  createCodexPtyUserInputTracker,
   processCodexPtyBridgeQueue,
 } from '../lib/codex-pty-bridge.mjs';
 
@@ -41,7 +42,23 @@ const OSC_TITLE_PATTERN = /\x1B\][012];[^\x07\x1B]*(?:\x07|\x1B\\)/g;
 const ipcName = (process.env.IPC_NAME ?? '').trim();
 const codexPtySubmitDelayMs = parseNonNegativeInteger(
   process.env.IPC_CODEX_PTY_SUBMIT_DELAY_MS,
-  1000,
+  0,
+);
+const codexPtyUserIdleGraceMs = parseNonNegativeInteger(
+  process.env.IPC_CODEX_PTY_USER_IDLE_GRACE_MS,
+  1200,
+);
+const codexPtySubmitAwaitTimeoutMs = parseNonNegativeInteger(
+  process.env.IPC_CODEX_PTY_SUBMIT_AWAIT_TIMEOUT_MS,
+  5000,
+);
+const codexPtyQueueMaxEntries = parseNonNegativeInteger(
+  process.env.IPC_CODEX_PTY_QUEUE_MAX_ENTRIES,
+  10,
+);
+const codexPtyQueueTtlMs = parseNonNegativeInteger(
+  process.env.IPC_CODEX_PTY_QUEUE_TTL_MS,
+  60_000,
 );
 const codexSessionMapPollMs = parseNonNegativeInteger(
   process.env.IPC_CODEX_SESSION_MAP_POLL_MS,
@@ -62,6 +79,15 @@ let ptyBridgeWatcher = null;
 let sessionMapTimer = null;
 let sessionMapDeadlineTimer = null;
 let sessionMapRecordedId = null;
+let lastPtyBridgeDeferLogAt = 0;
+let lastPtyBridgeDeferReason = null;
+let recentCodexOutput = '';
+const userInputTracker = createCodexPtyUserInputTracker({
+  idleGraceMs: codexPtyUserIdleGraceMs,
+  submitAwaitTimeoutMs: codexPtySubmitAwaitTimeoutMs,
+});
+const debugPtyUserInput = process.env.IPC_CODEX_PTY_DEBUG_INPUT === '1';
+const debugPtyUserInputPath = process.env.IPC_CODEX_PTY_DEBUG_INPUT_PATH || '';
 
 function titleSequence(title) {
   return `\x1b]0;${title}\x07`;
@@ -70,6 +96,22 @@ function titleSequence(title) {
 function rewriteTitle(data) {
   if (!ipcName) return String(data);
   return String(data).replace(OSC_TITLE_PATTERN, titleSequence(ipcName));
+}
+
+function stripTerminalControls(data) {
+  return String(data)
+    .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, '')
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1B[()][A-Za-z0-9]/g, '');
+}
+
+function noteCodexOutput(data) {
+  recentCodexOutput = `${recentCodexOutput}${stripTerminalControls(data)}`
+    .replace(/\r/g, '\n')
+    .slice(-4000);
+  if (/(^|\n)\s*›/.test(recentCodexOutput) && /(^|\n)\s+gpt-[^\n]*·/.test(recentCodexOutput)) {
+    userInputTracker.markCodexPromptReady();
+  }
 }
 
 function exitOnce(code) {
@@ -282,7 +324,9 @@ function startSessionMapPolling() {
 }
 
 child.onData((data) => {
-  process.stdout.write(rewriteTitle(data));
+  const rewritten = rewriteTitle(data);
+  process.stdout.write(rewritten);
+  noteCodexOutput(rewritten);
 });
 
 child.onExit(({ exitCode }) => {
@@ -301,6 +345,27 @@ async function processPtyBridgeQueueOnce() {
     await processCodexPtyBridgeQueue(ipcName, {
       writePrompt: async (prompt) => child.write(prompt),
       submitDelayMs: codexPtySubmitDelayMs,
+      queueMaxEntries: codexPtyQueueMaxEntries,
+      queueTtlMs: codexPtyQueueTtlMs,
+      shouldDeferWrite: () => userInputTracker.shouldDeferPtyBridgeWrite(),
+      onDefer: (state) => {
+        const now = Date.now();
+        if (
+          state?.reason !== lastPtyBridgeDeferReason ||
+          now - lastPtyBridgeDeferLogAt > 5000
+        ) {
+          lastPtyBridgeDeferLogAt = now;
+          lastPtyBridgeDeferReason = state?.reason ?? null;
+          process.stderr.write(
+            `[codex-title-wrapper] pty bridge deferred: reason=${state?.reason ?? 'unknown'} draft_chars=${state?.draftChars ?? 0} pending=${state?.pendingCount ?? 0}\n`,
+          );
+        }
+      },
+      onDrop: (state) => {
+        process.stderr.write(
+          `[codex-title-wrapper] pty bridge dropped: reason=${state?.reason ?? 'unknown'} msg_id=${state?.msgId ?? 'unknown'} age_ms=${state?.ageMs ?? 'unknown'}\n`,
+        );
+      },
     });
   } catch (error) {
     process.stderr.write(`[codex-title-wrapper] pty bridge queue failed: ${error?.message ?? error}\n`);
@@ -328,17 +393,33 @@ async function startPtyBridge() {
   }
 }
 
-void startPtyBridge();
-
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
 process.stdin.on('data', (data) => {
+  const inputState = userInputTracker.recordUserInput(data);
+  if (inputState.awaitingPromptAfterSubmit) {
+    recentCodexOutput = '';
+  }
+  if (debugPtyUserInput) {
+    const bytes = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+    const debugLine = `[codex-title-wrapper] stdin bytes=${bytes.toString('hex')} defer=${inputState.defer} reason=${inputState.reason ?? 'none'} draft_chars=${inputState.draftChars}\n`;
+    process.stderr.write(
+      debugLine,
+    );
+    if (debugPtyUserInputPath) {
+      try {
+        appendFileSync(debugPtyUserInputPath, debugLine, 'utf8');
+      } catch {}
+    }
+  }
   child.write(data);
 });
 
 process.stdout.on('resize', () => {
   child.resize(process.stdout.columns || 120, process.stdout.rows || 30);
 });
+
+void startPtyBridge();
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {

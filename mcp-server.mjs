@@ -1176,7 +1176,7 @@ export function getCodexThreadKeepaliveState(sessionName) {
 async function pushLocalCodexInboundViaPty(msg) {
   try {
     const result = await enqueueCodexPtyPrompt(IPC_NAME, msg, {
-      waitForAckMs: 3000,
+      waitForAckMs: 0,
       readyMaxAgeMs: 30_000,
     });
     if (!result?.ok) {
@@ -1190,6 +1190,13 @@ async function pushLocalCodexInboundViaPty(msg) {
       msg_id: msg.id,
       wrapper_pid: result.wrapperPid ?? null,
       prompt_chars: result.promptChars ?? null,
+      queued: result.queued === true,
+      deferred: result.deferred === true,
+      dispatched: result.dispatched === true,
+      defer_reason: result.reason ?? null,
+      queued_at: result.queuedAt ?? null,
+      deferred_at: result.deferredAt ?? null,
+      dispatched_at: result.dispatchedAt ?? result.wroteAt ?? null,
       queue_path: result.queuePath ?? null,
       ack_path: result.ackPath ?? null,
     });
@@ -2384,7 +2391,7 @@ async function handleWsMessage(event) {
       if (await pushLocalCodexInboundViaPty(msg)) {
         ackInboundMessage(msg);
         process.stderr.write(
-          `[ipc] pushed codex PTY inbound from ${msg.from ?? '(unknown)'}\n`,
+          `[ipc] queued codex PTY inbound from ${msg.from ?? '(unknown)'}\n`,
         );
         return;
       }

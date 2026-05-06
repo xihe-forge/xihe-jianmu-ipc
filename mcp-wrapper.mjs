@@ -20,10 +20,93 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = join(__dirname, 'mcp-server.mjs');
 const POLL_INTERVAL = 10_000; // 10s
 
-export const RESTART_BACKOFF_BASE_MS = 500;
-export const RESTART_BACKOFF_MAX_MS = 16_000;
+export const RESTART_BACKOFF_DELAYS_MS = [1_000, 5_000, 15_000, 60_000];
+export const RESTART_BACKOFF_BASE_MS = RESTART_BACKOFF_DELAYS_MS[0];
+export const RESTART_BACKOFF_MAX_MS = RESTART_BACKOFF_DELAYS_MS.at(-1);
+export const RESTART_PRE_ANNOUNCE_TOPIC = 'feedback_portfolio_restart_pre_announce';
 export const STABILITY_WINDOW_MS = 60_000;
 export const WRAPPER_SHUTDOWN_TIMEOUT_MS = 4_500;
+
+function parseHubPort(value) {
+  const port = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(port) && port > 0 ? port : 3179;
+}
+
+function resolveWrapperName(env) {
+  return env.IPC_NAME || env.IPC_DEFAULT_NAME || 'mcp-wrapper';
+}
+
+function buildRestartPreAnnounceContent({
+  reason,
+  delayMs,
+  childPid = null,
+  code = null,
+  signal = null,
+  aliveMs = null,
+  wrapperPid = process.pid,
+}) {
+  return [
+    `[${RESTART_PRE_ANNOUNCE_TOPIC}] mcp-wrapper restart pre-announce`,
+    `reason=${reason}`,
+    `delay_ms=${delayMs}`,
+    `wrapper_pid=${wrapperPid}`,
+    `child_pid=${childPid ?? 'n/a'}`,
+    `code=${code ?? 'n/a'}`,
+    `signal=${signal ?? 'n/a'}`,
+    `alive_ms=${aliveMs ?? 'n/a'}`,
+  ].join(' ');
+}
+
+export async function sendRestartPreAnnounce({
+  env = process.env,
+  fetchFn = globalThis.fetch?.bind(globalThis),
+  reason,
+  delayMs,
+  childPid = null,
+  code = null,
+  signal = null,
+  aliveMs = null,
+  wrapperPid = process.pid,
+} = {}) {
+  if (env.IPC_WRAPPER_RESTART_PRE_ANNOUNCE === '0') {
+    return { ok: true, skipped: true, reason: 'disabled' };
+  }
+  if (typeof fetchFn !== 'function') {
+    return { ok: false, skipped: true, reason: 'fetch-unavailable' };
+  }
+
+  const host = env.IPC_HUB_HOST || '127.0.0.1';
+  const port = parseHubPort(env.IPC_PORT);
+  const body = {
+    from: resolveWrapperName(env),
+    to: '*',
+    topic: RESTART_PRE_ANNOUNCE_TOPIC,
+    content: buildRestartPreAnnounceContent({
+      reason,
+      delayMs,
+      childPid,
+      code,
+      signal,
+      aliveMs,
+      wrapperPid,
+    }),
+  };
+
+  const response = await fetchFn(`http://${host}:${port}/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response?.ok) {
+    return { ok: false, status: response?.status ?? null };
+  }
+  try {
+    return { ok: true, ...(await response.json()) };
+  } catch {
+    return { ok: true };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Wrapper lifecycle
@@ -44,6 +127,9 @@ export function createMcpWrapper(options = {}) {
   const env = options.env ?? process.env;
   const processLike = options.processLike ?? process;
   const exitFn = options.exitFn ?? ((code) => process.exit(code));
+  const announceRestartFn =
+    options.announceRestartFn ??
+    ((detail) => sendRestartPreAnnounce({ ...detail, env }));
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? WRAPPER_SHUTDOWN_TIMEOUT_MS;
 
   let child = null;
@@ -53,12 +139,29 @@ export function createMcpWrapper(options = {}) {
   let stdinCloseHandler = null;
   let pollInterval = null;
   let shutdownTimer = null;
-  let restartBackoffMs = RESTART_BACKOFF_BASE_MS;
+  let restartBackoffIndex = 0;
   let childStartTs = 0;
   let intentionalRestart = false;
   let isShuttingDown = false;
   let didExit = false;
   const signalHandlers = new Map();
+
+  function getRestartBackoffMs() {
+    return RESTART_BACKOFF_DELAYS_MS[
+      Math.min(restartBackoffIndex, RESTART_BACKOFF_DELAYS_MS.length - 1)
+    ];
+  }
+
+  function advanceRestartBackoff() {
+    restartBackoffIndex = Math.min(
+      restartBackoffIndex + 1,
+      RESTART_BACKOFF_DELAYS_MS.length - 1,
+    );
+  }
+
+  function resetRestartBackoff() {
+    restartBackoffIndex = 0;
+  }
 
   function getMtime() {
     try {
@@ -70,6 +173,24 @@ export function createMcpWrapper(options = {}) {
 
   function log(msg) {
     stderr.write(`[mcp-wrapper] ${msg}\n`);
+  }
+
+  function preAnnounceRestart(detail) {
+    try {
+      Promise.resolve(announceRestartFn(detail))
+        .then((result) => {
+          if (result?.ok === false) {
+            log(
+              `restart pre-announce skipped/failed: ${result.reason ?? result.status ?? 'unknown'}`,
+            );
+          }
+        })
+        .catch((err) => {
+          log(`restart pre-announce failed: ${err.message}`);
+        });
+    } catch (err) {
+      log(`restart pre-announce failed: ${err.message}`);
+    }
   }
 
   function removeStdinHandler() {
@@ -166,7 +287,7 @@ export function createMcpWrapper(options = {}) {
     if (isShuttingDown) return null;
     removeStdinHandler();
 
-    child = spawnFn('node', [serverPath], {
+    child = spawnFn(process.execPath, [serverPath], {
       stdio: ['pipe', 'pipe', 'inherit'],
       env,
     });
@@ -207,7 +328,7 @@ export function createMcpWrapper(options = {}) {
       }
 
       if (aliveMs >= STABILITY_WINDOW_MS) {
-        restartBackoffMs = RESTART_BACKOFF_BASE_MS;
+        resetRestartBackoff();
       }
 
       if (intentionalRestart) {
@@ -215,10 +336,18 @@ export function createMcpWrapper(options = {}) {
         return;
       }
 
-      const delayMs = restartBackoffMs;
+      const delayMs = getRestartBackoffMs();
+      preAnnounceRestart({
+        reason: 'child-exit',
+        delayMs,
+        childPid: startedChild.pid,
+        code,
+        signal,
+        aliveMs,
+      });
       log(`scheduling restart in ${delayMs}ms`);
       scheduleStart(delayMs);
-      restartBackoffMs = Math.min(restartBackoffMs * 2, RESTART_BACKOFF_MAX_MS);
+      advanceRestartBackoff();
     });
 
     child.on('error', (err) => {
@@ -234,6 +363,11 @@ export function createMcpWrapper(options = {}) {
     log('file changed, restarting mcp-server.mjs...');
 
     removeStdinHandler();
+    preAnnounceRestart({
+      reason: 'source-mtime-change',
+      delayMs: RESTART_BACKOFF_BASE_MS,
+      childPid: child?.pid ?? null,
+    });
 
     if (child) {
       intentionalRestart = true;
@@ -305,7 +439,8 @@ export function createMcpWrapper(options = {}) {
     getState: () => ({
       child,
       lastMtime,
-      restartBackoffMs,
+      restartBackoffMs: getRestartBackoffMs(),
+      restartBackoffIndex,
       childStartTs,
       intentionalRestart,
       isShuttingDown,

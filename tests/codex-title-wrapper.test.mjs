@@ -15,7 +15,8 @@ let tempDir;
 let wrapperPath;
 
 const fakePtySource = String.raw`
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const logPath = process.env.PTY_MOCK_LOG;
 
@@ -32,6 +33,33 @@ function normalizeData(data) {
 function parseEvents() {
   if (!process.env.PTY_MOCK_DATA_EVENTS) return [];
   return JSON.parse(process.env.PTY_MOCK_DATA_EVENTS);
+}
+
+function maybeCreateCodexSession(options) {
+  const transcriptPath = process.env.PTY_MOCK_CODEX_SESSION_PATH;
+  const sessionId = process.env.PTY_MOCK_CODEX_SESSION_ID;
+  if (!transcriptPath || !sessionId) return;
+
+  const delayMs = Number.parseInt(process.env.PTY_MOCK_CODEX_SESSION_DELAY_MS ?? '0', 10);
+  setTimeout(() => {
+    const timestamp = new Date().toISOString();
+    mkdirSync(dirname(transcriptPath), { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        timestamp,
+        type: 'session_meta',
+        payload: {
+          id: sessionId,
+          timestamp,
+          cwd: options?.cwd,
+          source: 'cli',
+          originator: 'codex-tui',
+        },
+      }) + '\n',
+      'utf8',
+    );
+  }, Number.isFinite(delayMs) ? delayMs : 0);
 }
 
 export function spawn(command, args, options) {
@@ -61,6 +89,7 @@ export function spawn(command, args, options) {
       ipcName: options?.env?.IPC_NAME ?? null,
     },
   });
+  maybeCreateCodexSession(options);
 
   return {
     write(data) {
@@ -250,7 +279,7 @@ describe('Phase 2 K.S Codex title wrapper', () => {
       input: 'hello\r',
       env: {
         IPC_NAME: 'test-ks',
-        PTY_MOCK_EXIT_MS: '50',
+        PTY_MOCK_EXIT_MS: '120',
       },
     });
 
@@ -292,5 +321,96 @@ describe('Phase 2 K.S Codex title wrapper', () => {
     assert.equal(ack.msgId, 'msg-test');
     assert.equal(ack.submitDelayMs, 0);
     assert.equal(ack.writeCount, 2);
+  });
+
+  test('records IPC_NAME to a local Codex session map for resume lookup', async () => {
+    const codexHome = join(tempDir, `codex-home-${Date.now()}`);
+    const sessionDir = join(codexHome, 'sessions', '2026', '05', '06');
+    const sessionId = '11111111-1111-4111-8111-111111111111';
+    const transcriptPath = join(
+      sessionDir,
+      `rollout-2026-05-06T07-00-00-${sessionId}.jsonl`,
+    );
+
+    const result = await runWrapper({
+      env: {
+        IPC_NAME: 'test-map',
+        CODEX_HOME: codexHome,
+        IPC_CODEX_SESSION_MAP_POLL_MS: '10',
+        IPC_CODEX_SESSION_MAP_TIMEOUT_MS: '500',
+        IPC_CODEX_SESSION_MAP_POST_HUB: '0',
+        PTY_MOCK_CODEX_SESSION_ID: sessionId,
+        PTY_MOCK_CODEX_SESSION_PATH: transcriptPath,
+        PTY_MOCK_CODEX_SESSION_DELAY_MS: '25',
+        PTY_MOCK_EXIT_MS: '120',
+      },
+    });
+
+    assert.equal(result.code, 0);
+    const mapContent = await readFile(
+      join(codexHome, 'ipcx-session-map', 'test-map.jsonl'),
+      'utf8',
+    );
+    const records = mapContent.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].name, 'test-map');
+    assert.equal(records[0].runtime, 'codex');
+    assert.equal(records[0].sessionId, sessionId);
+    assert.equal(records[0].transcriptPath, transcriptPath);
+  });
+
+  test('does not map the previous fresh Codex session while waiting for the new transcript', async () => {
+    const codexHome = join(tempDir, `codex-home-stale-${Date.now()}`);
+    const sessionDir = join(codexHome, 'sessions', '2026', '05', '06');
+    const oldSessionId = '22222222-2222-4222-8222-222222222222';
+    const newSessionId = '33333333-3333-4333-8333-333333333333';
+    const oldTranscriptPath = join(
+      sessionDir,
+      `rollout-2026-05-06T07-00-00-${oldSessionId}.jsonl`,
+    );
+    const newTranscriptPath = join(
+      sessionDir,
+      `rollout-2026-05-06T07-00-05-${newSessionId}.jsonl`,
+    );
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      oldTranscriptPath,
+      `${JSON.stringify({
+        timestamp: '2026-05-05T23:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          id: oldSessionId,
+          timestamp: '2026-05-05T23:00:00.000Z',
+          cwd: projectRoot,
+          source: 'cli',
+          originator: 'codex-tui',
+        },
+      })}\n`,
+      'utf8',
+    );
+
+    const result = await runWrapper({
+      env: {
+        IPC_NAME: 'test-map-stale',
+        CODEX_HOME: codexHome,
+        IPC_CODEX_SESSION_MAP_POLL_MS: '10',
+        IPC_CODEX_SESSION_MAP_TIMEOUT_MS: '500',
+        IPC_CODEX_SESSION_MAP_POST_HUB: '0',
+        PTY_MOCK_CODEX_SESSION_ID: newSessionId,
+        PTY_MOCK_CODEX_SESSION_PATH: newTranscriptPath,
+        PTY_MOCK_CODEX_SESSION_DELAY_MS: '45',
+        PTY_MOCK_EXIT_MS: '160',
+      },
+    });
+
+    assert.equal(result.code, 0);
+    const mapContent = await readFile(
+      join(codexHome, 'ipcx-session-map', 'test-map-stale.jsonl'),
+      'utf8',
+    );
+    const records = mapContent.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].sessionId, newSessionId);
+    assert.equal(records[0].transcriptPath, newTranscriptPath);
   });
 });

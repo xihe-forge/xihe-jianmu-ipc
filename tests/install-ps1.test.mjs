@@ -96,7 +96,7 @@ test('install.ps1 ipc check does not match ipcx', () => {
 test('install.ps1 ipcx keeps nested TOML string quotes escaped', () => {
   assert.match(
     installPs1,
-    /mcp_servers\.jianmu-ipc\.env\.IPC_NAME=``"`\$Name``""/,
+    /'mcp_servers\.jianmu-ipc\.env\.IPC_NAME="' \+ `\$Name \+ '"'/,
   );
 });
 
@@ -115,16 +115,58 @@ test('install.ps1 ipcx runs Codex through the title wrapper with IPC_NAME in env
   assert.match(ipcxFunc, /\$env:IPC_NAME = `?\$Name/);
   assert.match(ipcxFunc, /\$wrapper = 'D:\\workspace\\ai\\research\\xiheAi\\xihe-jianmu-ipc\\bin\\codex-title-wrapper\.mjs'/);
   assert.match(ipcxFunc, /\$codexBin = "`?\$env:APPDATA\\npm\\codex\.cmd"/);
-  assert.match(ipcxFunc, /& `?\$node `?\$wrapper `?\$codexBin --dangerously-bypass-approvals-and-sandbox/);
-  assert.match(ipcxFunc, /model_reasoning_effort=``"xhigh``""/);
-  assert.match(ipcxFunc, /mcp_servers\.jianmu-ipc\.env\.IPC_NAME=``"`\$Name``""/);
+  assert.match(ipcxFunc, /\$codexOptions = @\(/);
+  assert.match(ipcxFunc, /& `?\$node `?\$wrapper `?\$codexBin @codexArgs/);
+  assert.match(ipcxFunc, /model_reasoning_effort="xhigh"/);
+  assert.match(ipcxFunc, /'mcp_servers\.jianmu-ipc\.env\.IPC_NAME="' \+ `\$Name \+ '"'/);
 });
 
 test('install.ps1 ipcx marks Codex runtime in parent env and MCP config', () => {
   const ipcxFunc = extractHereStringVar('ipcxFuncCode');
 
   assert.match(ipcxFunc, /\$env:IPC_RUNTIME = 'codex'/);
-  assert.match(ipcxFunc, /mcp_servers\.jianmu-ipc\.env\.IPC_RUNTIME=``"codex``""/);
+  assert.match(ipcxFunc, /mcp_servers\.jianmu-ipc\.env\.IPC_RUNTIME="codex"/);
+});
+
+test('install.ps1 ipcx parses optional -resume for Codex sessions', () => {
+  const ipcxFunc = extractHereStringVar('ipcxFuncCode');
+
+  assert.match(ipcxFunc, /ValueFromRemainingArguments=`\$true/);
+  assert.match(ipcxFunc, /\[object\[\]\]`\$rest/);
+  assert.match(ipcxFunc, /\[switch\]`\$resume/);
+  assert.match(ipcxFunc, /\$resumeValue = '0'/);
+  assert.match(ipcxFunc, /\$resumeValue -match '\^\\d\+`\$'/);
+  assert.match(ipcxFunc, /\$index = \[int\]`\$resumeValue/);
+  assert.match(ipcxFunc, /function Get-CodexHome/);
+  assert.match(ipcxFunc, /function Get-CodexSessionsRoot/);
+  assert.match(ipcxFunc, /function Get-IpcxSessionMapRows/);
+  assert.match(ipcxFunc, /function Get-IpcxSessionJsonls/);
+  assert.match(ipcxFunc, /function Get-IpcxSessionsByNameFromHub/);
+  assert.match(ipcxFunc, /sessions-history\?name=`\$encodedName&limit=`\$Limit/);
+  assert.match(ipcxFunc, /`\$_.runtime -eq 'codex'/);
+  assert.match(ipcxFunc, /\$historySessions = @\(Get-IpcxSessionsByNameFromHub -Name `\$Name -Limit 10\)/);
+  assert.match(ipcxFunc, /\$jsonlSessions = @\(Get-IpcxSessionJsonls -Name `\$Name\)/);
+  assert.match(ipcxFunc, /\$codexArgs \+= @\('resume', `\$sessionId\)/);
+  assert.match(ipcxFunc, /\$codexArgs \+= @\('resume', `\$resumeValue\)/);
+  assert.match(ipcxFunc, /Get-Command rg -ErrorAction SilentlyContinue/);
+  assert.match(ipcxFunc, /--files-with-matches/);
+  assert.match(ipcxFunc, /--fixed-strings/);
+  assert.match(ipcxFunc, /ipcx-session-map/);
+  assert.match(ipcxFunc, /Codex IPC name '`\$Name' has no historical session/);
+});
+
+test('install.ps1 ipcx rejects old negative -resume indexes clearly', () => {
+  const ipcxFunc = extractHereStringVar('ipcxFuncCode');
+
+  assert.match(ipcxFunc, /\$resumeValue -match '\^-\\d\+`\$'/);
+  assert.match(
+    ipcxFunc,
+    /-resume `\$resumeValue is not supported\. Use -resume 0 for latest, -resume 1 for HEAD~1\./,
+  );
+  assert.match(
+    ipcxFunc,
+    /Negative indexes like -1 are not supported; use 0 for latest\./,
+  );
 });
 
 test('install.ps1 ipc parses optional -resume through remaining arguments', () => {
@@ -250,6 +292,7 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
   assert.match(installPs1, /function Remove-IpcxProfileBlocks/);
   assert.match(installPs1, /\$needsIpcxUpgrade = \$hasIpcx -and !\(/);
   assert.match(installPs1, /-Pattern 'model_reasoning_effort'/);
+  assert.match(installPs1, /-Pattern 'Get-IpcxSessionsByNameFromHub'/);
 });
 
 test('install.ps1 upgrades stale ipcx profile functions to pin xhigh reasoning', (t) => {
@@ -295,6 +338,7 @@ test('install.ps1 upgrades stale ipcx profile functions to pin xhigh reasoning',
       const ipcxMatches = content.match(/^function ipcx\s*\{/gm) ?? [];
       assert.equal(ipcxMatches.length, 1);
       assert.match(content, /model_reasoning_effort=.*xhigh/);
+      assert.match(content, /Get-IpcxSessionsByNameFromHub/);
     }
   });
 });

@@ -225,7 +225,11 @@ function Get-IpcSessionsByNameFromHub {
 
 $ipcxFuncCode = @"
 function ipcx {
-    param([Parameter(Mandatory)][string]`$Name)
+    param(
+        [Parameter(Mandatory)][string]`$Name,
+        [Parameter()][switch]`$resume,
+        [Parameter(ValueFromRemainingArguments=`$true)][object[]]`$rest
+    )
     `$env:IPC_NAME = `$Name
     `$env:IPC_RUNTIME = 'codex'
 
@@ -233,13 +237,263 @@ function ipcx {
     `$wrapper = 'D:\workspace\ai\research\xiheAi\xihe-jianmu-ipc\bin\codex-title-wrapper.mjs'
     `$codexBin = "`$env:APPDATA\npm\codex.cmd"
     `$projectRoot = 'D:\workspace\ai\research\xiheAi'
+    `$codexOptions = @(
+        '--dangerously-bypass-approvals-and-sandbox',
+        '-c', 'model_reasoning_effort="xhigh"',
+        '-c', ('mcp_servers.jianmu-ipc.env.IPC_NAME="' + `$Name + '"'),
+        '-c', 'mcp_servers.jianmu-ipc.env.IPC_RUNTIME="codex"'
+    )
+    `$codexArgs = @()
+
+    if (`$rest.Count -gt 1) {
+        Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
+        return
+    }
+
+    if (`$resume) {
+        `$resumeValue = '0'
+        if (`$rest.Count -eq 1) {
+            `$resumeValue = [string]`$rest[0]
+        }
+
+        if (`$resumeValue -match '^-\d+`$') {
+            Write-Error "-resume `$resumeValue is not supported. Use -resume 0 for latest, -resume 1 for HEAD~1."
+            return
+        }
+
+        if (`$resumeValue -match '^\d+`$') {
+            `$index = [int]`$resumeValue
+            `$historySessions = @(Get-IpcxSessionsByNameFromHub -Name `$Name -Limit 10)
+            if (`$historySessions.Count -gt 0) {
+                if ((`$index -lt 0) -or (`$index -ge `$historySessions.Count)) {
+                    Write-Error "-resume `$resumeValue is out of range for Codex IPC name '`$Name'. Found `$(`$historySessions.Count) codex sessions_history row(s). Use 0 for latest, 1 for HEAD~1."
+                    return
+                }
+
+                `$sessionId = [string]`$historySessions[`$index].sessionId
+                if ([string]::IsNullOrWhiteSpace(`$sessionId)) {
+                    Write-Error "Codex sessions_history row for IPC name '`$Name' has empty sessionId."
+                    return
+                }
+                `$codexArgs += @('resume', `$sessionId)
+            } else {
+                `$jsonlSessions = @(Get-IpcxSessionJsonls -Name `$Name)
+                if (`$jsonlSessions.Count -eq 0) {
+                    `$sessionsRoot = Get-CodexSessionsRoot
+                    Write-Error "Codex IPC name '`$Name' has no historical session in `$sessionsRoot. Use fresh: ipcx `$Name"
+                    return
+                }
+
+                if ((`$index -lt 0) -or (`$index -ge `$jsonlSessions.Count)) {
+                    `$sessionsRoot = Get-CodexSessionsRoot
+                    Write-Error "-resume `$resumeValue is out of range for Codex IPC name '`$Name'. Found `$(`$jsonlSessions.Count) matching codex session(s) in `$sessionsRoot. Use 0 for latest, 1 for HEAD~1."
+                    return
+                }
+
+                `$sessionId = [string]`$jsonlSessions[`$index].SessionId
+                if ([string]::IsNullOrWhiteSpace(`$sessionId)) {
+                    Write-Error "Codex local session row for IPC name '`$Name' has empty sessionId."
+                    return
+                }
+                `$codexArgs += @('resume', `$sessionId)
+            }
+        } else {
+            if (`$resumeValue -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`$') {
+                `$codexArgs += @('resume', `$resumeValue)
+            } else {
+                Write-Error "-resume must be 0, a positive HEAD~N index, or a Codex session UUID. Negative indexes like -1 are not supported; use 0 for latest."
+                return
+            }
+        }
+    } else {
+        if (`$rest.Count -gt 0) {
+            Write-Error "Unexpected arguments: `$(`$rest -join ' ')"
+            return
+        }
+    }
+
+    `$codexArgs += `$codexOptions
 
     Push-Location `$projectRoot
     try {
-        & `$node `$wrapper `$codexBin --dangerously-bypass-approvals-and-sandbox -c "model_reasoning_effort=``"xhigh``"" -c "mcp_servers.jianmu-ipc.env.IPC_NAME=``"`$Name``"" -c "mcp_servers.jianmu-ipc.env.IPC_RUNTIME=``"codex``""
+        & `$node `$wrapper `$codexBin @codexArgs
     } finally {
         Pop-Location
     }
+}
+
+function Get-CodexHome {
+    if (-not [string]::IsNullOrWhiteSpace(`$env:CODEX_HOME)) {
+        return `$env:CODEX_HOME
+    }
+    if (-not [string]::IsNullOrWhiteSpace(`$env:USERPROFILE)) {
+        return (Join-Path `$env:USERPROFILE '.codex')
+    }
+    if (-not [string]::IsNullOrWhiteSpace(`$env:HOME)) {
+        return (Join-Path `$env:HOME '.codex')
+    }
+    return (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex')
+}
+
+function Get-CodexSessionsRoot {
+    return (Join-Path (Get-CodexHome) 'sessions')
+}
+
+function Get-IpcxSessionMapDir {
+    return (Join-Path (Get-CodexHome) 'ipcx-session-map')
+}
+
+function Get-CodexSessionIdFromPath {
+    param([Parameter(Mandatory)][string]`$Path)
+
+    `$baseName = [System.IO.Path]::GetFileNameWithoutExtension(`$Path)
+    if (`$baseName -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`$') {
+        return `$matches[1]
+    }
+    return `$baseName
+}
+
+function New-IpcxSessionRow {
+    param(
+        [Parameter(Mandatory)][string]`$SessionId,
+        [Parameter(Mandatory)][string]`$TranscriptPath,
+        [Parameter()][long]`$LastSeenAt = 0
+    )
+
+    `$item = `$null
+    if (-not [string]::IsNullOrWhiteSpace(`$TranscriptPath)) {
+        `$item = Get-Item -LiteralPath `$TranscriptPath -ErrorAction SilentlyContinue
+    }
+
+    [pscustomobject]@{
+        SessionId = `$SessionId
+        FullName = `$TranscriptPath
+        LastSeenAt = `$LastSeenAt
+        LastWriteTime = if (`$null -ne `$item) { `$item.LastWriteTime } else { [datetime]::MinValue }
+    }
+}
+
+function Get-IpcxSessionMapRows {
+    param([Parameter(Mandatory)][string]`$Name)
+
+    `$mapDir = Get-IpcxSessionMapDir
+    if (-not (Test-Path -Path `$mapDir -PathType Container)) {
+        return @()
+    }
+
+    `$safeName = `$Name -replace '[^A-Za-z0-9_.-]', '_'
+    `$candidateFiles = @()
+    `$specific = Join-Path `$mapDir "`${safeName}.jsonl"
+    if (Test-Path -Path `$specific -PathType Leaf) {
+        `$candidateFiles += (Get-Item -LiteralPath `$specific)
+    }
+    `$candidateFiles += @(Get-ChildItem -Path `$mapDir -Filter '*.jsonl' -File -ErrorAction SilentlyContinue)
+
+    `$rows = @()
+    foreach (`$file in (`$candidateFiles | Sort-Object FullName -Unique)) {
+        foreach (`$line in (Get-Content -LiteralPath `$file.FullName -ErrorAction SilentlyContinue)) {
+            if ([string]::IsNullOrWhiteSpace(`$line)) { continue }
+            try {
+                `$record = `$line | ConvertFrom-Json
+                if (([string]`$record.name -ne `$Name) -or ([string]`$record.runtime -ne 'codex')) { continue }
+                `$sessionId = [string]`$record.sessionId
+                if ([string]::IsNullOrWhiteSpace(`$sessionId)) { continue }
+                `$transcriptPath = [string]`$record.transcriptPath
+                `$lastSeenAt = 0L
+                try { `$lastSeenAt = [long]`$record.lastSeenAt } catch {}
+                `$rows += (New-IpcxSessionRow -SessionId `$sessionId -TranscriptPath `$transcriptPath -LastSeenAt `$lastSeenAt)
+            } catch {}
+        }
+    }
+
+    return @(
+        `$rows |
+            Sort-Object SessionId -Unique |
+            Sort-Object LastSeenAt, LastWriteTime -Descending
+    )
+}
+
+function Get-IpcxSessionJsonls {
+    param([Parameter(Mandatory)][string]`$Name)
+
+    `$mappedRows = @(Get-IpcxSessionMapRows -Name `$Name)
+    if (`$mappedRows.Count -gt 0) {
+        return @(`$mappedRows)
+    }
+
+    `$sessionsRoot = Get-CodexSessionsRoot
+    if (-not (Test-Path -Path `$sessionsRoot -PathType Container)) {
+        return @()
+    }
+
+    `$markers = @(
+        'mcp_servers.jianmu-ipc.env.IPC_NAME="' + `$Name + '"',
+        'mcp_servers.jianmu-ipc.env.IPC_NAME=\"' + `$Name + '\"',
+        'IPC_NAME="' + `$Name + '"',
+        'IPC_NAME=\"' + `$Name + '\"',
+        '"ipc_name":"' + `$Name + '"',
+        '"IPC_NAME":"' + `$Name + '"'
+    )
+
+    `$paths = @()
+    `$rg = Get-Command rg -ErrorAction SilentlyContinue
+    if (`$null -ne `$rg) {
+        `$rgArgs = @('--files-with-matches', '--fixed-strings', '--glob', '*.jsonl')
+        foreach (`$marker in `$markers) {
+            `$rgArgs += @('-e', `$marker)
+        }
+        `$rgArgs += @('--', `$sessionsRoot)
+        `$paths = @(& `$rg.Source @rgArgs 2>`$null)
+    }
+
+    if (`$paths.Count -eq 0) {
+        foreach (`$jsonl in (Get-ChildItem -Path `$sessionsRoot -Recurse -Filter '*.jsonl' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+            try {
+                `$bytes = [System.IO.File]::ReadAllBytes(`$jsonl.FullName)
+                `$text = [System.Text.Encoding]::UTF8.GetString(`$bytes)
+                foreach (`$marker in `$markers) {
+                    if (`$text.Contains(`$marker)) {
+                        `$paths += `$jsonl.FullName
+                        break
+                    }
+                }
+            } catch {}
+        }
+    }
+
+    return @(
+        `$paths |
+            Where-Object { -not [string]::IsNullOrWhiteSpace(`$_) } |
+            Sort-Object -Unique |
+            ForEach-Object {
+                `$item = Get-Item -LiteralPath `$_ -ErrorAction SilentlyContinue
+                if (`$null -ne `$item) {
+                    New-IpcxSessionRow -SessionId (Get-CodexSessionIdFromPath -Path `$item.FullName) -TranscriptPath `$item.FullName
+                }
+            } |
+            Where-Object { `$null -ne `$_ } |
+            Sort-Object LastWriteTime -Descending
+    )
+}
+
+function Get-IpcxSessionsByNameFromHub {
+    param(
+        [Parameter(Mandatory)][string]`$Name,
+        [Parameter()][int]`$Limit = 10
+    )
+
+    try {
+        `$encodedName = [System.Uri]::EscapeDataString(`$Name)
+        `$response = Invoke-WebRequest -Uri "http://127.0.0.1:3179/sessions-history?name=`$encodedName&limit=`$Limit" -TimeoutSec 2 -UseBasicParsing
+        `$rows = `$response.Content | ConvertFrom-Json
+        return @(`$rows | Where-Object {
+            (`$_.name -eq `$Name) -and
+            (`$_.runtime -eq 'codex') -and
+            (-not ([string]::IsNullOrWhiteSpace([string]`$_.sessionId)))
+        })
+    } catch {}
+
+    return @()
 }
 "@
 
@@ -363,7 +617,7 @@ function Remove-IpcxProfileBlocks {
     $skip = $false
     $depth = 0
     foreach ($line in $lines) {
-        if (-not $skip -and $line -match '^function ipcx\s*\{') {
+        if (-not $skip -and $line -match '^function (ipcx|Get-CodexHome|Get-CodexSessionsRoot|Get-IpcxSessionMapDir|Get-CodexSessionIdFromPath|New-IpcxSessionRow|Get-IpcxSessionMapRows|Get-IpcxSessionJsonls|Get-IpcxSessionsByNameFromHub)\s*\{') {
             $skip = $true
             $depth = 0
         }
@@ -406,7 +660,9 @@ foreach ($p in $profilesToInstall) {
     }
     $hasIpcx = Select-String -Path $p -Pattern '^function ipcx' -Quiet -ErrorAction SilentlyContinue
     $needsIpcxUpgrade = $hasIpcx -and !(
-        Select-String -Path $p -Pattern 'model_reasoning_effort' -Quiet -ErrorAction SilentlyContinue
+        (Select-String -Path $p -Pattern 'model_reasoning_effort' -Quiet -ErrorAction SilentlyContinue) -and
+        (Select-String -Path $p -Pattern 'Get-IpcxSessionsByNameFromHub' -Quiet -ErrorAction SilentlyContinue) -and
+        (Select-String -Path $p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue)
     )
     if ($needsIpcxUpgrade) {
         $cleanedProfile = Remove-IpcxProfileBlocks -Content (Get-Content -Path $p -Raw -ErrorAction SilentlyContinue)

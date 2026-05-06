@@ -5,6 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createCodexPtyUserInputTracker,
+  CODEX_PTY_SUBMIT_SEQUENCE,
+  CODEX_PTY_SUBMIT_SEQUENCE_NAME,
   createCodexPtyBridgeReady,
   enqueueCodexPtyPrompt,
   formatCodexPtyPrompt,
@@ -111,6 +113,25 @@ test('user input tracker treats keypad Enter escape sequence as submit', () => {
   tracker.recordUserInput('\x1bOM');
   nowMs += 1000;
   assert.equal(tracker.getState().reason, 'user-turn-active');
+
+  tracker.markCodexPromptReady();
+  assert.equal(tracker.getState().defer, false);
+});
+
+test('user input tracker treats bridge right-arrow CR sequence as submit', () => {
+  let nowMs = 1000;
+  const tracker = createCodexPtyUserInputTracker({
+    now: () => nowMs,
+    idleGraceMs: 1000,
+  });
+
+  tracker.recordUserInput('draft');
+  assert.equal(tracker.getState().reason, 'user-input-buffer');
+
+  tracker.recordUserInput(CODEX_PTY_SUBMIT_SEQUENCE);
+  nowMs += 1000;
+  assert.equal(tracker.getState().reason, 'user-turn-active');
+  assert.equal(tracker.getState().draftChars, 0);
 
   tracker.markCodexPromptReady();
   assert.equal(tracker.getState().defer, false);
@@ -255,7 +276,7 @@ test('queue processor leaves IPC queued while user draft exists and flushes afte
 
     assert.equal(processedAfterGrace.length, 1);
     assert.match(writes[0], /^← ipc: /);
-    assert.equal(writes[1], '\r');
+    assert.equal(writes[1], CODEX_PTY_SUBMIT_SEQUENCE);
     assert.equal((await readdir(paths.queueDir)).length, 0);
     ackFiles = await readdir(paths.ackDir);
     assert.equal(ackFiles.length, 1);
@@ -407,9 +428,11 @@ test('queue processor writes prompt to pty and produces ack consumed by enqueue'
     assert.match(ack.dispatchedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(writes.length, 2);
     assert.match(writes[0], /^← ipc: /);
-    assert.equal(writes[1], '\r');
+    assert.equal(writes[1], CODEX_PTY_SUBMIT_SEQUENCE);
     assert.equal(ack.writeCount, 2);
     assert.equal(ack.submitDelayMs, 0);
+    assert.equal(ack.submitSequence, CODEX_PTY_SUBMIT_SEQUENCE_NAME);
+    assert.equal(ack.submitBytesHex, '1b5b430d');
 
     const ackFiles = await readdir(paths.ackDir);
     assert.equal(ackFiles.length, 1);

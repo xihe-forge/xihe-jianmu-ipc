@@ -314,13 +314,15 @@ describe('Phase 2 K.S Codex title wrapper', () => {
     assert.equal(result.code, 0);
     assert.deepEqual(writeEvents(result).map((event) => event.data), [
       '← ipc: test bridge prompt',
-      '\r',
+      '\x1b[C\r',
     ]);
     const ack = JSON.parse(await readFile(join(ackDir, `${queueName}.ack.json`), 'utf8'));
     assert.equal(ack.ok, true);
     assert.equal(ack.msgId, 'msg-test');
     assert.equal(ack.submitDelayMs, 0);
     assert.equal(ack.writeCount, 2);
+    assert.equal(ack.submitSequence, 'right-arrow-cr');
+    assert.equal(ack.submitBytesHex, '1b5b430d');
   });
 
   test('records IPC_NAME to a local Codex session map for resume lookup', async () => {

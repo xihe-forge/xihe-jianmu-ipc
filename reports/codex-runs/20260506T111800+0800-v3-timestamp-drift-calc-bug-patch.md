@@ -64,5 +64,7 @@ Tests changed in `xihe-tianshu-harness/domains/software/hooks/timestamp-drift-wa
 
 - harness TODO: `xihe-tianshu-harness/handover/TODO.md` appended 2026-05-06T11:32+08 entry.
 - cross-repo report: this file.
-- jianmu-pm IPC ack: `msg_1778038452028_6b83a1` accepted, online=true, buffered=false.
+- jianmu-pm IPC ack:
+  - pre-commit verify ack `msg_1778038452028_6b83a1` accepted, online=true, buffered=false.
+  - final push-complete ack `msg_1778038648575_984a48` accepted, online=true, buffered=false.
 - portfolio broadcast: skipped by requirement.

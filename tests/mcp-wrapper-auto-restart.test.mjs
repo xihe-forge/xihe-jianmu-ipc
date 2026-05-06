@@ -43,10 +43,14 @@ function createHarness() {
   const logs = [];
   const restartAnnouncements = [];
   const stdin = new EventEmitter();
+  const processLike = new EventEmitter();
+  processLike.pid = 4242;
   const stdout = { write: () => true };
   const stderr = { write: (data) => logs.push(String(data)) };
+  const spawnCalls = [];
 
-  const spawnFn = () => {
+  const spawnFn = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
     const child = new FakeChild(nextPid++);
     children.push(child);
     return child;
@@ -64,7 +68,9 @@ function createHarness() {
     children,
     timers,
     logs,
+    spawnCalls,
     stdin,
+    processLike,
     stdout,
     stderr,
     spawnFn,
@@ -91,6 +97,42 @@ function createHarness() {
 }
 
 describe('AC-WRAPPER-001 mcp-wrapper child exit auto-restart', () => {
+  test('AC-WRAPPER-001-env: wrapper assigns stable child IPC_DEFAULT_NAME when Codex does not pass IPC_NAME', async () => {
+    const { createMcpWrapper } = await loadWrapper();
+    const harness = createHarness();
+    const wrapper = createMcpWrapper({
+      ...harness,
+      env: {
+        IPC_HUB_HOST: '127.0.0.1',
+        IPC_PORT: '3179',
+      },
+    });
+
+    wrapper.startChild();
+    assert.equal(harness.spawnCalls[0].options.env.IPC_DEFAULT_NAME, 'mcp-wrapper-4242');
+    assert.equal(harness.spawnCalls[0].options.env.IPC_WRAPPER_ASSIGNED_DEFAULT_NAME, '1');
+
+    harness.children[0].exit(1, null);
+    harness.runNextTimer();
+    assert.equal(harness.spawnCalls[1].options.env.IPC_DEFAULT_NAME, 'mcp-wrapper-4242');
+  });
+
+  test('AC-WRAPPER-001-env-explicit: wrapper preserves explicit IPC_NAME', async () => {
+    const { createMcpWrapper } = await loadWrapper();
+    const harness = createHarness();
+    const wrapper = createMcpWrapper({
+      ...harness,
+      env: {
+        IPC_NAME: 'codex-explicit',
+        IPC_PORT: '3179',
+      },
+    });
+
+    wrapper.startChild();
+    assert.equal(harness.spawnCalls[0].options.env.IPC_NAME, 'codex-explicit');
+    assert.equal(harness.spawnCalls[0].options.env.IPC_DEFAULT_NAME, undefined);
+  });
+
   test('AC-WRAPPER-001-0: restart pre-announce sends portfolio broadcast payload', async () => {
     const { sendRestartPreAnnounce } = await loadWrapper();
     const calls = [];

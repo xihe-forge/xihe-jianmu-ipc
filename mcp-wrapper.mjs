@@ -36,6 +36,22 @@ function resolveWrapperName(env) {
   return env.IPC_NAME || env.IPC_DEFAULT_NAME || 'mcp-wrapper';
 }
 
+export function buildChildEnv(env = process.env, wrapperPid = process.pid) {
+  if (env.IPC_NAME || env.IPC_DEFAULT_NAME) {
+    return env;
+  }
+
+  const numericPid = Number(wrapperPid);
+  const stablePid = Number.isFinite(numericPid) && numericPid > 0
+    ? Math.trunc(numericPid)
+    : process.pid;
+  return {
+    ...env,
+    IPC_DEFAULT_NAME: `mcp-wrapper-${stablePid}`,
+    IPC_WRAPPER_ASSIGNED_DEFAULT_NAME: '1',
+  };
+}
+
 function buildRestartPreAnnounceContent({
   reason,
   delayMs,
@@ -126,10 +142,11 @@ export function createMcpWrapper(options = {}) {
   const stderr = options.stderr ?? process.stderr;
   const env = options.env ?? process.env;
   const processLike = options.processLike ?? process;
+  const childEnv = options.childEnv ?? buildChildEnv(env, processLike.pid ?? process.pid);
   const exitFn = options.exitFn ?? ((code) => process.exit(code));
   const announceRestartFn =
     options.announceRestartFn ??
-    ((detail) => sendRestartPreAnnounce({ ...detail, env }));
+    ((detail) => sendRestartPreAnnounce({ ...detail, env: childEnv }));
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? WRAPPER_SHUTDOWN_TIMEOUT_MS;
 
   let child = null;
@@ -289,7 +306,7 @@ export function createMcpWrapper(options = {}) {
 
     child = spawnFn(process.execPath, [serverPath], {
       stdio: ['pipe', 'pipe', 'inherit'],
-      env,
+      env: childEnv,
     });
     const startedChild = child;
     childStartTs = nowFn();

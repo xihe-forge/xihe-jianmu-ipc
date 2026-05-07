@@ -2,6 +2,7 @@ import http from 'node:http';
 import { createHash } from 'node:crypto';
 import {
   closeSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -15,8 +16,11 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+export const PROFILE_ENDPOINT = 'https://api.anthropic.com/api/oauth/profile';
+const USER_ID_CACHE_TTL_MS = 60 * 60 * 1000;
+
 function readJson(path) {
-  return JSON.parse(readFileSync(path, 'utf8'));
+  return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
 }
 
 function oauthFromCredentials(credentials) {
@@ -42,6 +46,125 @@ function readMarker(markerPath) {
     const parsed = JSON.parse(raw);
     if (parsed?.which === 'a' || parsed?.which === 'b') return parsed;
   } catch {}
+  return null;
+}
+
+function accessTokenPrefix(accessToken) {
+  if (!accessToken) return null;
+  return String(accessToken).slice(0, 16);
+}
+
+export function identityFromProfile(profile) {
+  const account = profile?.account ?? {};
+  const organization = profile?.organization ?? {};
+  const userId = account.uuid ?? account.id ?? profile?.user_id ?? profile?.sub ?? profile?.id ?? null;
+  if (!userId) return null;
+  return {
+    user_id: String(userId),
+    email: account.email ?? profile?.email ?? null,
+    org_id: organization.uuid ?? organization.id ?? profile?.org_id ?? profile?.organization_id ?? null,
+  };
+}
+
+export async function fetchAnthropicProfileIdentity(accessToken, { fetchImpl = globalThis.fetch } = {}) {
+  if (!accessToken || typeof fetchImpl !== 'function') return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1200);
+  try {
+    const response = await fetchImpl(PROFILE_ENDPOINT, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: controller.signal,
+    });
+    if (!response?.ok) return null;
+    return identityFromProfile(await response.json());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function readCachedIdentity(cachePath, accessToken, nowMs) {
+  const prefix = accessTokenPrefix(accessToken);
+  if (!prefix || !existsSync(cachePath)) return null;
+  try {
+    const cached = readJson(cachePath);
+    if (
+      cached?.access_token_prefix_16 === prefix &&
+      cached?.user_id &&
+      Number(cached.expires_at) > nowMs
+    ) {
+      return {
+        user_id: String(cached.user_id),
+        email: cached.email ?? null,
+        org_id: cached.org_id ?? null,
+        cache_hit: true,
+      };
+    }
+  } catch {}
+  return null;
+}
+
+function writeCachedIdentity(cachePath, accessToken, identity, nowMs) {
+  const prefix = accessTokenPrefix(accessToken);
+  if (!prefix || !identity?.user_id) return;
+  const body = {
+    access_token_prefix_16: prefix,
+    user_id: identity.user_id,
+    email: identity.email ?? null,
+    org_id: identity.org_id ?? null,
+    captured_at: new Date(nowMs).toISOString(),
+    expires_at: nowMs + USER_ID_CACHE_TTL_MS,
+  };
+  try {
+    writeFileSync(cachePath, JSON.stringify(body), { encoding: 'utf8', mode: 0o600 });
+    try { chmodSync(cachePath, 0o600); } catch {}
+  } catch {}
+}
+
+async function resolveCurrentIdentity(credentials, claudeDir, options) {
+  const oauth = oauthFromCredentials(credentials);
+  const cachePath = join(claudeDir, '.statusline-user-id-cache.json');
+  const nowMs = options.now();
+  const cached = readCachedIdentity(cachePath, oauth.accessToken, nowMs);
+  if (cached) return cached;
+
+  const identity = await options.fetchProfileIdentity(oauth.accessToken);
+  if (identity?.user_id) {
+    writeCachedIdentity(cachePath, oauth.accessToken, identity, nowMs);
+    return identity;
+  }
+
+  return null;
+}
+
+function writeIdentityMarker(markerPath, { which, identity, fingerprint, nowMs }) {
+  if (!(which === 'a' || which === 'b') || !identity?.user_id) return;
+  const marker = {
+    which,
+    user_id: identity.user_id,
+    captured_at: new Date(nowMs).toISOString(),
+  };
+  if (fingerprint) marker.fingerprint = fingerprint;
+  try {
+    mkdirSync(dirname(markerPath), { recursive: true });
+    writeFileSync(markerPath, JSON.stringify(marker), { encoding: 'utf8', mode: 0o600 });
+    try { chmodSync(markerPath, 0o600); } catch {}
+  } catch {}
+}
+
+function resolveByVaultIdentity(identity, claudeDir) {
+  if (!identity?.user_id && !identity?.email) return null;
+  const vaultDir = join(claudeDir, '.creds-vault');
+  for (const which of ['a', 'b']) {
+    const vaultPath = join(vaultDir, `account-${which}.json`);
+    if (!existsSync(vaultPath)) continue;
+    try {
+      const vaultIdentity = readJson(vaultPath)?.xihe_identity ?? {};
+      if (identity.user_id && vaultIdentity.user_id && identity.user_id === vaultIdentity.user_id) return which;
+      if (identity.email && vaultIdentity.email && identity.email === vaultIdentity.email) return which;
+    } catch {}
+  }
   return null;
 }
 
@@ -74,6 +197,8 @@ function resolveByVaultFingerprint(credentials, claudeDir) {
 
 export async function resolveAccount({
   claudeDir = join(homedir(), '.claude'),
+  fetchProfileIdentity = (accessToken) => fetchAnthropicProfileIdentity(accessToken),
+  now = () => Date.now(),
 } = {}) {
   const markerPath = join(claudeDir, '.current-account');
   const credsPath = join(claudeDir, '.credentials.json');
@@ -88,6 +213,36 @@ export async function resolveAccount({
 
   const marker = readMarker(markerPath);
   const currentFingerprint = accountFingerprint(credentials);
+  let currentIdentityResolved = false;
+  let currentIdentity = null;
+  const getCurrentIdentity = async () => {
+    if (!currentIdentityResolved) {
+      currentIdentity = await resolveCurrentIdentity(credentials, claudeDir, { fetchProfileIdentity, now });
+      currentIdentityResolved = true;
+    }
+    return currentIdentity;
+  };
+
+  if (marker?.user_id && (marker.which === 'a' || marker.which === 'b')) {
+    const identity = await getCurrentIdentity();
+    if (identity?.user_id && identity.user_id === marker.user_id) {
+      return marker.which;
+    }
+  }
+
+  if ((marker?.which === 'a' || marker?.which === 'b') && !marker?.user_id) {
+    const identity = await getCurrentIdentity();
+    if (identity?.user_id) {
+      writeIdentityMarker(markerPath, {
+        which: marker.which,
+        identity,
+        fingerprint: marker.fingerprint ?? currentFingerprint,
+        nowMs: now(),
+      });
+      return marker.which;
+    }
+  }
+
   if (
     marker?.fingerprint &&
     currentFingerprint &&
@@ -95,6 +250,20 @@ export async function resolveAccount({
     (marker.which === 'a' || marker.which === 'b')
   ) {
     return marker.which;
+  }
+
+  const identity = await getCurrentIdentity();
+  const vaultIdentityMatch = resolveByVaultIdentity(identity, claudeDir);
+  if (vaultIdentityMatch) {
+    if (!marker?.user_id) {
+      writeIdentityMarker(markerPath, {
+        which: vaultIdentityMatch,
+        identity,
+        fingerprint: currentFingerprint,
+        nowMs: now(),
+      });
+    }
+    return vaultIdentityMatch;
   }
 
   const vaultMatch = resolveByVaultFingerprint(credentials, claudeDir);

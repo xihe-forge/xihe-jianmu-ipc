@@ -10,7 +10,7 @@ import {
   watch,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   createCodexPtyBridgeReady,
   createCodexPtyUserInputTracker,
@@ -87,7 +87,10 @@ const userInputTracker = createCodexPtyUserInputTracker({
   submitAwaitTimeoutMs: codexPtySubmitAwaitTimeoutMs,
 });
 const debugPtyUserInput = process.env.IPC_CODEX_PTY_DEBUG_INPUT === '1';
+const debugPtyUserInputStderr =
+  debugPtyUserInput || process.env.IPC_CODEX_PTY_DEBUG_USER_INPUT === '1';
 const debugPtyUserInputPath = process.env.IPC_CODEX_PTY_DEBUG_INPUT_PATH || '';
+const ptyBridgeLogPath = resolvePtyBridgeLogPath(ipcName);
 
 function titleSequence(title) {
   return `\x1b]0;${title}\x07`;
@@ -139,6 +142,24 @@ function normalizePath(value) {
 
 function safeMapFileName(name) {
   return String(name).replace(/[^A-Za-z0-9_.-]/g, '_') || 'unknown';
+}
+
+function resolvePtyBridgeLogPath(name) {
+  const configured = process.env.IPC_CODEX_PTY_BRIDGE_LOG_PATH?.trim();
+  if (configured) return configured;
+  return join(
+    homedir(),
+    '.claude',
+    'jianmu-ipc-hooks',
+    `codex-pty-bridge-${safeMapFileName(name || 'unknown')}.log`,
+  );
+}
+
+function writePtyBridgeLog(line) {
+  try {
+    mkdirSync(dirname(ptyBridgeLogPath), { recursive: true });
+    appendFileSync(ptyBridgeLogPath, `[${new Date().toISOString()}] ${line}`, 'utf8');
+  } catch {}
 }
 
 function parseResumeSessionId(args) {
@@ -356,9 +377,12 @@ async function processPtyBridgeQueueOnce() {
         ) {
           lastPtyBridgeDeferLogAt = now;
           lastPtyBridgeDeferReason = state?.reason ?? null;
-          process.stderr.write(
-            `[codex-title-wrapper] pty bridge deferred: reason=${state?.reason ?? 'unknown'} draft_chars=${state?.draftChars ?? 0} pending=${state?.pendingCount ?? 0}\n`,
-          );
+          const line =
+            `[codex-title-wrapper] pty bridge deferred: reason=${state?.reason ?? 'unknown'} draft_chars=${state?.draftChars ?? 0} pending=${state?.pendingCount ?? 0}\n`;
+          writePtyBridgeLog(line);
+          if (debugPtyUserInputStderr) {
+            process.stderr.write(line);
+          }
         }
       },
       onDrop: (state) => {
@@ -400,7 +424,7 @@ process.stdin.on('data', (data) => {
   if (inputState.awaitingPromptAfterSubmit) {
     recentCodexOutput = '';
   }
-  if (debugPtyUserInput) {
+  if (debugPtyUserInputStderr) {
     const bytes = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
     const debugLine = `[codex-title-wrapper] stdin bytes=${bytes.toString('hex')} defer=${inputState.defer} reason=${inputState.reason ?? 'none'} draft_chars=${inputState.draftChars}\n`;
     process.stderr.write(

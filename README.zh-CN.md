@@ -204,7 +204,7 @@ Hub <-> Feishu Bridge / Dashboard / OpenClaw Adapter
 
 `runtime="claude"` + `host="wt"` / `spawn-fallback` 的标准启动命令是 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC 认证，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
 
-`runtime="codex"` + `interactive=true` 使用 `wt.exe ... -- cmd /k "cd /d <cwd> && codex --dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=\"<name>\"'"` 起长存 Codex；`runtime="codex"` + `interactive=false` 使用 `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -c 'mcp_servers.jianmu-ipc.env.IPC_NAME="<name>"' '<task prompt>'` 一次性派单并退出。
+`runtime="codex"` + `interactive=true` 使用 `wt.exe ... -- cmd /k "cd /d <cwd> && codex --dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=\"<name>\"' -c 'mcp_servers.jianmu-ipc.startup_timeout_sec=30'"` 起长存 Codex；`runtime="codex"` + `interactive=false` 使用 `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -c 'mcp_servers.jianmu-ipc.env.IPC_NAME="<name>"' -c 'mcp_servers.jianmu-ipc.startup_timeout_sec=30' '<task prompt>'` 一次性派单并退出。
 
 `cwd` 属于 spawn 契约：调用方显式传什么目录，新 session 就从什么目录启动；不传则为兼容旧行为，回退到调用方 `process.cwd()`。
 

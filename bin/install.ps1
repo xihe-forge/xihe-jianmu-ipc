@@ -270,7 +270,8 @@ function ipcx {
         '--dangerously-bypass-approvals-and-sandbox',
         '-c', 'model_reasoning_effort="xhigh"',
         '-c', ('mcp_servers.jianmu-ipc.env.IPC_NAME="' + `$Name + '"'),
-        '-c', 'mcp_servers.jianmu-ipc.env.IPC_RUNTIME="codex"'
+        '-c', 'mcp_servers.jianmu-ipc.env.IPC_RUNTIME="codex"',
+        '-c', 'mcp_servers.jianmu-ipc.startup_timeout_sec=30'
     )
     `$codexArgs = @()
 
@@ -693,6 +694,7 @@ foreach ($p in $profilesToInstall) {
     $needsIpcxUpgrade = $hasIpcx -and !(
         (Select-String -Path $p -Pattern 'model_reasoning_effort' -Quiet -ErrorAction SilentlyContinue) -and
         (Select-String -Path $p -Pattern 'Get-IpcxSessionsByNameFromHub' -Quiet -ErrorAction SilentlyContinue) -and
+        (Select-String -Path $p -Pattern 'startup_timeout_sec' -Quiet -ErrorAction SilentlyContinue) -and
         (Select-String -Path $p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue)
     )
     if ($needsIpcxUpgrade) {

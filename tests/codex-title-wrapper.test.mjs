@@ -160,7 +160,13 @@ async function readEvents(logPath) {
     .map((line) => JSON.parse(line));
 }
 
-async function runWrapper({ env = {}, input = null, timeoutMs = 1500 }) {
+async function runWrapper({
+  env = {},
+  input = null,
+  inputDelayMs = 10,
+  timeoutMs = 1500,
+  afterSpawn = null,
+}) {
   const logPath = join(tempDir, `${Math.random().toString(16).slice(2)}.jsonl`);
 
   return await new Promise((resolve, reject) => {
@@ -190,10 +196,14 @@ async function runWrapper({ env = {}, input = null, timeoutMs = 1500 }) {
       stderr += chunk;
     });
 
+    if (typeof afterSpawn === 'function') {
+      afterSpawn(child);
+    }
+
     if (input !== null) {
       setTimeout(() => {
         child.stdin.write(input);
-      }, 10);
+      }, inputDelayMs);
     }
 
     child.once('error', (error) => {
@@ -307,7 +317,7 @@ describe('Phase 2 K.S Codex title wrapper', () => {
         IPC_NAME: sessionName,
         IPC_CODEX_PTY_BRIDGE_DIR: bridgeRoot,
         IPC_CODEX_PTY_SUBMIT_DELAY_MS: '0',
-        PTY_MOCK_EXIT_MS: '200',
+        PTY_MOCK_EXIT_MS: '900',
       },
     });
 
@@ -323,6 +333,108 @@ describe('Phase 2 K.S Codex title wrapper', () => {
     assert.equal(ack.writeCount, 2);
     assert.equal(ack.submitSequence, 'right-arrow-cr');
     assert.equal(ack.submitBytesHex, '1b5b430d');
+  });
+
+  test('Codex PTY bridge deferred logs go to file without stderr by default', async () => {
+    const bridgeRoot = join(tempDir, 'bridge-defer');
+    const sessionName = `test-bridge-defer-${Date.now()}`;
+    const sessionDir = join(bridgeRoot, sessionName);
+    const queueDir = join(sessionDir, 'queue');
+    const logPath = join(tempDir, `${sessionName}.log`);
+    await mkdir(queueDir, { recursive: true });
+
+    const result = await runWrapper({
+      input: 'hello',
+      inputDelayMs: 5,
+      env: {
+        IPC_NAME: sessionName,
+        IPC_CODEX_PTY_BRIDGE_DIR: bridgeRoot,
+        IPC_CODEX_PTY_BRIDGE_LOG_PATH: logPath,
+        IPC_CODEX_PTY_SUBMIT_DELAY_MS: '0',
+        PTY_MOCK_EXIT_MS: '900',
+      },
+      afterSpawn: () => {
+        setTimeout(() => {
+          void writeFile(
+            join(queueDir, '001-msg-defer.json'),
+            `${JSON.stringify({ msgId: 'msg-defer', prompt: 'queued while typing' })}\n`,
+            'utf8',
+          );
+        }, 50);
+      },
+    });
+
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.stderr, /pty bridge deferred/);
+    const log = await readFile(logPath, 'utf8');
+    assert.match(log, /pty bridge deferred: reason=user-input-buffer/);
+  });
+
+  test('Codex PTY bridge deferred stderr is available behind debug flag', async () => {
+    const bridgeRoot = join(tempDir, 'bridge-defer-debug');
+    const sessionName = `test-bridge-defer-debug-${Date.now()}`;
+    const sessionDir = join(bridgeRoot, sessionName);
+    const queueDir = join(sessionDir, 'queue');
+    const logPath = join(tempDir, `${sessionName}.log`);
+    await mkdir(queueDir, { recursive: true });
+
+    const result = await runWrapper({
+      input: 'hello',
+      inputDelayMs: 5,
+      env: {
+        IPC_NAME: sessionName,
+        IPC_CODEX_PTY_BRIDGE_DIR: bridgeRoot,
+        IPC_CODEX_PTY_BRIDGE_LOG_PATH: logPath,
+        IPC_CODEX_PTY_DEBUG_USER_INPUT: '1',
+        IPC_CODEX_PTY_SUBMIT_DELAY_MS: '0',
+        PTY_MOCK_EXIT_MS: '900',
+      },
+      afterSpawn: () => {
+        setTimeout(() => {
+          void writeFile(
+            join(queueDir, '001-msg-defer-debug.json'),
+            `${JSON.stringify({ msgId: 'msg-defer-debug', prompt: 'queued while typing' })}\n`,
+            'utf8',
+          );
+        }, 50);
+      },
+    });
+
+    assert.equal(result.code, 0);
+    assert.match(result.stderr, /pty bridge deferred: reason=user-input-buffer/);
+    const log = await readFile(logPath, 'utf8');
+    assert.match(log, /pty bridge deferred: reason=user-input-buffer/);
+  });
+
+  test('Codex PTY bridge drop remains visible on stderr', async () => {
+    const bridgeRoot = join(tempDir, 'bridge-drop');
+    const sessionName = `test-bridge-drop-${Date.now()}`;
+    const sessionDir = join(bridgeRoot, sessionName);
+    const queueDir = join(sessionDir, 'queue');
+    await mkdir(queueDir, { recursive: true });
+    await writeFile(
+      join(queueDir, '001-msg-drop.json'),
+      `${JSON.stringify({ msgId: 'msg-drop', prompt: 'drop me' })}\n`,
+      'utf8',
+    );
+    await writeFile(
+      join(queueDir, '002-msg-keep.json'),
+      `${JSON.stringify({ msgId: 'msg-keep', prompt: 'keep me' })}\n`,
+      'utf8',
+    );
+
+    const result = await runWrapper({
+      env: {
+        IPC_NAME: sessionName,
+        IPC_CODEX_PTY_BRIDGE_DIR: bridgeRoot,
+        IPC_CODEX_PTY_QUEUE_MAX_ENTRIES: '1',
+        IPC_CODEX_PTY_SUBMIT_DELAY_MS: '0',
+        PTY_MOCK_EXIT_MS: '900',
+      },
+    });
+
+    assert.equal(result.code, 0);
+    assert.match(result.stderr, /pty bridge dropped: reason=queue-cap-exceeded msg_id=msg-drop/);
   });
 
   test('records IPC_NAME to a local Codex session map for resume lookup', async () => {

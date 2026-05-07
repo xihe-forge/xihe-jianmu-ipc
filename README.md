@@ -44,6 +44,7 @@ Codex `~/.codex/config.toml`:
 command = "npx"
 args = ["-y", "@xihe-forge/jianmu-ipc", "mcp"]
 env = { IPC_NAME = "codex-main", IPC_RUNTIME = "codex" }
+startup_timeout_sec = 30
 ```
 
 Claude Code `.mcp.json`:
@@ -487,7 +488,7 @@ Spawned sessions automatically know their IPC name and are instructed to report 
 
 `runtime="claude"` + `host="wt"` / `spawn-fallback` 的 canonical 启动命令为 `"C:\Users\jolen\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe" --dangerously-skip-permissions --dangerously-load-development-channels server:ipc`。session 名通过 `IPC_NAME` 环境变量传入，不使用 `--session-name` / `--resume`；若启用了 IPC auth，完整 `IPC_AUTH_TOKEN` 应从目标 cwd 的 `.mcp.json` 读取。
 
-`runtime="codex"` + `interactive=true` 使用 `wt.exe ... -- cmd /k "cd /d <cwd> && codex --dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=\"<name>\"'"` 起长存 Codex；`runtime="codex"` + `interactive=false` 使用 `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -c 'mcp_servers.jianmu-ipc.env.IPC_NAME="<name>"' '<task prompt>'` 一次性派单并退出。
+`runtime="codex"` + `interactive=true` 使用 `wt.exe ... -- cmd /k "cd /d <cwd> && codex --dangerously-bypass-approvals-and-sandbox -c 'mcp_servers.jianmu-ipc.env.IPC_NAME=\"<name>\"' -c 'mcp_servers.jianmu-ipc.startup_timeout_sec=30'"` 起长存 Codex；`runtime="codex"` + `interactive=false` 使用 `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -c 'mcp_servers.jianmu-ipc.env.IPC_NAME="<name>"' -c 'mcp_servers.jianmu-ipc.startup_timeout_sec=30' '<task prompt>'` 一次性派单并退出。
 
 `cwd` 是 spawn 契约的一部分。调用方若显式传入，则新 session 从该目录启动；未传时保持兼容，回退到调用方 `process.cwd()`。
 

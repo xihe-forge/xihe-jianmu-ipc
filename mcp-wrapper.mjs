@@ -26,6 +26,8 @@ export const RESTART_BACKOFF_MAX_MS = RESTART_BACKOFF_DELAYS_MS.at(-1);
 export const RESTART_PRE_ANNOUNCE_TOPIC = 'feedback_portfolio_restart_pre_announce';
 export const STABILITY_WINDOW_MS = 60_000;
 export const WRAPPER_SHUTDOWN_TIMEOUT_MS = 4_500;
+export const WRAPPER_STARTUP_RETRY_WINDOW_MS = 10_000;
+export const WRAPPER_STARTUP_IMMEDIATE_RETRIES = 1;
 
 function parseHubPort(value) {
   const port = Number.parseInt(value ?? '', 10);
@@ -148,6 +150,9 @@ export function createMcpWrapper(options = {}) {
     options.announceRestartFn ??
     ((detail) => sendRestartPreAnnounce({ ...detail, env: childEnv }));
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? WRAPPER_SHUTDOWN_TIMEOUT_MS;
+  const startupRetryWindowMs = options.startupRetryWindowMs ?? WRAPPER_STARTUP_RETRY_WINDOW_MS;
+  const startupImmediateRetries =
+    options.startupImmediateRetries ?? WRAPPER_STARTUP_IMMEDIATE_RETRIES;
 
   let child = null;
   let lastMtime = 0;
@@ -161,6 +166,8 @@ export function createMcpWrapper(options = {}) {
   let intentionalRestart = false;
   let isShuttingDown = false;
   let didExit = false;
+  let startupImmediateRetryCount = 0;
+  const wrapperStartedAt = nowFn();
   const signalHandlers = new Map();
 
   function getRestartBackoffMs() {
@@ -178,6 +185,13 @@ export function createMcpWrapper(options = {}) {
 
   function resetRestartBackoff() {
     restartBackoffIndex = 0;
+  }
+
+  function shouldUseStartupImmediateRetry() {
+    return (
+      startupImmediateRetryCount < startupImmediateRetries &&
+      nowFn() - wrapperStartedAt < startupRetryWindowMs
+    );
   }
 
   function getMtime() {
@@ -353,7 +367,11 @@ export function createMcpWrapper(options = {}) {
         return;
       }
 
-      const delayMs = getRestartBackoffMs();
+      const useStartupImmediateRetry = shouldUseStartupImmediateRetry();
+      const delayMs = useStartupImmediateRetry ? 0 : getRestartBackoffMs();
+      if (useStartupImmediateRetry) {
+        startupImmediateRetryCount += 1;
+      }
       preAnnounceRestart({
         reason: 'child-exit',
         delayMs,
@@ -364,7 +382,9 @@ export function createMcpWrapper(options = {}) {
       });
       log(`scheduling restart in ${delayMs}ms`);
       scheduleStart(delayMs);
-      advanceRestartBackoff();
+      if (!useStartupImmediateRetry) {
+        advanceRestartBackoff();
+      }
     });
 
     child.on('error', (err) => {
@@ -459,6 +479,8 @@ export function createMcpWrapper(options = {}) {
       restartBackoffMs: getRestartBackoffMs(),
       restartBackoffIndex,
       childStartTs,
+      startupImmediateRetryCount,
+      wrapperStartedAt,
       intentionalRestart,
       isShuttingDown,
     }),

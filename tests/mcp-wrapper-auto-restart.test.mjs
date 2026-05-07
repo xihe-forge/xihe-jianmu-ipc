@@ -77,6 +77,7 @@ function createHarness() {
     setTimeoutFn,
     setIntervalFn,
     statFn,
+    startupImmediateRetries: 0,
     announceRestartFn: (detail) => {
       restartAnnouncements.push(detail);
       return { ok: true, id: `announce-${restartAnnouncements.length}` };
@@ -194,6 +195,30 @@ describe('AC-WRAPPER-001 mcp-wrapper child exit auto-restart', () => {
     assert.equal(harness.timers[0].delay, 1000);
     harness.runNextTimer();
     assert.equal(harness.children.length, 2);
+  });
+
+  test('AC-WRAPPER-001-startup: first startup child crash retries immediately before backoff', async () => {
+    const { createMcpWrapper } = await loadWrapper();
+    const harness = createHarness();
+    const wrapper = createMcpWrapper({
+      ...harness,
+      startupImmediateRetries: 1,
+      startupRetryWindowMs: 10_000,
+    });
+
+    wrapper.startChild();
+    harness.children[0].exit(1, null);
+
+    assert.equal(harness.restartAnnouncements[0].delayMs, 0);
+    assert.equal(harness.timers[0].delay, 0);
+    assert.equal(wrapper.getState().startupImmediateRetryCount, 1);
+    assert.equal(wrapper.getState().restartBackoffIndex, 0);
+
+    harness.runNextTimer();
+    harness.children[1].exit(1, null);
+    assert.equal(harness.restartAnnouncements[1].delayMs, 1000);
+    assert.equal(harness.timers[0].delay, 1000);
+    assert.equal(wrapper.getState().restartBackoffIndex, 1);
   });
 
   test('AC-WRAPPER-001-b: consecutive unintentional exits use capped backoff sequence', async () => {

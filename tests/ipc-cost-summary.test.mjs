@@ -45,6 +45,10 @@ test('listTools: exposes ipc_cost_summary and ipc_token_status schemas', () => {
     listed.find((tool) => tool.name === 'ipc_cost_summary').inputSchema.properties.group_by.enum,
     ['none', 'ipc_name', 'model'],
   );
+  assert.deepEqual(
+    listed.find((tool) => tool.name === 'ipc_cost_summary').inputSchema.properties.granularity.enum,
+    ['hour', 'day'],
+  );
 });
 
 test('ipc_cost_summary: delegates to adapter with normalized args', async () => {
@@ -56,19 +60,25 @@ test('ipc_cost_summary: delegates to adapter with normalized args', async () => 
         ok: true,
         window: args.window,
         group_by: args.group_by,
+        granularity: args.granularity,
         totals: { total_tokens: 42, total_cost_usd: 0.12 },
         groups: [],
       };
     },
   });
 
-  const result = await tools.handleToolCall('ipc_cost_summary', { window: '7d', group_by: 'model' });
+  const result = await tools.handleToolCall('ipc_cost_summary', {
+    window: '7d',
+    group_by: 'model',
+    granularity: 'hour',
+  });
 
-  assert.deepEqual(calls, [{ window: '7d', group_by: 'model' }]);
+  assert.deepEqual(calls, [{ window: '7d', group_by: 'model', granularity: 'hour' }]);
   assert.deepEqual(parseToolJson(result), {
     ok: true,
     window: '7d',
     group_by: 'model',
+    granularity: 'hour',
     totals: { total_tokens: 42, total_cost_usd: 0.12 },
     groups: [],
   });
@@ -88,6 +98,22 @@ test('ipc_cost_summary: rejects invalid windows before adapter call', async () =
   assert.equal(called, false);
   assert.equal(result.isError, true);
   assert.match(parseToolJson(result).error, /window/i);
+});
+
+test('ipc_cost_summary: rejects invalid granularity before adapter call', async () => {
+  let called = false;
+  const tools = createHarness({
+    getCostSummary: async () => {
+      called = true;
+      return { ok: true };
+    },
+  });
+
+  const result = await tools.handleToolCall('ipc_cost_summary', { granularity: 'minute' });
+
+  assert.equal(called, false);
+  assert.equal(result.isError, true);
+  assert.match(parseToolJson(result).error, /granularity/i);
 });
 
 test('ipc_token_status: delegates to adapter and returns 5h quota status', async () => {

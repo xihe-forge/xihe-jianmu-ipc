@@ -595,16 +595,17 @@ ipc_update_session(name="tech-worker", projects=["xihe-jianmu-ipc", "_portfolio"
 
 ### `ipc_cost_summary`
 
-查询 ADR-013 ccusage 成本聚合，覆盖今日、7 天、30 天或全部历史，可按 IPC/project 名或模型分组。
-Query ADR-013 ccusage cost totals for today, 7 days, 30 days, or all history, optionally grouped by IPC/project name or model.
+查询 ADR-013 ccusage 成本聚合，覆盖今日、7 天、30 天或全部历史，可按 IPC/project 名或模型分组；`granularity="hour"` 返回小时桶矩阵。
+Query ADR-013 ccusage cost totals for today, 7 days, 30 days, or all history, optionally grouped by IPC/project name or model. `granularity="hour"` returns hourly bucket matrices.
 
-| Param      | Type   | Required | Description                    |
-| ---------- | ------ | -------- | ------------------------------ |
-| `window`   | string | no       | `today`, `7d`, `30d`, or `all` |
-| `group_by` | string | no       | `none`, `ipc_name`, or `model` |
+| Param         | Type   | Required | Description                                      |
+| ------------- | ------ | -------- | ------------------------------------------------ |
+| `window`      | string | no       | `today`, `7d`, `30d`, or `all`                   |
+| `group_by`    | string | no       | `none`, `ipc_name`, or `model`                   |
+| `granularity` | string | no       | `hour` or `day`; defaults to `hour` for `today` |
 
 ```
-ipc_cost_summary(window="today")
+ipc_cost_summary(window="today", group_by="ipc_name", granularity="hour")
 ipc_cost_summary(window="30d", group_by="model")
 ```
 

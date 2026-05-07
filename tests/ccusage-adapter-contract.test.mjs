@@ -119,10 +119,142 @@ test('getTokenStatus: normalizes active 5h block quota fields', async () => {
   assert.equal(status.resets_at, resetsAt.toISOString());
 });
 
+test('getCostSummary: daily today uses local calendar date for ccusage since', async () => {
+  const calls = [];
+  const summary = await getCostSummary(
+    { window: 'today', group_by: 'none', granularity: 'day' },
+    {
+      now: new Date(2026, 4, 7, 12, 0, 0),
+      loadDailyUsageData: async (options) => {
+        calls.push(options);
+        return [];
+      },
+    },
+  );
+
+  assert.equal(summary.ok, true);
+  assert.equal(calls[0].since, '20260507');
+});
+
+test('getCostSummary: hourly buckets aggregate transcript rows by IPC name with cache', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccusage-hourly-'));
+  const projectDir = join(root, 'projects', 'D--workspace-ai-research-xiheAi');
+  mkdirSync(projectDir, { recursive: true });
+  const cacheDbPath = join(root, 'hourly-cache.db');
+  const now = new Date(2026, 4, 7, 12, 0, 0);
+  const sessionAlpha = join(projectDir, 'session-alpha.jsonl');
+  const sessionBeta = join(projectDir, 'session-beta.jsonl');
+  writeFileSync(sessionAlpha, [
+    JSON.stringify(usageRow({
+      timestamp: new Date(2026, 4, 7, 0, 15, 0).toISOString(),
+      sessionId: 'session-alpha',
+      requestId: 'req-a1',
+      messageId: 'msg-a1',
+      model: 'claude-opus-4-7',
+      input: 10,
+      output: 5,
+      costUSD: 0.01,
+    })),
+    JSON.stringify(usageRow({
+      timestamp: new Date(2026, 4, 7, 0, 16, 0).toISOString(),
+      sessionId: 'session-alpha',
+      requestId: 'req-a1',
+      messageId: 'msg-a1',
+      model: 'claude-opus-4-7',
+      input: 10,
+      output: 5,
+      costUSD: 0.01,
+    })),
+    JSON.stringify(usageRow({
+      timestamp: new Date(2026, 4, 7, 1, 5, 0).toISOString(),
+      sessionId: 'session-alpha',
+      requestId: 'req-a2',
+      messageId: 'msg-a2',
+      model: 'claude-opus-4-7',
+      input: 20,
+      output: 10,
+      costUSD: 0.02,
+    })),
+  ].join('\n') + '\n');
+  writeFileSync(sessionBeta, `${JSON.stringify(usageRow({
+    timestamp: new Date(2026, 4, 7, 23, 55, 0).toISOString(),
+    sessionId: 'session-beta',
+    requestId: 'req-b1',
+    messageId: 'msg-b1',
+    model: 'claude-opus-4-7',
+    input: 30,
+    output: 15,
+    costUSD: 0.03,
+  }))}\n`);
+
+  const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = root;
+  try {
+    const summary = await getCostSummary(
+      { window: 'today', group_by: 'ipc_name', granularity: 'hour' },
+      {
+        now,
+        cacheDbPath,
+        sessionNameMap: new Map([
+          ['session-alpha', 'alpha-ipc'],
+          ['session-beta', 'beta-ipc'],
+        ]),
+        costForEntry: async (data) => data.costUSD ?? 0,
+      },
+    );
+
+    assert.equal(summary.ok, true);
+    assert.equal(summary.granularity, 'hour');
+    assert.equal(summary.bucket_count, 24);
+    assert.equal(summary.cache.hit, false);
+    assert.equal(summary.cache.files_scanned, 2);
+    assert.equal(summary.totals.total_cost_usd, 0.06);
+    assert.equal(summary.totals.total_tokens, 90);
+    assert.equal(summary.message_count, 3);
+    assert.deepEqual(summary.groups.map((group) => group.key).sort(), ['alpha-ipc', 'beta-ipc']);
+
+    const alpha = summary.groups.find((group) => group.key === 'alpha-ipc');
+    const beta = summary.groups.find((group) => group.key === 'beta-ipc');
+    assert.equal(alpha.total_cost_usd, 0.03);
+    assert.equal(alpha.total_tokens, 45);
+    assert.equal(alpha.message_count, 2);
+    assert.equal(alpha.buckets[0].total_cost_usd, 0.01);
+    assert.equal(alpha.buckets[1].total_cost_usd, 0.02);
+    assert.equal(beta.buckets[23].total_cost_usd, 0.03);
+    assert.equal(
+      roundForAssert(summary.buckets.reduce((sum, bucket) => sum + bucket.total_cost_usd, 0)),
+      summary.totals.total_cost_usd,
+    );
+
+    const cached = await getCostSummary(
+      { window: 'today', group_by: 'ipc_name', granularity: 'hour' },
+      {
+        now,
+        cacheDbPath,
+        sessionNameMap: new Map([
+          ['session-alpha', 'alpha-ipc'],
+          ['session-beta', 'beta-ipc'],
+        ]),
+        costForEntry: async (data) => data.costUSD ?? 0,
+      },
+    );
+    assert.equal(cached.cache.hit, true);
+    assert.equal(cached.cache.files_scanned, 0);
+    assert.equal(cached.totals.total_cost_usd, summary.totals.total_cost_usd);
+  } finally {
+    if (originalClaudeConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('adapter contract: fake upstream breaking change fails loud', async () => {
   await assert.rejects(
     getCostSummary(
-      { window: 'today', group_by: 'model' },
+      { window: 'today', group_by: 'model', granularity: 'day' },
       {
         loadDailyUsageData: async () => [
           {
@@ -136,3 +268,7 @@ test('adapter contract: fake upstream breaking change fails loud', async () => {
     /ccusage contract/i,
   );
 });
+
+function roundForAssert(value) {
+  return Math.round((value + Number.EPSILON) * 1000000) / 1000000;
+}

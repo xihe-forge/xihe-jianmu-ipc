@@ -58,6 +58,9 @@ try {
 function Invoke-WebRequest {
     param([string]`$Uri, [int]`$TimeoutSec, [switch]`$UseBasicParsing)
     Write-Output "HUB_TIMEOUT=`$TimeoutSec"
+    if (`$Uri -like '*sessions-history*') {
+        return [pscustomobject]@{ Content = '[]' }
+    }
     [pscustomobject]@{ Content = '[{"name":"taiwei-director","sessionId":"$directorOnlineId","transcriptPath":"D:/tmp/current-director.jsonl"},{"name":"taiwei-tester","sessionId":"99999999-9999-9999-9999-999999999999","transcriptPath":null}]' }
 }
 "@
@@ -76,7 +79,9 @@ function Invoke-WebRequest {
 }
 "@
     $cases = @(
-        @{ Name = 'fresh'; Command = "$hubOnline`n. $quotedProfilePath; ipc taiwei-director"; Expect = 'NO_RESUME' },
+        @{ Name = 'fresh'; Command = "$hubOnline`n. $quotedProfilePath; ipc taiwei-director"; Expect = "--effort|max|--dangerously-skip-permissions"; ExtraReject = '--resume' },
+        @{ Name = 'role-only-harness'; Command = "$hubOnline`n. $quotedProfilePath; ipc -Role harness"; Expect = "--effort|max|--dangerously-skip-permissions"; ExtraReject = '--resume' },
+        @{ Name = 'role-designer-high'; Command = "$hubOnline`n. $quotedProfilePath; ipc dogfood-designer -Role designer"; Expect = "--effort|high|--dangerously-skip-permissions"; ExtraReject = '--resume' },
         @{ Name = 'hub-latest'; Command = "$hubOnline`n. $quotedProfilePath; ipc taiwei-director -resume"; Expect = "--resume|$directorOnlineId" },
         @{ Name = 'hub-head1-marker-latest'; Command = "$hubOnline`n. $quotedProfilePath; ipc taiwei-director -resume 1"; Expect = "--resume|$directorNewId" },
         @{ Name = 'offline-fallback-latest'; Command = "$hubOffline`n. $quotedProfilePath; ipc taiwei-director -resume 0"; Expect = "--resume|$directorNewId" },
@@ -92,18 +97,15 @@ function Invoke-WebRequest {
         $env:APPDATA = $appData
         $env:USERPROFILE = $userProfile
         $output = & $ShellExe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | Out-String
+        $normalizedOutput = ($output -replace "`e\[[0-9;]*m", '') -replace '\s+', ' '
 
         $pass = $false
-        if ($case.Expect -eq 'NO_RESUME') {
-            $pass = ($output -match 'CLAUDE_ARGS=--dangerously-skip-permissions') -and ($output -notmatch '--resume')
-        } else {
-            $pass = $output -match [regex]::Escape($case.Expect)
-        }
+        $pass = $normalizedOutput -match [regex]::Escape($case.Expect)
         if ($pass -and $case.ContainsKey('ExtraExpect')) {
-            $pass = $output -match [regex]::Escape($case.ExtraExpect)
+            $pass = $normalizedOutput -match [regex]::Escape($case.ExtraExpect)
         }
         if ($pass -and $case.ContainsKey('ExtraReject')) {
-            $pass = $output -notmatch [regex]::Escape($case.ExtraReject)
+            $pass = $normalizedOutput -notmatch [regex]::Escape($case.ExtraReject)
         }
 
         if (-not $pass) {

@@ -25,10 +25,38 @@ if ($profilesToInstall.Count -eq 0) {
 $funcCode = @"
 function ipc {
     param(
-        [Parameter(Mandatory)][string]`$Name,
+        [Parameter(Position=0)][string]`$Name,
+        [Parameter()][string]`$Role,
         [Parameter()][switch]`$resume,
         [Parameter(ValueFromRemainingArguments=`$true)][object[]]`$rest
     )
+
+    if ([string]::IsNullOrWhiteSpace(`$Name)) {
+        if ([string]::IsNullOrWhiteSpace(`$Role)) {
+            Write-Error "Name is required. Use: ipc <name> [-Role <role>] or ipc -Role <role>."
+            return
+        }
+        `$Name = `$Role
+    }
+    if ([string]::IsNullOrWhiteSpace(`$Role)) {
+        `$Role = `$Name
+    }
+
+    `$roleKey = `$Role.Trim().ToLowerInvariant()
+    `$governanceEffortRoles = @(
+        'harness',
+        'director',
+        'architect',
+        'jianmu-pm',
+        'taiwei-pm',
+        'taiwei-architect',
+        'taiwei-director'
+    )
+    `$effortLevel = 'high'
+    if (`$governanceEffortRoles -contains `$roleKey) {
+        `$effortLevel = 'max'
+    }
+
     `$env:IPC_NAME = `$Name
 
     `$node = 'D:\software\ide\nodejs\node.exe'
@@ -118,6 +146,7 @@ function ipc {
             return
         }
     }
+    `$claudeArgs += @('--effort', `$effortLevel)
     `$claudeArgs += @('--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:ipc')
 
     Push-Location `$projectRoot
@@ -648,7 +677,9 @@ foreach ($p in $profilesToInstall) {
     $needsIpcUpgrade = $hasIpc -and (
         ($ipcMatches.Count -gt 1) -or
         !(Select-String -Path $p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue) -or
-        !(Select-String -Path $p -Pattern 'Get-IpcSessionsByNameFromHub' -Quiet -ErrorAction SilentlyContinue)
+        !(Select-String -Path $p -Pattern 'Get-IpcSessionsByNameFromHub' -Quiet -ErrorAction SilentlyContinue) -or
+        !(Select-String -Path $p -Pattern 'governanceEffortRoles' -Quiet -ErrorAction SilentlyContinue) -or
+        !(Select-String -Path $p -Pattern '--effort' -Quiet -ErrorAction SilentlyContinue)
     )
 
     if ($needsIpcUpgrade) {

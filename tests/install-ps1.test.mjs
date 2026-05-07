@@ -172,6 +172,7 @@ test('install.ps1 ipcx rejects old negative -resume indexes clearly', () => {
 test('install.ps1 ipc parses optional -resume through remaining arguments', () => {
   const ipcFunc = extractHereStringVar('funcCode');
 
+  assert.match(ipcFunc, /\[Parameter\(Position=0\)\]\[string\]`\$Name/);
   assert.match(ipcFunc, /ValueFromRemainingArguments=`\$true/);
   assert.match(ipcFunc, /\[object\[\]\]`\$rest/);
   assert.match(ipcFunc, /\[switch\]`\$resume/);
@@ -205,6 +206,34 @@ test('install.ps1 ipc parses optional -resume through remaining arguments', () =
   assert.match(ipcFunc, /out of range for IPC name/);
   assert.match(ipcFunc, /\$claudeArgs \+= @\('--resume', `\$sessionId\)/);
   assert.match(ipcFunc, /\$claudeArgs \+= @\('--resume', `\$resumeValue\)/);
+});
+
+test('install.ps1 ipc maps -Role to Claude --effort per governance role', () => {
+  const ipcFunc = extractHereStringVar('funcCode');
+
+  assert.match(ipcFunc, /\[Parameter\(\)\]\[string\]`\$Role/);
+  assert.match(
+    ipcFunc,
+    /Name is required\. Use: ipc <name> \[-Role <role>\] or ipc -Role <role>\./,
+  );
+  assert.match(ipcFunc, /\$Name = `\$Role/);
+  assert.match(ipcFunc, /\$Role = `\$Name/);
+  assert.match(ipcFunc, /\$roleKey = `\$Role\.Trim\(\)\.ToLowerInvariant\(\)/);
+  assert.match(ipcFunc, /\$governanceEffortRoles = @\(/);
+  for (const role of [
+    'harness',
+    'director',
+    'architect',
+    'jianmu-pm',
+    'taiwei-pm',
+    'taiwei-architect',
+    'taiwei-director',
+  ]) {
+    assert.match(ipcFunc, new RegExp(`'${role}'`));
+  }
+  assert.match(ipcFunc, /\$effortLevel = 'high'/);
+  assert.match(ipcFunc, /if \(`\$governanceEffortRoles -contains `\$roleKey\) \{\s*`\$effortLevel = 'max'\s*\}/);
+  assert.match(ipcFunc, /\$claudeArgs \+= @\('--effort', `\$effortLevel\)/);
 });
 
 test('install.ps1 ipc rejects old negative -resume indexes clearly', () => {
@@ -283,6 +312,14 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
   );
   assert.match(
     installPs1,
+    /Select-String -Path \$p -Pattern 'governanceEffortRoles' -Quiet -ErrorAction SilentlyContinue/,
+  );
+  assert.match(
+    installPs1,
+    /Select-String -Path \$p -Pattern '--effort' -Quiet -ErrorAction SilentlyContinue/,
+  );
+  assert.match(
+    installPs1,
     /Select-String -Path \$p -Pattern '\^function ipcx' -Quiet -ErrorAction SilentlyContinue/,
   );
   assert.match(
@@ -293,6 +330,55 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
   assert.match(installPs1, /\$needsIpcxUpgrade = \$hasIpcx -and !\(/);
   assert.match(installPs1, /-Pattern 'model_reasoning_effort'/);
   assert.match(installPs1, /-Pattern 'Get-IpcxSessionsByNameFromHub'/);
+});
+
+test('install.ps1 upgrades stale ipc profile functions to add per-role effort', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows PowerShell is required for install.ps1 behavior tests');
+    return;
+  }
+  if (process.env.IPC_SKIP_POWERSHELL_SPAWN_TESTS === '1') {
+    t.skip('PowerShell child process spawning is blocked in this sandbox');
+    return;
+  }
+
+  withTempInstallEnv(({ env, userProfile }) => {
+    const ps5Profile = join(
+      userProfile,
+      'Documents',
+      'WindowsPowerShell',
+      'Microsoft.PowerShell_profile.ps1',
+    );
+    const ps7Profile = join(
+      userProfile,
+      'Documents',
+      'PowerShell',
+      'Microsoft.PowerShell_profile.ps1',
+    );
+    const oldIpc = [
+      'function ipc {',
+      '    param([Parameter(Mandatory)][string]$Name)',
+      '    & claude --dangerously-skip-permissions --dangerously-load-development-channels server:ipc',
+      '}',
+      '',
+    ].join('\n');
+
+    for (const profile of [ps5Profile, ps7Profile]) {
+      mkdirSync(dirname(profile), { recursive: true });
+      writeFileSync(profile, oldIpc, 'utf8');
+    }
+
+    runInstallPs1(env);
+
+    for (const profile of [ps5Profile, ps7Profile]) {
+      const content = readFileSync(profile, 'utf8');
+      const ipcMatches = content.match(/^function ipc\s*\{/gm) ?? [];
+      assert.equal(ipcMatches.length, 1);
+      assert.match(content, /governanceEffortRoles/);
+      assert.match(content, /--effort/);
+      assert.match(content, /taiwei-director/);
+    }
+  });
 });
 
 test('install.ps1 upgrades stale ipcx profile functions to pin xhigh reasoning', (t) => {

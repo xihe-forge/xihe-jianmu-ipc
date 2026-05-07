@@ -2,7 +2,7 @@
 
 > IPC 基础设施 repo 的活清单。按优先级分段。所有条目有明确"现状 / 目标 / 验收 / Owner / ETA"。
 
-**最后刷新**：2026-05-06T21:23+08:00（codex · Codex MCP wrapper finalize + dogfood）
+**最后刷新**：2026-05-07T18:13+08:00（codex · v3 timestamp drift hook IPC dedup）
 **刷新节奏**：每次重要产出 + 每周一 portfolio-sync · 老板 88% 周限额硬规矩：每完成任务立即落盘 + commit + push（不批量积压）
 
 ---
@@ -172,6 +172,7 @@
 ### 2026-05-07
 
 - [x] **statusline user_id writer 修复 + token refresh-resilient A/B 识别**：RCA 证实 `726c914` 曾加 profile/user_id reader+writer，`250b9ac` 为 401 容错撤 profile API 时同步撤掉 writer user_id；当前 live 还混着旧 update 与未调用 update 的 start 脚本。修复 `update-claude-account-identity.ps1`：profile 成功写 `marker.user_id` + `vault.xihe_identity.user_id`，401/空 profile 不失败，空 token 不覆盖 vault 非空 token；修复 `statusline-account.mjs`：恢复 user_id reader、旧 marker 缺 user_id 时捕获并回写 marker、vault identity fallback、BOM vault JSON 解析。验证：focused statusline 10/10 + account scripts 3/3 PASS，`node bin\run-tests.mjs tests` PASS；live B dogfood marker/vault user_id=`7da00c0d-0aee-4176-aa4a-02c892062b1c`，临时 stale fingerprint 仍显示 B，A vault 当前 401/Not logged in 未能捕获 user_id（按容错走 fingerprint fallback）。
+- [x] **v3 timestamp drift hook 同 ai_ts IPC 去重修复**（harness `dd75395`）。RCA：`timestamp-drift-warning.ps1` 无 `dedup/cache/seen/lastWarn` 逻辑，实战同 file+同 `ai_ts=2026-05-07T17:50+08` 两次 Edit 可复现 2 条 capture IPC；真实 audit 17:55:07/17:55:54 `taiwei-reviewer` 同 tuple 连发。修复：direct IPC 发送前按 `(IPC_NAME, ai_ts, tool)` 5min window 查 `~/.claude/jianmu-ipc-hooks/dedup-cache.json`，mutex + atomic JSON 写；命中时不发 harness，只写 `ipc-dedup-suppressed` audit，warning/governance audit 仍逐次 capture。验证：PS5/PS7 timestamp hook 25/25 PASS；dogfood 同 ai_ts 30s 内 1 IPC、不同 ai_ts 2 IPC、同 ai_ts 5min 后第 2 IPC 放行；报告 `reports/codex-runs/20260507T180000+0800-v3-drift-hook-dedup.md`。
 
 ### 2026-05-06
 
@@ -262,3 +263,4 @@
 | 2026-05-06T12:03+08:00 | codex | v3 timestamp drift recurrence 真修：11:49 复刻 `msg_1778039398350_354908` RCA 证实真实 raw 是裸 `11:33-11:47`，旧 `ShortTimePattern` 误当 `-11:47` timezone，非 hot reload；harness patch 扩 range parser 到裸短时间 / 同日 ISO / 跨日期 range，先于 ISO 与 short-time timezone parser；PS5/PS7 22/22 PASS，6 dogfood case 全 PASS，真实 raw 修后 `drift_seconds=177` audit-only；报告 `reports/codex-runs/20260506T115100+0800-v3-drift-bug-recurrence-real-fix.md` |
 | 2026-05-06T19:37+08:00 | codex | plan/html sync gate hook v0.4 hard block 上线：harness `cd95821` push origin/main；新增 `plan-html-sync-gate.ps1`，PreToolUse Bash `git commit` 前缀检测 staged `.planning/PROJECT-PLAN.md`，若 `.planning/PROJECT-PLAN.html` mtime < md mtime 则 exit 1 + 直发 harness audit；hook 路径使用 `${CLAUDE_PROJECT_DIR}/xihe-tianshu-harness/domains/...`，PS5/PS7 dogfood 6/6 PASS，install-hooks node 8/8 PASS；user settings merge 完成；ack `msg_1778067420500_f8a2a8`，broadcast `msg_1778067420535_5cd17c`；报告 `reports/codex-runs/20260506T185000+0800-plan-html-sync-gate-hook-v0.4.md` |
 | 2026-05-07T17:10+08:00 | codex | statusline user_id writer 修：切账户/同步 writer 写 marker + vault user_id，statusline detect 补旧 marker user_id，401 继续 fingerprint fallback；BOM vault JSON reader/writer 同步修；live B dogfood user_id 写入 + stale fingerprint 仍显示 B，A vault 当前 401 未捕获 user_id；报告 `reports/codex-runs/20260507T163000+0800-statusline-user-id-marker-writer-fix.md` |
+| 2026-05-07T18:13+08:00 | codex | v3 timestamp drift hook 同 ai_ts IPC 去重修：harness `dd75395` push origin/main；同 `(IPC_NAME, ai_ts, tool)` 5min 内 direct IPC suppress，audit 仍 capture；dedup cache `~/.claude/jianmu-ipc-hooks/dedup-cache.json` atomic write；PS5/PS7 25/25 PASS；dogfood 3 case PASS；报告 `reports/codex-runs/20260507T180000+0800-v3-drift-hook-dedup.md` |

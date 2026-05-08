@@ -270,6 +270,56 @@ test('POST /sessions/register-history + GET /sessions-history persist by IPC nam
   assert.equal(listResponse.body[0].spawnReason, 'hook-discovery');
 });
 
+test('sessions-history orders by last_seen_at', { timeout: TEST_TIMEOUT }, async () => {
+  const name = 'test-orderby';
+  const sessionA = {
+    sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    spawnAt: 1000,
+    lastSeenAt: 10000,
+  };
+  const sessionB = {
+    sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    spawnAt: 2000,
+    lastSeenAt: 5000,
+  };
+  const sqlite = new Database(hub.dbPath);
+
+  try {
+    const insert = sqlite.prepare(`
+      INSERT INTO sessions_history (
+        session_id,
+        name,
+        spawn_reason,
+        runtime,
+        spawn_at,
+        last_seen_at
+      ) VALUES (
+        @sessionId,
+        @name,
+        'test',
+        'claude',
+        @spawnAt,
+        @lastSeenAt
+      )
+    `);
+    insert.run({ ...sessionA, name });
+    insert.run({ ...sessionB, name });
+
+    const response = await httpRequest(hub.port, {
+      method: 'GET',
+      path: '/sessions-history?name=test-orderby&limit=5',
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.ok(Array.isArray(response.body));
+    assert.equal(response.body[0]?.sessionId, sessionA.sessionId);
+    assert.equal(response.body[1]?.sessionId, sessionB.sessionId);
+  } finally {
+    sqlite.prepare('DELETE FROM sessions_history WHERE name = ?').run(name);
+    sqlite.close();
+  }
+});
+
 test('WebSocket register with sessionId records sessions_history and close marks ended', { timeout: TEST_TIMEOUT }, async () => {
   const sessionId = '77777777-7777-4777-8777-777777777777';
   const ws = await connectSession(hub.port, 'taiwei-live', {

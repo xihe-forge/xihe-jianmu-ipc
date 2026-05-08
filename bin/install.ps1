@@ -460,40 +460,22 @@ function ipcx {
 
         if (`$resumeValue -match '^\d+`$') {
             `$index = [int]`$resumeValue
-            `$historySessions = @(Get-IpcxSessionsByNameFromHub -Name `$Name -Limit 10)
-            if (`$historySessions.Count -gt 0) {
-                if ((`$index -lt 0) -or (`$index -ge `$historySessions.Count)) {
-                    Write-Error "-resume `$resumeValue is out of range for Codex IPC name '`$Name'. Found `$(`$historySessions.Count) codex sessions_history row(s). Use 0 for latest, 1 for HEAD~1."
-                    return
-                }
-
-                `$sessionId = [string]`$historySessions[`$index].sessionId
-                if ([string]::IsNullOrWhiteSpace(`$sessionId)) {
-                    Write-Error "Codex sessions_history row for IPC name '`$Name' has empty sessionId."
-                    return
-                }
-                `$codexArgs += @('resume', `$sessionId)
-            } else {
-                `$jsonlSessions = @(Get-IpcxSessionJsonls -Name `$Name)
-                if (`$jsonlSessions.Count -eq 0) {
-                    `$sessionsRoot = Get-CodexSessionsRoot
-                    Write-Error "Codex IPC name '`$Name' has no historical session in `$sessionsRoot. Use fresh: ipcx `$Name"
-                    return
-                }
-
-                if ((`$index -lt 0) -or (`$index -ge `$jsonlSessions.Count)) {
-                    `$sessionsRoot = Get-CodexSessionsRoot
-                    Write-Error "-resume `$resumeValue is out of range for Codex IPC name '`$Name'. Found `$(`$jsonlSessions.Count) matching codex session(s) in `$sessionsRoot. Use 0 for latest, 1 for HEAD~1."
-                    return
-                }
-
-                `$sessionId = [string]`$jsonlSessions[`$index].SessionId
-                if ([string]::IsNullOrWhiteSpace(`$sessionId)) {
-                    Write-Error "Codex local session row for IPC name '`$Name' has empty sessionId."
-                    return
-                }
-                `$codexArgs += @('resume', `$sessionId)
+            `$mergedRows = @(Merge-IpcxSessionRows -Name `$Name)
+            if (`$mergedRows.Count -eq 0) {
+                `$sessionsRoot = Get-CodexSessionsRoot
+                Write-Error "Codex IPC name '`$Name' has no historical session (hub + `$sessionsRoot both empty). Use fresh: ipcx `$Name"
+                return
             }
+            if ((`$index -lt 0) -or (`$index -ge `$mergedRows.Count)) {
+                Write-Error "-resume `$resumeValue is out of range for Codex IPC name '`$Name'. Found `$(`$mergedRows.Count) merged codex session(s) (hub + ipcx-session-map). Use 0 for latest, 1 for HEAD~1."
+                return
+            }
+            `$sessionId = [string]`$mergedRows[`$index].SessionId
+            if ([string]::IsNullOrWhiteSpace(`$sessionId)) {
+                Write-Error "Codex merged row for IPC name '`$Name' has empty sessionId."
+                return
+            }
+            `$codexArgs += @('resume', `$sessionId)
         } else {
             if (`$resumeValue -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`$') {
                 `$codexArgs += @('resume', `$resumeValue)
@@ -691,6 +673,48 @@ function Get-IpcxSessionsByNameFromHub {
     } catch {}
 
     return @()
+}
+
+function Merge-IpcxSessionRows {
+    param([Parameter(Mandatory)][string]`$Name)
+
+    `$dict = @{}
+
+    foreach (`$row in @(Get-IpcxSessionsByNameFromHub -Name `$Name -Limit 10)) {
+        `$sid = [string]`$row.sessionId
+        if ([string]::IsNullOrWhiteSpace(`$sid)) { continue }
+        `$lastSeen = 0L
+        try { `$lastSeen = [long]`$row.lastSeenAt } catch {}
+        `$spawnAt = 0L
+        try { `$spawnAt = [long]`$row.spawnAt } catch {}
+        `$dict[`$sid] = [pscustomobject]@{
+            SessionId = `$sid
+            LastSeenAt = `$lastSeen
+            SpawnAt = `$spawnAt
+            Source = 'hub'
+        }
+    }
+
+    foreach (`$row in @(Get-IpcxSessionMapRows -Name `$Name)) {
+        `$sid = [string]`$row.SessionId
+        if ([string]::IsNullOrWhiteSpace(`$sid)) { continue }
+        `$rowLastSeen = 0L
+        try { `$rowLastSeen = [long]`$row.LastSeenAt } catch {}
+        if (`$dict.ContainsKey(`$sid)) {
+            if (`$rowLastSeen -gt `$dict[`$sid].LastSeenAt) {
+                `$dict[`$sid].LastSeenAt = `$rowLastSeen
+            }
+        } else {
+            `$dict[`$sid] = [pscustomobject]@{
+                SessionId = `$sid
+                LastSeenAt = `$rowLastSeen
+                SpawnAt = `$rowLastSeen
+                Source = 'map'
+            }
+        }
+    }
+
+    return @(`$dict.Values | Sort-Object -Property LastSeenAt -Descending)
 }
 "@
 

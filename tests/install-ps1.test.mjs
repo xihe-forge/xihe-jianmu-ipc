@@ -162,8 +162,9 @@ test('install.ps1 ipcx parses optional -resume for Codex sessions', () => {
   assert.match(ipcxFunc, /function Get-IpcxSessionsByNameFromHub/);
   assert.match(ipcxFunc, /sessions-history\?name=`\$encodedName&limit=`\$Limit/);
   assert.match(ipcxFunc, /`\$_.runtime -eq 'codex'/);
-  assert.match(ipcxFunc, /\$historySessions = @\(Get-IpcxSessionsByNameFromHub -Name `\$Name -Limit 10\)/);
-  assert.match(ipcxFunc, /\$jsonlSessions = @\(Get-IpcxSessionJsonls -Name `\$Name\)/);
+  assert.match(ipcxFunc, /\$mergedRows = @\(Merge-IpcxSessionRows -Name `\$Name\)/);
+  assert.match(ipcxFunc, /function Merge-IpcxSessionRows/);
+  assert.match(ipcxFunc, /merged codex session\(s\) \(hub \+ ipcx-session-map\)/);
   assert.match(ipcxFunc, /\$codexArgs \+= @\('resume', `\$sessionId\)/);
   assert.match(ipcxFunc, /\$codexArgs \+= @\('resume', `\$resumeValue\)/);
   assert.match(ipcxFunc, /Get-Command rg -ErrorAction SilentlyContinue/);

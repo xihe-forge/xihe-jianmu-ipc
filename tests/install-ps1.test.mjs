@@ -17,9 +17,9 @@ const installPs1Path = fileURLToPath(new URL('../bin/install.ps1', import.meta.u
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 function extractHereStringVar(name) {
-  const match = installPs1.match(new RegExp(`\\$${name}\\s*=\\s*@"\\r?\\n([\\s\\S]*?)\\r?\\n"@`));
+  const match = installPs1.match(new RegExp(`\\$${name}\\s*=\\s*@(["'])\\r?\\n([\\s\\S]*?)\\r?\\n\\1@`));
   assert.ok(match, `${name} here-string should exist`);
-  return match[1];
+  return match[2];
 }
 
 function stripBom(value) {
@@ -78,6 +78,24 @@ test('install.ps1 defines ipcx codex session function', () => {
   assert.match(installPs1, /--dangerously-bypass-approvals-and-sandbox/);
   assert.match(installPs1, /model_reasoning_effort/);
   assert.match(installPs1, /mcp_servers\.jianmu-ipc\.env\.IPC_NAME/);
+});
+
+test('install.ps1 defines ifpick interactive session picker', () => {
+  const ifpickFunc = extractHereStringVar('ifpickFuncCode');
+
+  assert.match(ifpickFunc, /function ifpick\s*\{/);
+  assert.match(ifpickFunc, /function Get-IfpickHubRows/);
+  assert.match(ifpickFunc, /sessions-history\?limit=50/);
+  assert.match(ifpickFunc, /function Get-IfpickClaudeJsonls/);
+  assert.match(ifpickFunc, /\.claude\\projects/);
+  assert.match(ifpickFunc, /function Get-IfpickCodexJsonls/);
+  assert.match(ifpickFunc, /archived_sessions/);
+  assert.match(ifpickFunc, /IFPICK_LIMIT/);
+  assert.match(ifpickFunc, /IFPICK_DRYRUN/);
+  assert.match(ifpickFunc, /\$command = "ipc \$name -resume \$sessionId"/);
+  assert.match(ifpickFunc, /\$command = "ipcx \$name -resume \$sessionId"/);
+  assert.match(ifpickFunc, /Write-Output "DISPATCH: \$command"/);
+  assert.match(ifpickFunc, /codex resume \$sessionId --dangerously-bypass-approvals-and-sandbox/);
 });
 
 test('install.ps1 checks ipcx with exact line-start anchor', () => {
@@ -330,6 +348,39 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
   assert.match(installPs1, /\$needsIpcxUpgrade = \$hasIpcx -and !\(/);
   assert.match(installPs1, /-Pattern 'model_reasoning_effort'/);
   assert.match(installPs1, /-Pattern 'Get-IpcxSessionsByNameFromHub'/);
+  assert.match(installPs1, /\$ifpickMatches = @\(Select-String -Path \$p -Pattern '\^function ifpick\\s\*\\\{'/);
+  assert.match(installPs1, /function Remove-IfpickProfileBlocks/);
+  assert.match(installPs1, /Add-Content -Path \$p -Value "`n\$ifpickFuncCode"/);
+  assert.match(installPs1, /-Pattern 'Get-IfpickHubRows'/);
+  assert.match(installPs1, /-Pattern '\\\$rows = \\\$response\\.Content \\| ConvertFrom-Json'/);
+  assert.match(installPs1, /-Pattern 'IFPICK_DRYRUN'/);
+});
+
+test('install.ps1 appends ifpick to fresh profiles', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows PowerShell is required for install.ps1 behavior tests');
+    return;
+  }
+  if (process.env.IPC_SKIP_POWERSHELL_SPAWN_TESTS === '1') {
+    t.skip('PowerShell child process spawning is blocked in this sandbox');
+    return;
+  }
+
+  withTempInstallEnv(({ env, userProfile }) => {
+    runInstallPs1(env);
+
+    for (const profile of [
+      join(userProfile, 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1'),
+      join(userProfile, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
+    ]) {
+      const content = readFileSync(profile, 'utf8');
+      const ifpickMatches = content.match(/^function ifpick\s*\{/gm) ?? [];
+      assert.equal(ifpickMatches.length, 1);
+      assert.match(content, /function Get-IfpickHubRows/);
+      assert.match(content, /function Get-IfpickCodexJsonls/);
+      assert.match(content, /IFPICK_DRYRUN/);
+    }
+  });
 });
 
 test('install.ps1 upgrades stale ipc profile functions to add per-role effort', (t) => {
@@ -425,6 +476,56 @@ test('install.ps1 upgrades stale ipcx profile functions to pin xhigh reasoning',
       assert.equal(ipcxMatches.length, 1);
       assert.match(content, /model_reasoning_effort=.*xhigh/);
       assert.match(content, /Get-IpcxSessionsByNameFromHub/);
+    }
+  });
+});
+
+test('install.ps1 upgrades stale ifpick profile functions to add filesystem picker sources', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows PowerShell is required for install.ps1 behavior tests');
+    return;
+  }
+  if (process.env.IPC_SKIP_POWERSHELL_SPAWN_TESTS === '1') {
+    t.skip('PowerShell child process spawning is blocked in this sandbox');
+    return;
+  }
+
+  withTempInstallEnv(({ env, userProfile }) => {
+    const ps5Profile = join(
+      userProfile,
+      'Documents',
+      'WindowsPowerShell',
+      'Microsoft.PowerShell_profile.ps1',
+    );
+    const ps7Profile = join(
+      userProfile,
+      'Documents',
+      'PowerShell',
+      'Microsoft.PowerShell_profile.ps1',
+    );
+    const oldIfpick = [
+      'function ifpick {',
+      '    Write-Output "old ifpick"',
+      '}',
+      '',
+    ].join('\n');
+
+    for (const profile of [ps5Profile, ps7Profile]) {
+      mkdirSync(dirname(profile), { recursive: true });
+      writeFileSync(profile, oldIfpick, 'utf8');
+    }
+
+    runInstallPs1(env);
+
+    for (const profile of [ps5Profile, ps7Profile]) {
+      const content = readFileSync(profile, 'utf8');
+      const ifpickMatches = content.match(/^function ifpick\s*\{/gm) ?? [];
+      assert.equal(ifpickMatches.length, 1);
+      assert.doesNotMatch(content, /old ifpick/);
+      assert.match(content, /Get-IfpickHubRows/);
+      assert.match(content, /Get-IfpickClaudeJsonls/);
+      assert.match(content, /Get-IfpickCodexJsonls/);
+      assert.match(content, /IFPICK_DRYRUN/);
     }
   });
 });

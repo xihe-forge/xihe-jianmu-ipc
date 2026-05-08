@@ -36,6 +36,7 @@ import { audit } from './lib/audit.mjs';
 import { startCIRelay, stopCIRelay } from './lib/ci-relay.mjs';
 import { createRouter, safePushAndAudit } from './lib/router.mjs';
 import { createHttpHandler } from './lib/http-handlers.mjs';
+import { startUsageProxyPrewarm } from './lib/usage-proxy.mjs';
 import { getFeishuApps, getFeishuToken, startFeishuConfigPoller } from './lib/feishu-adapter.mjs';
 import { createNetworkEventBroadcaster } from './lib/network-events.mjs';
 import { loadInternalToken } from './lib/internal-auth.mjs';
@@ -563,6 +564,7 @@ if (process.env.IPC_ENABLE_TEST_HOOKS === '1' && parentPort) {
 
 // HTTP + WebSocket servers
 const httpServer = http.createServer(handleRequest);
+let usagePrewarmHandle = null;
 
 const wss = new WebSocketServer({
   server: httpServer,
@@ -1007,6 +1009,10 @@ httpServer.listen(PORT, DEFAULT_HOST, () => {
     stderr(
       `[ipc-hub] WARNING: hub is exposed on ${DEFAULT_HOST} with no authentication — set IPC_AUTH_TOKEN or provide auth-tokens.json`,
     );
+  if (process.env.IPC_DISABLE_USAGE_PREWARM !== '1') {
+    usagePrewarmHandle = startUsageProxyPrewarm();
+    stderr('[ipc] usage prewarm scheduled (4min)');
+  }
   startCIRelay(routeMessage);
 });
 
@@ -1023,6 +1029,8 @@ httpServer.on('error', (err) => {
 function gracefulShutdown(sig) {
   stderr(`[ipc-hub] ${sig} received, shutting down`);
   clearInterval(heartbeatInterval);
+  usagePrewarmHandle?.stop();
+  usagePrewarmHandle = null;
   stopCIRelay();
   close();
   wss.close(() => httpServer.close(() => process.exit(0)));

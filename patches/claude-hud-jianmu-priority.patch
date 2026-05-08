@@ -35,7 +35,7 @@ index bf14b4c..17da5c1 100644
  const CACHE_FAILURE_TTL_MS = 15_000; // 15 seconds for failed requests
  const KEYCHAIN_TIMEOUT_MS = 5000;
  const KEYCHAIN_BACKOFF_MS = 60_000; // Backoff on keychain failures to avoid re-prompting
-+const JIANMU_USAGE_TIMEOUT_MS = 1500;
++const JIANMU_USAGE_TIMEOUT_MS = 5000;
  
  interface CacheFile {
    data: UsageData;

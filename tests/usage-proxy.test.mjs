@@ -1,9 +1,15 @@
-import { test } from 'node:test';
+import { afterEach, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createUsageProxy } from '../lib/usage-proxy.mjs';
+import { createUsageProxy, startUsageProxyPrewarm } from '../lib/usage-proxy.mjs';
+
+afterEach(() => {
+  try {
+    mock.timers.reset();
+  } catch {}
+});
 
 async function withCredentials(fn) {
   const home = join(tmpdir(), `jianmu-usage-proxy-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -121,4 +127,60 @@ test('usage proxy caches failures for thirty seconds to avoid retry storms', asy
     assert.equal(first.error, 'http-429');
     assert.equal(calls, 2);
   });
+});
+
+test('usage proxy prewarm calls getUsage immediately and once per interval', () => {
+  const startedAt = Date.parse('2026-05-05T00:00:00.000Z');
+  mock.timers.enable({ apis: ['setInterval', 'Date'], now: startedAt });
+
+  const calls = [];
+  const handle = startUsageProxyPrewarm(1_000, {
+    getUsage: () => {
+      calls.push(Date.now());
+    },
+  });
+
+  assert.deepEqual(calls, [startedAt]);
+  mock.timers.tick(1_000);
+  assert.deepEqual(calls, [startedAt, startedAt + 1_000]);
+
+  handle.stop();
+});
+
+test('usage proxy prewarm stop clears interval', () => {
+  mock.timers.enable({ apis: ['setInterval'] });
+
+  let calls = 0;
+  const handle = startUsageProxyPrewarm(1_000, {
+    getUsage: () => {
+      calls += 1;
+    },
+  });
+
+  assert.equal(calls, 1);
+  handle.stop();
+  mock.timers.tick(3_000);
+  assert.equal(calls, 1);
+});
+
+test('usage proxy prewarm swallows getUsage errors', async () => {
+  mock.timers.enable({ apis: ['setInterval'] });
+
+  let calls = 0;
+  let handle;
+  assert.doesNotThrow(() => {
+    handle = startUsageProxyPrewarm(1_000, {
+      getUsage: async () => {
+        calls += 1;
+        throw new Error('usage unavailable');
+      },
+    });
+  });
+
+  await Promise.resolve();
+  mock.timers.tick(1_000);
+  await Promise.resolve();
+
+  assert.equal(calls, 2);
+  handle.stop();
 });

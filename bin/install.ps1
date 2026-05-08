@@ -29,13 +29,18 @@ function ipc {
         [Parameter()][string]`$Role,
         [Parameter()][switch]`$resume,
         [Parameter()][switch]`$pick,
-        [Parameter()][ValidateSet('high', 'max')][string]`$effort,
+        [Parameter()][ValidateSet('high', 'max', 'list', 'show', 'clear')][string]`$effort,
         [Parameter()][switch]`$save,
         [Parameter(ValueFromRemainingArguments=`$true)][object[]]`$rest
     )
 
     if (`$pick) {
         ipc-pick
+        return
+    }
+
+    if (`$effort -in @('list', 'show', 'clear')) {
+        ipc-effort `$effort
         return
     }
 

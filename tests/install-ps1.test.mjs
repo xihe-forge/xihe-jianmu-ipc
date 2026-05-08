@@ -252,7 +252,8 @@ test('install.ps1 ipc maps -Role to Claude --effort per governance role', () => 
   }
   assert.match(ipcFunc, /\[switch\]`\$pick/);
   assert.match(ipcFunc, /if \(`\$pick\)\s*\{[\s\S]*?ipc-pick[\s\S]*?return/);
-  assert.match(ipcFunc, /\[ValidateSet\('high', 'max'\)\]\[string\]`\$effort/);
+  assert.match(ipcFunc, /\[ValidateSet\('high', 'max', 'list', 'show', 'clear'\)\]\[string\]`\$effort/);
+  assert.match(ipcFunc, /if \(`\$effort -in @\('list', 'show', 'clear'\)\) \{\s*ipc-effort `\$effort\s*return\s*\}/);
   assert.match(ipcFunc, /jianmu-ipc-effort-max\.json/);
   assert.match(ipcFunc, /if \(`\$effort\) \{\s*`\$effortLevel = `\$effort\s*\}/);
   assert.match(ipcFunc, /\$governanceEffortRoles\.Contains\(`\$roleKey\)/);

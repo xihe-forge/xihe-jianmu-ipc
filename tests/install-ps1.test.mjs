@@ -240,8 +240,6 @@ test('install.ps1 ipc maps -Role to Claude --effort per governance role', () => 
   assert.match(ipcFunc, /\$governanceEffortRoles = @\(/);
   for (const role of [
     'harness',
-    'director',
-    'architect',
     'jianmu-pm',
     'taiwei-pm',
     'taiwei-architect',
@@ -249,6 +247,11 @@ test('install.ps1 ipc maps -Role to Claude --effort per governance role', () => 
   ]) {
     assert.match(ipcFunc, new RegExp(`'${role}'`));
   }
+  for (const role of ['director', 'architect']) {
+    assert.doesNotMatch(ipcFunc, new RegExp(`'${role}'`));
+  }
+  assert.match(ipcFunc, /\[switch\]`\$pick/);
+  assert.match(ipcFunc, /if \(`\$pick\)\s*\{[\s\S]*?ipc-pick[\s\S]*?return/);
   assert.match(ipcFunc, /\$effortLevel = 'high'/);
   assert.match(ipcFunc, /if \(`\$governanceEffortRoles -contains `\$roleKey\) \{\s*`\$effortLevel = 'max'\s*\}/);
   assert.match(ipcFunc, /\$claudeArgs \+= @\('--effort', `\$effortLevel\)/);

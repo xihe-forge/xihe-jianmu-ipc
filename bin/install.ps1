@@ -28,8 +28,14 @@ function ipc {
         [Parameter(Position=0)][string]`$Name,
         [Parameter()][string]`$Role,
         [Parameter()][switch]`$resume,
+        [Parameter()][switch]`$pick,
         [Parameter(ValueFromRemainingArguments=`$true)][object[]]`$rest
     )
+
+    if (`$pick) {
+        ipc-pick
+        return
+    }
 
     if ([string]::IsNullOrWhiteSpace(`$Name)) {
         if ([string]::IsNullOrWhiteSpace(`$Role)) {
@@ -45,8 +51,6 @@ function ipc {
     `$roleKey = `$Role.Trim().ToLowerInvariant()
     `$governanceEffortRoles = @(
         'harness',
-        'director',
-        'architect',
         'jianmu-pm',
         'taiwei-pm',
         'taiwei-architect',

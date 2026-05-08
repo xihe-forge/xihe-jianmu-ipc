@@ -106,8 +106,11 @@ function Invoke-IpcPickCase {
         [Parameter(Mandatory)][string]$UserProfile,
         [Parameter(Mandatory)][string]$CodexHome,
         [Parameter(Mandatory)][string]$HubJson,
-        [Parameter()][string[]]$Inputs = @('')
+        [Parameter()][string[]]$Inputs = @(''),
+        [Parameter()][switch]$ViaIpcSwitch
     )
+
+    $invokeLine = if ($ViaIpcSwitch) { 'ipc -pick' } else { 'ipc-pick' }
 
     $escapedHubJson = $HubJson -replace "'", "''"
     $quotedInputs = @($Inputs | ForEach-Object { "'" + ($_ -replace "'", "''") + "'" })
@@ -143,7 +146,7 @@ function Read-Host {
 }
 `$env:IPC_PICK_DRYRUN = '1'
 . $quotedProfilePath
-ipc-pick
+$invokeLine
 "@
 
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
@@ -251,6 +254,9 @@ try {
     $retryNormalized = Normalize-Output $output
     $retryPass = ($retryNormalized -match 'ipc-pick: invalid selection') -and ($retryNormalized -match [regex]::Escape("DISPATCH: ipc hub-claude -resume $hubClaudeId"))
     Write-CaseResult -Name 'out-of-range-reprompts' -Passed $retryPass -Output $output
+
+    $output = Invoke-IpcPickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubClaudeJson -Inputs @('1') -ViaIpcSwitch
+    Write-CaseResult -Name 'ipc-switch-pick-equivalent' -Passed ((Normalize-Output $output) -match [regex]::Escape("DISPATCH: ipc hub-claude -resume $hubClaudeId")) -Output $output
 
     if ($failed) {
         exit 1

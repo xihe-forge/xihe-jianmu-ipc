@@ -237,7 +237,7 @@ test('install.ps1 ipc maps -Role to Claude --effort per governance role', () => 
   assert.match(ipcFunc, /\$Name = `\$Role/);
   assert.match(ipcFunc, /\$Role = `\$Name/);
   assert.match(ipcFunc, /\$roleKey = `\$Role\.Trim\(\)\.ToLowerInvariant\(\)/);
-  assert.match(ipcFunc, /\$governanceEffortRoles = @\(/);
+  assert.match(ipcFunc, /\$governanceEffortRoles = \[System\.Collections\.Generic\.List\[string\]\]::new\(\)/);
   for (const role of [
     'harness',
     'jianmu-pm',
@@ -252,8 +252,12 @@ test('install.ps1 ipc maps -Role to Claude --effort per governance role', () => 
   }
   assert.match(ipcFunc, /\[switch\]`\$pick/);
   assert.match(ipcFunc, /if \(`\$pick\)\s*\{[\s\S]*?ipc-pick[\s\S]*?return/);
-  assert.match(ipcFunc, /\$effortLevel = 'high'/);
-  assert.match(ipcFunc, /if \(`\$governanceEffortRoles -contains `\$roleKey\) \{\s*`\$effortLevel = 'max'\s*\}/);
+  assert.match(ipcFunc, /\[ValidateSet\('high', 'max'\)\]\[string\]`\$effort/);
+  assert.match(ipcFunc, /jianmu-ipc-effort-max\.json/);
+  assert.match(ipcFunc, /if \(`\$effort\) \{\s*`\$effortLevel = `\$effort\s*\}/);
+  assert.match(ipcFunc, /\$governanceEffortRoles\.Contains\(`\$roleKey\)/);
+  assert.match(ipcFunc, /`\$effortConfig\.add/);
+  assert.match(ipcFunc, /`\$effortConfig\.remove/);
   assert.match(ipcFunc, /\$claudeArgs \+= @\('--effort', `\$effortLevel\)/);
 });
 

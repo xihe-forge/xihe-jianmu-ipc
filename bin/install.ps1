@@ -29,6 +29,7 @@ function ipc {
         [Parameter()][string]`$Role,
         [Parameter()][switch]`$resume,
         [Parameter()][switch]`$pick,
+        [Parameter()][ValidateSet('high', 'max')][string]`$effort,
         [Parameter(ValueFromRemainingArguments=`$true)][object[]]`$rest
     )
 
@@ -49,16 +50,42 @@ function ipc {
     }
 
     `$roleKey = `$Role.Trim().ToLowerInvariant()
-    `$governanceEffortRoles = @(
-        'harness',
-        'jianmu-pm',
-        'taiwei-pm',
-        'taiwei-architect',
-        'taiwei-director'
-    )
-    `$effortLevel = 'high'
-    if (`$governanceEffortRoles -contains `$roleKey) {
+    `$governanceEffortRoles = [System.Collections.Generic.List[string]]::new()
+    foreach (`$role in @('harness', 'jianmu-pm', 'taiwei-pm', 'taiwei-architect', 'taiwei-director')) {
+        [void]`$governanceEffortRoles.Add(`$role)
+    }
+
+    `$effortConfigPath = Join-Path `$env:USERPROFILE '.claude\jianmu-ipc-effort-max.json'
+    if (Test-Path -Path `$effortConfigPath -PathType Leaf) {
+        try {
+            `$effortConfig = Get-Content -LiteralPath `$effortConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (`$effortConfig.add) {
+                foreach (`$addRole in @(`$effortConfig.add)) {
+                    `$normalized = ([string]`$addRole).Trim().ToLowerInvariant()
+                    if (`$normalized -and -not `$governanceEffortRoles.Contains(`$normalized)) {
+                        [void]`$governanceEffortRoles.Add(`$normalized)
+                    }
+                }
+            }
+            if (`$effortConfig.remove) {
+                foreach (`$removeRole in @(`$effortConfig.remove)) {
+                    `$normalized = ([string]`$removeRole).Trim().ToLowerInvariant()
+                    if (`$normalized) {
+                        [void]`$governanceEffortRoles.Remove(`$normalized)
+                    }
+                }
+            }
+        } catch {
+            Write-Warning "ignored bad ${effortConfigPath}: `$(`$_.Exception.Message)"
+        }
+    }
+
+    if (`$effort) {
+        `$effortLevel = `$effort
+    } elseif (`$governanceEffortRoles.Contains(`$roleKey)) {
         `$effortLevel = 'max'
+    } else {
+        `$effortLevel = 'high'
     }
 
     `$env:IPC_NAME = `$Name

@@ -16,13 +16,29 @@ import {
 } from '../lib/codex-pty-bridge.mjs';
 
 test('formatCodexPtyPrompt carries visible ipc line and reply instruction', () => {
+  const inputTs = '2026-05-05T18:46:47.000Z';
   const prompt = formatCodexPtyPrompt({
     from: 'jianmu-pm',
-    ts: '2026-05-05T18:46:47.000Z',
+    ts: inputTs,
     content: 'dogfood\nack',
   });
 
-  assert.match(prompt, /^← ipc: \[2026-05-05 18:46:47\+00:00 from: jianmu-pm\] dogfood\\nack/);
+  const d = new Date(inputTs);
+  const offsetMin = -d.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? '+' : '-';
+  const absMin = Math.abs(offsetMin);
+  const hh = String(Math.floor(absMin / 60)).padStart(2, '0');
+  const mm = String(absMin % 60).padStart(2, '0');
+  const local = new Date(d.getTime() + offsetMin * 60000)
+    .toISOString()
+    .replace(/T/, ' ')
+    .replace(/\.\d+Z$/, '');
+  const expectedTs = `${local}${sign}${hh}:${mm}`;
+
+  assert.ok(
+    prompt.startsWith(`← ipc: [${expectedTs} from: jianmu-pm] dogfood\\nack`),
+    `expected local-timezone ipc line, got: ${prompt}`,
+  );
   assert.doesNotMatch(prompt, /IPC-INBOUND/);
   assert.match(prompt, /完整原样回显/);
   assert.match(prompt, /ipc_send\(to="jianmu-pm"/);

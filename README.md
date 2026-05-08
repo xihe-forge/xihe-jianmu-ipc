@@ -296,16 +296,38 @@ Incoming messages arrive in the `worker` session as `<channel>` notifications th
 **6. Windows PowerShell 快捷方式（可选）/ Windows PowerShell shortcut (optional)**
 
 ```powershell
-# 安装 ipc/ipcx 函数到 PS5 + pwsh 7 profile / Install `ipc`/`ipcx` into PS5 + pwsh 7 profiles:
+# 安装 ipc/ipcx/ipc-pick/ipc-effort 函数到 PS5 + pwsh 7 profile
+# Install `ipc`/`ipcx`/`ipc-pick`/`ipc-effort` into PS5 + pwsh 7 profiles:
 .\bin\install.ps1
 
-# 用 ipc 命令打开 Claude Code 会话 / Open Claude Code sessions with:
+# 起新 Claude / Codex 会话 · Open fresh sessions:
 ipc main
 ipc worker
-
-# 用 ipcx 命令打开 Codex 会话 / Open Codex sessions with:
 ipcx codex-worker
+
+# 恢复历史会话（按最近活跃时间排序）· Resume recent sessions (sorted by last_seen_at):
+ipc main -resume          # 0 = 最近活跃 / latest active
+ipc main -resume 1        # HEAD~1 (次新 / second-latest)
+ipc main -resume <UUID>   # 指定 sessionId
+ipcx codex-worker -resume # 同款·扫 ~/.codex/sessions
+
+# 列表选起（picker · picker fans out across Hub history + claude jsonls + codex sessions + archived）:
+ipc -pick                 # 弹出最近会话列表·序号选 / interactive picker
+ipc-pick                  # 等价 / equivalent (legacy alias)
+$env:IPC_PICK_DRYRUN='1'; ipc -pick   # 干跑模式·只打印 dispatch / dry-run
+
+# 控制 effort 级别（默认按角色名自动 max/high）· effort tier control:
+ipc <name> -effort max          # 这次强制 max / one-shot override
+ipc <name> -effort max -save    # 启动 max + 持久写 ~/.claude/jianmu-ipc-effort-max.json
+ipc <name> -effort high -save   # 启动 high + 从 max 名单移除
+ipc -effort list                # 看 effective max 名单 / show effective list
+ipc -effort show                # 看 JSON 原文 / dump raw config
+ipc -effort clear               # 删 config 文件 / wipe config
 ```
+
+> **resume 排序**：按 `last_seen_at`（最近活跃）排·不是按 `spawn_at`（创建时间）。
+> **picker 来源**：Hub `/sessions-history` + `~/.claude/projects` + `~/.codex/sessions/**` + `~/.codex/archived_sessions`·包括没经 ipcx 起的 orphan codex。
+> **默认 max 名单**：`harness` / `jianmu-pm` / `taiwei-pm` / `taiwei-architect` / `taiwei-director`。决策序：`-effort` > List(默认+JSON) > 兜底 `high`。
 
 **7. Windows Hub 守护进程（推荐）/ Windows Hub daemon (recommended)**
 

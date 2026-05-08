@@ -105,6 +105,63 @@ npm run daemon:watchdog:uninstall
 ipc_send(to="worker", content="Start processing task A")
 ```
 
+### PowerShell 命令用法（ipc / ipcx / ipc-pick / ipc-effort）
+
+`bin/install.ps1` 在 PowerShell `$PROFILE` 注入这几个命令：
+
+**起新会话**
+
+```powershell
+ipc <name>           # 新建一个名叫 <name> 的 Claude session
+ipcx <name>          # 新建一个名叫 <name> 的 Codex session
+```
+
+**恢复历史会话**
+
+```powershell
+ipc <name> -resume         # 恢复 <name> 最近活跃的 Claude session
+ipc <name> -resume 0       # 同上（0=最近活跃）
+ipc <name> -resume 1       # 恢复 HEAD~1（次新）
+ipc <name> -resume <UUID>  # 恢复指定 sessionId
+
+ipcx <name> -resume        # Codex 同款·sessionId 走 ~/.codex/sessions
+```
+
+> 排序按最近活跃时间（`last_seen_at`），不是按创建时间。你刚 -resume 用过的会话下次还会排第一。
+
+**列表选起（picker）**
+
+```powershell
+ipc -pick              # 弹列表选最近会话·按活跃排·序号选
+ipc-pick               # 等价（向后兼容）
+$env:IPC_PICK_DRYRUN='1'; ipc -pick   # 干跑模式·只打印 dispatch 命令不真起
+```
+
+picker 会同时扫 Hub 历史 + `~/.claude/projects` + `~/.codex/sessions` + `~/.codex/archived_sessions`，包括没经 ipcx 起的孤儿 codex 会话。
+
+**控制 effort 级别**
+
+默认会按角色名自动决定 `--effort`（治理类用 `max`、其他用 `high`）：
+
+```powershell
+# 即时 override，不动默认列表
+ipc <name> -effort max     # 这次强制 max
+ipc <name> -effort high    # 这次强制 high
+
+# 持久化（同时启动 + 写 ~/.claude/jianmu-ipc-effort-max.json）
+ipc <name> -effort max -save   # 启动 max + 加进 max 名单
+ipc <name> -effort high -save  # 启动 high + 从 max 名单移除
+
+# 管理默认 max 名单
+ipc -effort list    # 看 effective max 名单（默认 + JSON.add - JSON.remove）
+ipc -effort show    # 看 JSON 原文
+ipc -effort clear   # 删 config 文件
+ipc-effort add <name>     # 等价 ipc <name> -effort max -save 但不起 session
+ipc-effort remove <name>  # 等价 ipc <name> -effort high -save 但不起 session
+```
+
+默认 max 名单：`harness` / `jianmu-pm` / `taiwei-pm` / `taiwei-architect` / `taiwei-director`。决策优先级：`-effort` 命令行 > 默认列表（含 JSON 增减） > 兜底 `high`。
+
 ### OpenClaw
 
 1. 安装包：

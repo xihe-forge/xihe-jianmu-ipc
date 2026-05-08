@@ -527,19 +527,19 @@ function Get-IpcxSessionsByNameFromHub {
 }
 "@
 
-$ifpickFuncCode = @'
-function ifpick {
+$ipcPickFuncCode = @'
+function ipc-pick {
     param()
 
-    $rows = @(Get-IfpickRows)
+    $rows = @(Get-IpcPickRows)
     if ($rows.Count -eq 0) {
-        Write-Output "ifpick: no sessions found."
+        Write-Output "ipc-pick: no sessions found."
         return
     }
 
     $limit = 30
     $parsedLimit = 0
-    if ((-not [string]::IsNullOrWhiteSpace($env:IFPICK_LIMIT)) -and [int]::TryParse($env:IFPICK_LIMIT, [ref]$parsedLimit) -and ($parsedLimit -gt 0)) {
+    if ((-not [string]::IsNullOrWhiteSpace($env:IPC_PICK_LIMIT)) -and [int]::TryParse($env:IPC_PICK_LIMIT, [ref]$parsedLimit) -and ($parsedLimit -gt 0)) {
         $limit = $parsedLimit
     }
 
@@ -549,32 +549,32 @@ function ifpick {
         $row = $visibleRows[$i]
         Write-Output ("{0,3} {1,-7} {2,-18} {3,-19} {4,-24} {5}" -f `
             ($i + 1),
-            (Limit-IfpickText -Text $row.Runtime -Length 7),
-            (Limit-IfpickText -Text $row.Name -Length 18),
-            (Format-IfpickLastSeen -Millis $row.SortTime),
-            (Limit-IfpickText -Text (Get-IfpickCwdTail -Cwd $row.Cwd) -Length 24),
-            (Get-IfpickSessionPrefix -SessionId $row.SessionId))
+            (Limit-IpcPickText -Text $row.Runtime -Length 7),
+            (Limit-IpcPickText -Text $row.Name -Length 18),
+            (Format-IpcPickLastSeen -Millis $row.SortTime),
+            (Limit-IpcPickText -Text (Get-IpcPickCwdTail -Cwd $row.Cwd) -Length 24),
+            (Get-IpcPickSessionPrefix -SessionId $row.SessionId))
     }
 
     while ($true) {
         $choice = Read-Host "Select session # (q to abort)"
         if ([string]::IsNullOrWhiteSpace($choice) -or ($choice.Trim().ToLowerInvariant() -eq 'q')) {
-            Write-Output "ifpick: aborted."
+            Write-Output "ipc-pick: aborted."
             return
         }
 
         $selectedNumber = 0
         if ((-not [int]::TryParse($choice.Trim(), [ref]$selectedNumber)) -or ($selectedNumber -lt 1) -or ($selectedNumber -gt $visibleRows.Count)) {
-            Write-Output "ifpick: invalid selection. Enter 1-$($visibleRows.Count), q to abort."
+            Write-Output "ipc-pick: invalid selection. Enter 1-$($visibleRows.Count), q to abort."
             continue
         }
 
-        Invoke-IfpickSelection -Row $visibleRows[$selectedNumber - 1]
+        Invoke-IpcPickSelection -Row $visibleRows[$selectedNumber - 1]
         return
     }
 }
 
-function Invoke-IfpickSelection {
+function Invoke-IpcPickSelection {
     param([Parameter(Mandatory)]$Row)
 
     $runtime = ([string]$Row.Runtime).Trim().ToLowerInvariant()
@@ -590,14 +590,14 @@ function Invoke-IfpickSelection {
         if ([string]::IsNullOrWhiteSpace($name)) {
             $command = "codex resume $sessionId --dangerously-bypass-approvals-and-sandbox -c `"model_reasoning_effort=\`"xhigh\`"`""
             Write-Output "DISPATCH: $command"
-            if ($env:IFPICK_DRYRUN -eq '1') { return }
+            if ($env:IPC_PICK_DRYRUN -eq '1') { return }
             & codex resume $sessionId --dangerously-bypass-approvals-and-sandbox -c 'model_reasoning_effort="xhigh"'
             return
         }
 
         $command = "ipcx $name -resume $sessionId"
         Write-Output "DISPATCH: $command"
-        if ($env:IFPICK_DRYRUN -eq '1') { return }
+        if ($env:IPC_PICK_DRYRUN -eq '1') { return }
         & ipcx $name -resume $sessionId
         return
     }
@@ -610,7 +610,7 @@ function Invoke-IfpickSelection {
 
         $command = "ipc $name -resume $sessionId"
         Write-Output "DISPATCH: $command"
-        if ($env:IFPICK_DRYRUN -eq '1') { return }
+        if ($env:IPC_PICK_DRYRUN -eq '1') { return }
         & ipc $name -resume $sessionId
         return
     }
@@ -618,9 +618,9 @@ function Invoke-IfpickSelection {
     Write-Error "Unsupported runtime '$runtime' for session $sessionId."
 }
 
-function Get-IfpickRows {
+function Get-IpcPickRows {
     $bySessionId = @{}
-    foreach ($row in @(@(Get-IfpickClaudeJsonls) + @(Get-IfpickCodexJsonls))) {
+    foreach ($row in @(@(Get-IpcPickClaudeJsonls) + @(Get-IpcPickCodexJsonls))) {
         if ($null -eq $row) { continue }
         $sessionId = ([string]$row.SessionId).Trim()
         if ([string]::IsNullOrWhiteSpace($sessionId)) { continue }
@@ -636,7 +636,7 @@ function Get-IfpickRows {
         }
     }
 
-    foreach ($row in @(Get-IfpickHubRows)) {
+    foreach ($row in @(Get-IpcPickHubRows)) {
         if ($null -eq $row) { continue }
         $sessionId = ([string]$row.SessionId).Trim()
         if ([string]::IsNullOrWhiteSpace($sessionId)) { continue }
@@ -646,7 +646,7 @@ function Get-IfpickRows {
     return @($bySessionId.Values | Sort-Object SortTime -Descending)
 }
 
-function Get-IfpickHubRows {
+function Get-IpcPickHubRows {
     try {
         $response = Invoke-WebRequest -Uri 'http://127.0.0.1:3179/sessions-history?limit=50' -UseBasicParsing -TimeoutSec 2
         $rows = $response.Content | ConvertFrom-Json
@@ -659,9 +659,9 @@ function Get-IfpickHubRows {
             if ([string]::IsNullOrWhiteSpace($runtime)) { $runtime = 'unknown' }
             if (@('claude', 'codex', 'unknown') -notcontains $runtime) { continue }
 
-            $lastSeenAt = ConvertTo-IfpickEpochMillis -Value $row.lastSeenAt
+            $lastSeenAt = ConvertTo-IpcPickEpochMillis -Value $row.lastSeenAt
             if ($lastSeenAt -le 0) {
-                $lastSeenAt = ConvertTo-IfpickEpochMillis -Value $row.spawnAt
+                $lastSeenAt = ConvertTo-IpcPickEpochMillis -Value $row.spawnAt
             }
 
             $transcriptPath = [string]$row.transcriptPath
@@ -671,7 +671,7 @@ function Get-IfpickHubRows {
                 if ($null -ne $item) { $lastWriteTime = $item.LastWriteTime }
             }
 
-            $out += (New-IfpickRow `
+            $out += (New-IpcPickRow `
                 -Runtime $runtime `
                 -Name ([string]$row.name) `
                 -SessionId $sessionId `
@@ -687,12 +687,12 @@ function Get-IfpickHubRows {
     return @()
 }
 
-function Get-IfpickClaudeJsonls {
-    $userProfile = Get-IfpickUserProfile
+function Get-IpcPickClaudeJsonls {
+    $userProfile = Get-IpcPickUserProfile
     if ([string]::IsNullOrWhiteSpace($userProfile)) { return @() }
 
-    $projectRoot = Get-IfpickProjectRoot
-    $encodedCwd = Get-IfpickEncodedProjectCwd -Cwd $projectRoot
+    $projectRoot = Get-IpcPickProjectRoot
+    $encodedCwd = Get-IpcPickEncodedProjectCwd -Cwd $projectRoot
     $jsonlDir = Join-Path (Join-Path $userProfile '.claude\projects') $encodedCwd
     if (-not (Test-Path -Path $jsonlDir -PathType Container)) { return @() }
 
@@ -701,9 +701,9 @@ function Get-IfpickClaudeJsonls {
         $sessionId = [System.IO.Path]::GetFileNameWithoutExtension($jsonl.FullName)
         if ([string]::IsNullOrWhiteSpace($sessionId)) { continue }
 
-        $text = Get-IfpickFileText -Path $jsonl.FullName
-        $name = Get-IfpickIpcNameFromText -Text $text
-        $out += (New-IfpickRow `
+        $text = Get-IpcPickFileText -Path $jsonl.FullName
+        $name = Get-IpcPickIpcNameFromText -Text $text
+        $out += (New-IpcPickRow `
             -Runtime 'claude' `
             -Name $name `
             -SessionId $sessionId `
@@ -716,8 +716,8 @@ function Get-IfpickClaudeJsonls {
     return @($out)
 }
 
-function Get-IfpickCodexJsonls {
-    $codexHome = Get-IfpickCodexHome
+function Get-IpcPickCodexJsonls {
+    $codexHome = Get-IpcPickCodexHome
     if ([string]::IsNullOrWhiteSpace($codexHome)) { return @() }
 
     $files = @()
@@ -740,13 +740,13 @@ function Get-IfpickCodexJsonls {
         if ($seenPaths.ContainsKey($pathKey)) { continue }
         $seenPaths[$pathKey] = $true
 
-        $meta = Get-IfpickCodexSessionMeta -Path $fullName
+        $meta = Get-IpcPickCodexSessionMeta -Path $fullName
         if ($null -eq $meta) { continue }
 
-        $lastSeenAt = ConvertTo-IfpickEpochMillis -Value $meta.Timestamp
-        $text = Get-IfpickFileText -Path $fullName
-        $name = Get-IfpickIpcNameFromText -Text $text
-        $out += (New-IfpickRow `
+        $lastSeenAt = ConvertTo-IpcPickEpochMillis -Value $meta.Timestamp
+        $text = Get-IpcPickFileText -Path $fullName
+        $name = Get-IpcPickIpcNameFromText -Text $text
+        $out += (New-IpcPickRow `
             -Runtime 'codex' `
             -Name $name `
             -SessionId ([string]$meta.SessionId) `
@@ -760,7 +760,7 @@ function Get-IfpickCodexJsonls {
     return @($out)
 }
 
-function Get-IfpickCodexSessionMeta {
+function Get-IpcPickCodexSessionMeta {
     param([Parameter(Mandatory)][string]$Path)
 
     $reader = $null
@@ -792,7 +792,7 @@ function Get-IfpickCodexSessionMeta {
     }
 }
 
-function New-IfpickRow {
+function New-IpcPickRow {
     param(
         [Parameter(Mandatory)][string]$Runtime,
         [Parameter()][string]$Name = '',
@@ -806,7 +806,7 @@ function New-IfpickRow {
 
     $sortTime = $LastSeenAt
     if (($sortTime -le 0) -and ($LastWriteTime -gt [datetime]::MinValue)) {
-        $sortTime = ConvertTo-IfpickEpochMillis -Value $LastWriteTime
+        $sortTime = ConvertTo-IpcPickEpochMillis -Value $LastWriteTime
     }
 
     [pscustomobject]@{
@@ -822,7 +822,7 @@ function New-IfpickRow {
     }
 }
 
-function Get-IfpickUserProfile {
+function Get-IpcPickUserProfile {
     if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
         return $env:USERPROFILE
     }
@@ -832,28 +832,28 @@ function Get-IfpickUserProfile {
     return [Environment]::GetFolderPath('UserProfile')
 }
 
-function Get-IfpickCodexHome {
+function Get-IpcPickCodexHome {
     if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
         return $env:CODEX_HOME
     }
-    $userProfile = Get-IfpickUserProfile
+    $userProfile = Get-IpcPickUserProfile
     if ([string]::IsNullOrWhiteSpace($userProfile)) {
         return ''
     }
     return (Join-Path $userProfile '.codex')
 }
 
-function Get-IfpickProjectRoot {
+function Get-IpcPickProjectRoot {
     return 'D:\workspace\ai\research\xiheAi'
 }
 
-function Get-IfpickEncodedProjectCwd {
+function Get-IpcPickEncodedProjectCwd {
     param([Parameter(Mandatory)][string]$Cwd)
 
     return ((($Cwd -replace ':', '-') -replace '[/\\]', '-') -replace '\s', '-')
 }
 
-function Get-IfpickFileText {
+function Get-IpcPickFileText {
     param([Parameter(Mandatory)][string]$Path)
 
     try {
@@ -864,7 +864,7 @@ function Get-IfpickFileText {
     }
 }
 
-function Get-IfpickIpcNameFromText {
+function Get-IpcPickIpcNameFromText {
     param([Parameter()][string]$Text)
 
     if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
@@ -885,16 +885,16 @@ function Get-IfpickIpcNameFromText {
     return ''
 }
 
-function Get-IfpickEpoch {
+function Get-IpcPickEpoch {
     return [datetime]::SpecifyKind(([datetime]'1970-01-01T00:00:00'), [System.DateTimeKind]::Utc)
 }
 
-function ConvertTo-IfpickEpochMillis {
+function ConvertTo-IpcPickEpochMillis {
     param($Value)
 
     if ($null -eq $Value) { return 0L }
 
-    $epoch = Get-IfpickEpoch
+    $epoch = Get-IpcPickEpoch
     if ($Value -is [datetime]) {
         return [long]((([datetime]$Value).ToUniversalTime() - $epoch).TotalMilliseconds)
     }
@@ -918,18 +918,18 @@ function ConvertTo-IfpickEpochMillis {
     return 0L
 }
 
-function Format-IfpickLastSeen {
+function Format-IpcPickLastSeen {
     param([Parameter()][long]$Millis = 0)
 
     if ($Millis -le 0) { return '-' }
     try {
-        return (Get-IfpickEpoch).AddMilliseconds([double]$Millis).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss')
+        return (Get-IpcPickEpoch).AddMilliseconds([double]$Millis).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss')
     } catch {
         return '-'
     }
 }
 
-function Limit-IfpickText {
+function Limit-IpcPickText {
     param(
         [Parameter()][string]$Text = '',
         [Parameter(Mandatory)][int]$Length
@@ -941,7 +941,7 @@ function Limit-IfpickText {
     return ($Text.Substring(0, $Length - 1) + '~')
 }
 
-function Get-IfpickCwdTail {
+function Get-IpcPickCwdTail {
     param([Parameter()][string]$Cwd = '')
 
     if ([string]::IsNullOrWhiteSpace($Cwd)) { return '-' }
@@ -955,7 +955,7 @@ function Get-IfpickCwdTail {
     return $Cwd
 }
 
-function Get-IfpickSessionPrefix {
+function Get-IpcPickSessionPrefix {
     param([Parameter()][string]$SessionId = '')
 
     if ([string]::IsNullOrWhiteSpace($SessionId)) { return '-' }
@@ -1105,7 +1105,7 @@ function Remove-IpcxProfileBlocks {
     return ($output -join [Environment]::NewLine).TrimEnd()
 }
 
-function Remove-IfpickProfileBlocks {
+function Remove-IpcPickProfileBlocks {
     param([string]$Content)
 
     if ([string]::IsNullOrEmpty($Content)) { return "" }
@@ -1115,7 +1115,7 @@ function Remove-IfpickProfileBlocks {
     $skip = $false
     $depth = 0
     foreach ($line in $lines) {
-        if (-not $skip -and $line -match '^function (ifpick|Invoke-IfpickSelection|Get-IfpickRows|Get-IfpickHubRows|Get-IfpickClaudeJsonls|Get-IfpickCodexJsonls|Get-IfpickCodexSessionMeta|New-IfpickRow|Get-IfpickUserProfile|Get-IfpickCodexHome|Get-IfpickProjectRoot|Get-IfpickEncodedProjectCwd|Get-IfpickFileText|Get-IfpickIpcNameFromText|Get-IfpickEpoch|ConvertTo-IfpickEpochMillis|Format-IfpickLastSeen|Limit-IfpickText|Get-IfpickCwdTail|Get-IfpickSessionPrefix)\s*\{') {
+        if (-not $skip -and $line -match '^function (ipc-pick|Invoke-IpcPickSelection|Get-IpcPickRows|Get-IpcPickHubRows|Get-IpcPickClaudeJsonls|Get-IpcPickCodexJsonls|Get-IpcPickCodexSessionMeta|New-IpcPickRow|Get-IpcPickUserProfile|Get-IpcPickCodexHome|Get-IpcPickProjectRoot|Get-IpcPickEncodedProjectCwd|Get-IpcPickFileText|Get-IpcPickIpcNameFromText|Get-IpcPickEpoch|ConvertTo-IpcPickEpochMillis|Format-IpcPickLastSeen|Limit-IpcPickText|Get-IpcPickCwdTail|Get-IpcPickSessionPrefix)\s*\{') {
             $skip = $true
             $depth = 0
         }
@@ -1172,29 +1172,29 @@ foreach ($p in $profilesToInstall) {
     } elseif (!($hasIpcx)) {
         Add-Content -Path $p -Value "`n$ipcxFuncCode"
     }
-    $ifpickMatches = @(Select-String -Path $p -Pattern '^function ifpick\s*\{' -ErrorAction SilentlyContinue)
-    $hasIfpick = $ifpickMatches.Count -gt 0
-    $needsIfpickUpgrade = $hasIfpick -and (
-        ($ifpickMatches.Count -gt 1) -or
-        !(Select-String -Path $p -Pattern 'Get-IfpickHubRows' -Quiet -ErrorAction SilentlyContinue) -or
-        !(Select-String -Path $p -Pattern 'Get-IfpickClaudeJsonls' -Quiet -ErrorAction SilentlyContinue) -or
-        !(Select-String -Path $p -Pattern 'Get-IfpickCodexJsonls' -Quiet -ErrorAction SilentlyContinue) -or
+    $ipcPickMatches = @(Select-String -Path $p -Pattern '^function ipc-pick\s*\{' -ErrorAction SilentlyContinue)
+    $hasIpcPick = $ipcPickMatches.Count -gt 0
+    $needsIpcPickUpgrade = $hasIpcPick -and (
+        ($ipcPickMatches.Count -gt 1) -or
+        !(Select-String -Path $p -Pattern 'Get-IpcPickHubRows' -Quiet -ErrorAction SilentlyContinue) -or
+        !(Select-String -Path $p -Pattern 'Get-IpcPickClaudeJsonls' -Quiet -ErrorAction SilentlyContinue) -or
+        !(Select-String -Path $p -Pattern 'Get-IpcPickCodexJsonls' -Quiet -ErrorAction SilentlyContinue) -or
         !(Select-String -Path $p -Pattern '\$rows = \$response\.Content \| ConvertFrom-Json' -Quiet -ErrorAction SilentlyContinue) -or
         !(Select-String -Path $p -Pattern 'archived_sessions' -Quiet -ErrorAction SilentlyContinue) -or
-        !(Select-String -Path $p -Pattern 'IFPICK_DRYRUN' -Quiet -ErrorAction SilentlyContinue)
+        !(Select-String -Path $p -Pattern 'IPC_PICK_DRYRUN' -Quiet -ErrorAction SilentlyContinue)
     )
-    if ($needsIfpickUpgrade) {
-        $cleanedProfile = Remove-IfpickProfileBlocks -Content (Get-Content -Path $p -Raw -ErrorAction SilentlyContinue)
+    if ($needsIpcPickUpgrade) {
+        $cleanedProfile = Remove-IpcPickProfileBlocks -Content (Get-Content -Path $p -Raw -ErrorAction SilentlyContinue)
         Set-Content -Path $p -Value $cleanedProfile -Encoding UTF8
-        Add-Content -Path $p -Value "`n$ifpickFuncCode"
-    } elseif (!($hasIfpick)) {
-        Add-Content -Path $p -Value "`n$ifpickFuncCode"
+        Add-Content -Path $p -Value "`n$ipcPickFuncCode"
+    } elseif (!($hasIpcPick)) {
+        Add-Content -Path $p -Value "`n$ipcPickFuncCode"
     }
 }
 
 Invoke-Expression $funcCode
 Invoke-Expression $ipcxFuncCode
-Invoke-Expression $ifpickFuncCode
+Invoke-Expression $ipcPickFuncCode
 
 Install-VSCodeTerminalTabTitle
 

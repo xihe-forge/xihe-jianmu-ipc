@@ -80,22 +80,22 @@ test('install.ps1 defines ipcx codex session function', () => {
   assert.match(installPs1, /mcp_servers\.jianmu-ipc\.env\.IPC_NAME/);
 });
 
-test('install.ps1 defines ifpick interactive session picker', () => {
-  const ifpickFunc = extractHereStringVar('ifpickFuncCode');
+test('install.ps1 defines ipc-pick interactive session picker', () => {
+  const ipcPickFunc = extractHereStringVar('ipcPickFuncCode');
 
-  assert.match(ifpickFunc, /function ifpick\s*\{/);
-  assert.match(ifpickFunc, /function Get-IfpickHubRows/);
-  assert.match(ifpickFunc, /sessions-history\?limit=50/);
-  assert.match(ifpickFunc, /function Get-IfpickClaudeJsonls/);
-  assert.match(ifpickFunc, /\.claude\\projects/);
-  assert.match(ifpickFunc, /function Get-IfpickCodexJsonls/);
-  assert.match(ifpickFunc, /archived_sessions/);
-  assert.match(ifpickFunc, /IFPICK_LIMIT/);
-  assert.match(ifpickFunc, /IFPICK_DRYRUN/);
-  assert.match(ifpickFunc, /\$command = "ipc \$name -resume \$sessionId"/);
-  assert.match(ifpickFunc, /\$command = "ipcx \$name -resume \$sessionId"/);
-  assert.match(ifpickFunc, /Write-Output "DISPATCH: \$command"/);
-  assert.match(ifpickFunc, /codex resume \$sessionId --dangerously-bypass-approvals-and-sandbox/);
+  assert.match(ipcPickFunc, /function ipc-pick\s*\{/);
+  assert.match(ipcPickFunc, /function Get-IpcPickHubRows/);
+  assert.match(ipcPickFunc, /sessions-history\?limit=50/);
+  assert.match(ipcPickFunc, /function Get-IpcPickClaudeJsonls/);
+  assert.match(ipcPickFunc, /\.claude\\projects/);
+  assert.match(ipcPickFunc, /function Get-IpcPickCodexJsonls/);
+  assert.match(ipcPickFunc, /archived_sessions/);
+  assert.match(ipcPickFunc, /IPC_PICK_LIMIT/);
+  assert.match(ipcPickFunc, /IPC_PICK_DRYRUN/);
+  assert.match(ipcPickFunc, /\$command = "ipc \$name -resume \$sessionId"/);
+  assert.match(ipcPickFunc, /\$command = "ipcx \$name -resume \$sessionId"/);
+  assert.match(ipcPickFunc, /Write-Output "DISPATCH: \$command"/);
+  assert.match(ipcPickFunc, /codex resume \$sessionId --dangerously-bypass-approvals-and-sandbox/);
 });
 
 test('install.ps1 checks ipcx with exact line-start anchor', () => {
@@ -348,15 +348,15 @@ test('install.ps1 installs ipc and ipcx idempotently for each selected profile',
   assert.match(installPs1, /\$needsIpcxUpgrade = \$hasIpcx -and !\(/);
   assert.match(installPs1, /-Pattern 'model_reasoning_effort'/);
   assert.match(installPs1, /-Pattern 'Get-IpcxSessionsByNameFromHub'/);
-  assert.match(installPs1, /\$ifpickMatches = @\(Select-String -Path \$p -Pattern '\^function ifpick\\s\*\\\{'/);
-  assert.match(installPs1, /function Remove-IfpickProfileBlocks/);
-  assert.match(installPs1, /Add-Content -Path \$p -Value "`n\$ifpickFuncCode"/);
-  assert.match(installPs1, /-Pattern 'Get-IfpickHubRows'/);
+  assert.match(installPs1, /\$ipcPickMatches = @\(Select-String -Path \$p -Pattern '\^function ipc-pick\\s\*\\\{'/);
+  assert.match(installPs1, /function Remove-IpcPickProfileBlocks/);
+  assert.match(installPs1, /Add-Content -Path \$p -Value "`n\$ipcPickFuncCode"/);
+  assert.match(installPs1, /-Pattern 'Get-IpcPickHubRows'/);
   assert.match(installPs1, /-Pattern '\\\$rows = \\\$response\\.Content \\| ConvertFrom-Json'/);
-  assert.match(installPs1, /-Pattern 'IFPICK_DRYRUN'/);
+  assert.match(installPs1, /-Pattern 'IPC_PICK_DRYRUN'/);
 });
 
-test('install.ps1 appends ifpick to fresh profiles', (t) => {
+test('install.ps1 appends ipc-pick to fresh profiles', (t) => {
   if (process.platform !== 'win32') {
     t.skip('Windows PowerShell is required for install.ps1 behavior tests');
     return;
@@ -374,11 +374,11 @@ test('install.ps1 appends ifpick to fresh profiles', (t) => {
       join(userProfile, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
     ]) {
       const content = readFileSync(profile, 'utf8');
-      const ifpickMatches = content.match(/^function ifpick\s*\{/gm) ?? [];
-      assert.equal(ifpickMatches.length, 1);
-      assert.match(content, /function Get-IfpickHubRows/);
-      assert.match(content, /function Get-IfpickCodexJsonls/);
-      assert.match(content, /IFPICK_DRYRUN/);
+      const ipcPickMatches = content.match(/^function ipc-pick\s*\{/gm) ?? [];
+      assert.equal(ipcPickMatches.length, 1);
+      assert.match(content, /function Get-IpcPickHubRows/);
+      assert.match(content, /function Get-IpcPickCodexJsonls/);
+      assert.match(content, /IPC_PICK_DRYRUN/);
     }
   });
 });
@@ -480,7 +480,7 @@ test('install.ps1 upgrades stale ipcx profile functions to pin xhigh reasoning',
   });
 });
 
-test('install.ps1 upgrades stale ifpick profile functions to add filesystem picker sources', (t) => {
+test('install.ps1 upgrades stale ipc-pick profile functions to add filesystem picker sources', (t) => {
   if (process.platform !== 'win32') {
     t.skip('Windows PowerShell is required for install.ps1 behavior tests');
     return;
@@ -503,29 +503,29 @@ test('install.ps1 upgrades stale ifpick profile functions to add filesystem pick
       'PowerShell',
       'Microsoft.PowerShell_profile.ps1',
     );
-    const oldIfpick = [
-      'function ifpick {',
-      '    Write-Output "old ifpick"',
+    const oldIpcPick = [
+      'function ipc-pick {',
+      '    Write-Output "old ipc-pick"',
       '}',
       '',
     ].join('\n');
 
     for (const profile of [ps5Profile, ps7Profile]) {
       mkdirSync(dirname(profile), { recursive: true });
-      writeFileSync(profile, oldIfpick, 'utf8');
+      writeFileSync(profile, oldIpcPick, 'utf8');
     }
 
     runInstallPs1(env);
 
     for (const profile of [ps5Profile, ps7Profile]) {
       const content = readFileSync(profile, 'utf8');
-      const ifpickMatches = content.match(/^function ifpick\s*\{/gm) ?? [];
-      assert.equal(ifpickMatches.length, 1);
-      assert.doesNotMatch(content, /old ifpick/);
-      assert.match(content, /Get-IfpickHubRows/);
-      assert.match(content, /Get-IfpickClaudeJsonls/);
-      assert.match(content, /Get-IfpickCodexJsonls/);
-      assert.match(content, /IFPICK_DRYRUN/);
+      const ipcPickMatches = content.match(/^function ipc-pick\s*\{/gm) ?? [];
+      assert.equal(ipcPickMatches.length, 1);
+      assert.doesNotMatch(content, /old ipc-pick/);
+      assert.match(content, /Get-IpcPickHubRows/);
+      assert.match(content, /Get-IpcPickClaudeJsonls/);
+      assert.match(content, /Get-IpcPickCodexJsonls/);
+      assert.match(content, /IPC_PICK_DRYRUN/);
     }
   });
 });

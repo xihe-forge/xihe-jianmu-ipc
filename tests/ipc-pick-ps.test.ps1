@@ -24,7 +24,7 @@ if (-not (Test-Path -Path $ShellExe -PathType Leaf)) {
 }
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$tempRoot = Join-Path $env:TEMP ("ifpick-dogfood-" + [guid]::NewGuid().ToString('n'))
+$tempRoot = Join-Path $env:TEMP ("ipc-pick-dogfood-" + [guid]::NewGuid().ToString('n'))
 $installUserProfile = Join-Path $tempRoot 'install-user'
 $appData = Join-Path $tempRoot 'AppData\Roaming'
 
@@ -101,7 +101,7 @@ function Add-CodexJsonl {
     return $path
 }
 
-function Invoke-IfpickCase {
+function Invoke-IpcPickCase {
     param(
         [Parameter(Mandatory)][string]$UserProfile,
         [Parameter(Mandatory)][string]$CodexHome,
@@ -129,21 +129,21 @@ function Invoke-WebRequest {
     }
     [pscustomobject]@{ Content = '$escapedHubJson' }
 }
-`$script:IfpickInputs = $inputArray
+`$script:IpcPickInputs = $inputArray
 function Read-Host {
     param([string]`$Prompt)
-    if (`$script:IfpickInputs.Count -eq 0) { return '' }
-    `$value = [string]`$script:IfpickInputs[0]
-    if (`$script:IfpickInputs.Count -gt 1) {
-        `$script:IfpickInputs = @(`$script:IfpickInputs[1..(`$script:IfpickInputs.Count - 1)])
+    if (`$script:IpcPickInputs.Count -eq 0) { return '' }
+    `$value = [string]`$script:IpcPickInputs[0]
+    if (`$script:IpcPickInputs.Count -gt 1) {
+        `$script:IpcPickInputs = @(`$script:IpcPickInputs[1..(`$script:IpcPickInputs.Count - 1)])
     } else {
-        `$script:IfpickInputs = @()
+        `$script:IpcPickInputs = @()
     }
     return `$value
 }
-`$env:IFPICK_DRYRUN = '1'
+`$env:IPC_PICK_DRYRUN = '1'
 . $quotedProfilePath
-ifpick
+ipc-pick
 "@
 
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
@@ -212,44 +212,44 @@ try {
     $emptyJson = ConvertTo-HubJson
     $failed = $false
 
-    $output = Invoke-IfpickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $emptyJson
-    Write-CaseResult -Name 'empty-everywhere' -Passed ((Normalize-Output $output) -match 'ifpick: no sessions found\.') -Output $output
+    $output = Invoke-IpcPickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $emptyJson
+    Write-CaseResult -Name 'empty-everywhere' -Passed ((Normalize-Output $output) -match 'ipc-pick: no sessions found\.') -Output $output
 
     $hubClaudeId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     $hubClaudeJson = ConvertTo-HubJson -Rows @(@{ name = 'hub-claude'; runtime = 'claude'; sessionId = $hubClaudeId; cwd = 'D:\workspace\ai\research\xiheAi'; lastSeenAt = 1778200000000 })
-    $output = Invoke-IfpickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubClaudeJson -Inputs @('1')
+    $output = Invoke-IpcPickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubClaudeJson -Inputs @('1')
     Write-CaseResult -Name 'hub-claude-dispatch' -Passed ((Normalize-Output $output) -match [regex]::Escape("DISPATCH: ipc hub-claude -resume $hubClaudeId")) -Output $output
 
     $hubCodexId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     $hubCodexJson = ConvertTo-HubJson -Rows @(@{ name = 'codex-known'; runtime = 'codex'; sessionId = $hubCodexId; cwd = 'D:\workspace\ai\research\xiheAi'; lastSeenAt = 1778200000000 })
-    $output = Invoke-IfpickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubCodexJson -Inputs @('1')
+    $output = Invoke-IpcPickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubCodexJson -Inputs @('1')
     Write-CaseResult -Name 'hub-codex-ipcx-dispatch' -Passed ((Normalize-Output $output) -match [regex]::Escape("DISPATCH: ipcx codex-known -resume $hubCodexId")) -Output $output
 
-    $output = Invoke-IfpickCase -UserProfile $orphanHome.UserProfile -CodexHome $orphanHome.CodexHome -HubJson $emptyJson -Inputs @('1')
+    $output = Invoke-IpcPickCase -UserProfile $orphanHome.UserProfile -CodexHome $orphanHome.CodexHome -HubJson $emptyJson -Inputs @('1')
     $normalized = Normalize-Output $output
     $orphanPass = ($normalized -match [regex]::Escape("DISPATCH: codex resume $orphanId --dangerously-bypass-approvals-and-sandbox")) -and ($normalized -match 'model_reasoning_effort')
     Write-CaseResult -Name 'orphan-codex-direct-dispatch' -Passed $orphanPass -Output $output
 
     $dedupJson = ConvertTo-HubJson -Rows @(@{ name = 'hub-dedup'; runtime = 'claude'; sessionId = $dedupId; cwd = 'D:\workspace\ai\research\xiheAi'; lastSeenAt = 1778200000000 })
-    $output = Invoke-IfpickCase -UserProfile $dedupHome.UserProfile -CodexHome $dedupHome.CodexHome -HubJson $dedupJson -Inputs @('q')
+    $output = Invoke-IpcPickCase -UserProfile $dedupHome.UserProfile -CodexHome $dedupHome.CodexHome -HubJson $dedupJson -Inputs @('q')
     Write-CaseResult -Name 'merged-dedup-renders-once' -Passed ((Count-Needle -Text $output -Needle 'dddddddd') -eq 1) -Output $output
 
     $sortJson = ConvertTo-HubJson -Rows @(
         @{ name = 'older'; runtime = 'claude'; sessionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'; cwd = 'D:\workspace\ai\research\xiheAi'; lastSeenAt = 1778200000000 },
         @{ name = 'newer'; runtime = 'claude'; sessionId = 'ffffffff-ffff-4fff-8fff-ffffffffffff'; cwd = 'D:\workspace\ai\research\xiheAi'; lastSeenAt = 1778203600000 }
     )
-    $output = Invoke-IfpickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $sortJson -Inputs @('q')
+    $output = Invoke-IpcPickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $sortJson -Inputs @('q')
     $newerIndex = $output.IndexOf('newer')
     $olderIndex = $output.IndexOf('older')
     Write-CaseResult -Name 'sort-most-recent-first' -Passed (($newerIndex -ge 0) -and ($olderIndex -gt $newerIndex)) -Output $output
 
-    $output = Invoke-IfpickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubClaudeJson -Inputs @('q')
-    $qPass = ((Normalize-Output $output) -match 'ifpick: aborted\.') -and ((Normalize-Output $output) -notmatch 'DISPATCH:')
+    $output = Invoke-IpcPickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubClaudeJson -Inputs @('q')
+    $qPass = ((Normalize-Output $output) -match 'ipc-pick: aborted\.') -and ((Normalize-Output $output) -notmatch 'DISPATCH:')
     Write-CaseResult -Name 'q-aborts' -Passed $qPass -Output $output
 
-    $output = Invoke-IfpickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubClaudeJson -Inputs @('99', '1')
+    $output = Invoke-IpcPickCase -UserProfile $emptyHome.UserProfile -CodexHome $emptyHome.CodexHome -HubJson $hubClaudeJson -Inputs @('99', '1')
     $retryNormalized = Normalize-Output $output
-    $retryPass = ($retryNormalized -match 'ifpick: invalid selection') -and ($retryNormalized -match [regex]::Escape("DISPATCH: ipc hub-claude -resume $hubClaudeId"))
+    $retryPass = ($retryNormalized -match 'ipc-pick: invalid selection') -and ($retryNormalized -match [regex]::Escape("DISPATCH: ipc hub-claude -resume $hubClaudeId"))
     Write-CaseResult -Name 'out-of-range-reprompts' -Passed $retryPass -Output $output
 
     if ($failed) {

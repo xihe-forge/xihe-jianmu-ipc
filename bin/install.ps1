@@ -30,6 +30,7 @@ function ipc {
         [Parameter()][switch]`$resume,
         [Parameter()][switch]`$pick,
         [Parameter()][ValidateSet('high', 'max')][string]`$effort,
+        [Parameter()][switch]`$save,
         [Parameter(ValueFromRemainingArguments=`$true)][object[]]`$rest
     )
 
@@ -86,6 +87,14 @@ function ipc {
         `$effortLevel = 'max'
     } else {
         `$effortLevel = 'high'
+    }
+
+    if (`$save) {
+        if (-not `$effort) {
+            Write-Warning "-save ignored: -effort <high|max> required to persist."
+        } else {
+            Update-IpcEffortConfig -Name `$roleKey -Effort `$effort
+        }
     }
 
     `$env:IPC_NAME = `$Name
@@ -280,6 +289,128 @@ function Get-IpcSessionsByNameFromHub {
     } catch {}
 
     return @()
+}
+
+function Get-IpcEffortConfigPath {
+    return (Join-Path `$env:USERPROFILE '.claude\jianmu-ipc-effort-max.json')
+}
+
+function Update-IpcEffortConfig {
+    param(
+        [Parameter(Mandatory)][string]`$Name,
+        [Parameter(Mandatory)][ValidateSet('high', 'max')][string]`$Effort
+    )
+
+    `$normalized = `$Name.Trim().ToLowerInvariant()
+    if (-not `$normalized) {
+        Write-Error "ipc-effort: name is required."
+        return
+    }
+
+    `$configPath = Get-IpcEffortConfigPath
+    `$add = @()
+    `$remove = @()
+    if (Test-Path -Path `$configPath -PathType Leaf) {
+        try {
+            `$existing = Get-Content -LiteralPath `$configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (`$existing.add) {
+                `$add = @(`$existing.add | ForEach-Object { ([string]`$_).Trim().ToLowerInvariant() } | Where-Object { `$_ })
+            }
+            if (`$existing.remove) {
+                `$remove = @(`$existing.remove | ForEach-Object { ([string]`$_).Trim().ToLowerInvariant() } | Where-Object { `$_ })
+            }
+        } catch {
+            Write-Warning "ipc-effort: ignored unparsable `$configPath; rewriting fresh."
+        }
+    }
+
+    if (`$Effort -eq 'max') {
+        `$remove = @(`$remove | Where-Object { `$_ -ne `$normalized })
+        if (`$add -notcontains `$normalized) { `$add += `$normalized }
+    } else {
+        `$add = @(`$add | Where-Object { `$_ -ne `$normalized })
+        if (`$remove -notcontains `$normalized) { `$remove += `$normalized }
+    }
+
+    `$dir = Split-Path -Parent `$configPath
+    if (-not (Test-Path -Path `$dir -PathType Container)) {
+        New-Item -ItemType Directory -Path `$dir -Force | Out-Null
+    }
+    `$payload = [pscustomobject]@{ add = `$add; remove = `$remove }
+    `$payload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath `$configPath -Encoding UTF8
+    Write-Host "ipc-effort: '`$normalized' -> `$Effort (saved to `$configPath)"
+}
+
+function ipc-effort {
+    param(
+        [Parameter(Position=0)][ValidateSet('add', 'remove', 'list', 'show', 'clear')][string]`$Action,
+        [Parameter(Position=1)][string]`$Name
+    )
+
+    `$configPath = Get-IpcEffortConfigPath
+
+    switch (`$Action) {
+        'add' {
+            if ([string]::IsNullOrWhiteSpace(`$Name)) {
+                Write-Error "usage: ipc-effort add <name>"
+                return
+            }
+            Update-IpcEffortConfig -Name `$Name -Effort 'max'
+        }
+        'remove' {
+            if ([string]::IsNullOrWhiteSpace(`$Name)) {
+                Write-Error "usage: ipc-effort remove <name>"
+                return
+            }
+            Update-IpcEffortConfig -Name `$Name -Effort 'high'
+        }
+        'show' {
+            if (Test-Path -Path `$configPath -PathType Leaf) {
+                Get-Content -LiteralPath `$configPath -Raw
+            } else {
+                Write-Output "(no config at `$configPath)"
+            }
+        }
+        'list' {
+            `$effective = [System.Collections.Generic.List[string]]::new()
+            foreach (`$role in @('harness', 'jianmu-pm', 'taiwei-pm', 'taiwei-architect', 'taiwei-director')) {
+                [void]`$effective.Add(`$role)
+            }
+            if (Test-Path -Path `$configPath -PathType Leaf) {
+                try {
+                    `$cfg = Get-Content -LiteralPath `$configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    foreach (`$r in @(`$cfg.add)) {
+                        `$n = ([string]`$r).Trim().ToLowerInvariant()
+                        if (`$n -and -not `$effective.Contains(`$n)) { [void]`$effective.Add(`$n) }
+                    }
+                    foreach (`$r in @(`$cfg.remove)) {
+                        `$n = ([string]`$r).Trim().ToLowerInvariant()
+                        if (`$n) { [void]`$effective.Remove(`$n) }
+                    }
+                } catch {
+                    Write-Warning "ipc-effort: ignored unparsable `$configPath."
+                }
+            }
+            Write-Output "effective effort=max names:"
+            (`$effective | Sort-Object -Unique) | ForEach-Object { Write-Output "  `$_" }
+        }
+        'clear' {
+            if (Test-Path -Path `$configPath -PathType Leaf) {
+                Remove-Item -LiteralPath `$configPath -Force
+                Write-Host "ipc-effort: config cleared (`$configPath)"
+            } else {
+                Write-Host "ipc-effort: (already empty)"
+            }
+        }
+        default {
+            Write-Output "usage:"
+            Write-Output "  ipc-effort add <name>     # promote <name> to effort=max"
+            Write-Output "  ipc-effort remove <name>  # demote <name> to effort=high"
+            Write-Output "  ipc-effort list           # effective effort=max names (default + add - remove)"
+            Write-Output "  ipc-effort show           # raw JSON config"
+            Write-Output "  ipc-effort clear          # delete config"
+        }
+    }
 }
 "@
 
@@ -1084,7 +1215,7 @@ function Remove-IpcProfileBlocks {
     $skip = $false
     $depth = 0
     foreach ($line in $lines) {
-        if (-not $skip -and $line -match '^function (ipc|Get-IpcSessionJsonls|Get-OnlineSessionId|Get-IpcSessionsByNameFromHub)\s*\{') {
+        if (-not $skip -and $line -match '^function (ipc|ipc-effort|Get-IpcSessionJsonls|Get-OnlineSessionId|Get-IpcSessionsByNameFromHub|Get-IpcEffortConfigPath|Update-IpcEffortConfig)\s*\{') {
             $skip = $true
             $depth = 0
         }
@@ -1179,7 +1310,9 @@ foreach ($p in $profilesToInstall) {
         !(Select-String -Path $p -Pattern 'ValueFromRemainingArguments' -Quiet -ErrorAction SilentlyContinue) -or
         !(Select-String -Path $p -Pattern 'Get-IpcSessionsByNameFromHub' -Quiet -ErrorAction SilentlyContinue) -or
         !(Select-String -Path $p -Pattern 'governanceEffortRoles' -Quiet -ErrorAction SilentlyContinue) -or
-        !(Select-String -Path $p -Pattern '--effort' -Quiet -ErrorAction SilentlyContinue)
+        !(Select-String -Path $p -Pattern '--effort' -Quiet -ErrorAction SilentlyContinue) -or
+        !(Select-String -Path $p -Pattern 'function ipc-effort' -Quiet -ErrorAction SilentlyContinue) -or
+        !(Select-String -Path $p -Pattern 'Update-IpcEffortConfig' -Quiet -ErrorAction SilentlyContinue)
     )
 
     if ($needsIpcUpgrade) {

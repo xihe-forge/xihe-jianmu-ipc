@@ -66,7 +66,7 @@ const codexSessionMapPollMs = parseNonNegativeInteger(
 );
 const codexSessionMapTimeoutMs = parseNonNegativeInteger(
   process.env.IPC_CODEX_SESSION_MAP_TIMEOUT_MS,
-  5 * 60 * 1000,
+  60 * 60 * 1000,
 );
 const wrapperStartedAt = Date.now();
 const wrapperCwd = process.cwd();
@@ -78,6 +78,7 @@ let ptyBridgeProcessing = false;
 let ptyBridgeWatcher = null;
 let sessionMapTimer = null;
 let sessionMapDeadlineTimer = null;
+let sessionMapWatcher = null;
 let sessionMapRecordedId = null;
 let lastPtyBridgeDeferLogAt = 0;
 let lastPtyBridgeDeferReason = null;
@@ -320,6 +321,13 @@ function stopSessionMapPolling() {
     clearTimeout(sessionMapDeadlineTimer);
     sessionMapDeadlineTimer = null;
   }
+  if (sessionMapWatcher) {
+    const watcher = sessionMapWatcher;
+    sessionMapWatcher = null;
+    try {
+      watcher.close?.();
+    } catch {}
+  }
 }
 
 function tryRecordSessionMap() {
@@ -331,9 +339,30 @@ function tryRecordSessionMap() {
   return true;
 }
 
+function shouldHandleCodexSessionFsEvent(filename) {
+  if (filename === undefined || filename === null) return true;
+  return String(filename).replace(/\\/g, '/').endsWith('.jsonl');
+}
+
+function startSessionMapWatcher() {
+  if (sessionMapWatcher) return;
+  try {
+    sessionMapWatcher = watch(codexSessionsRoot, { recursive: true }, (_eventType, filename) => {
+      if (!shouldHandleCodexSessionFsEvent(filename)) return;
+      tryRecordSessionMap();
+    });
+    sessionMapWatcher.unref?.();
+  } catch (error) {
+    process.stderr.write(
+      `[codex-title-wrapper] session map watch unavailable, falling back to polling: ${error?.message ?? error}\n`,
+    );
+  }
+}
+
 function startSessionMapPolling() {
   if (!ipcName) return;
   if (tryRecordSessionMap()) return;
+  startSessionMapWatcher();
   sessionMapTimer = setInterval(() => {
     tryRecordSessionMap();
   }, Math.max(10, codexSessionMapPollMs));

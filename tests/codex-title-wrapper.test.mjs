@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -166,11 +166,12 @@ async function runWrapper({
   inputDelayMs = 10,
   timeoutMs = 1500,
   afterSpawn = null,
+  nodeArgs = [],
 }) {
   const logPath = join(tempDir, `${Math.random().toString(16).slice(2)}.jsonl`);
 
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [wrapperPath, 'codex.cmd', '--version'], {
+    const child = spawn(process.execPath, [...nodeArgs, wrapperPath, 'codex.cmd', '--version'], {
       cwd: projectRoot,
       env: { ...process.env, IPC_NAME: '', PTY_MOCK_LOG: logPath, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -238,6 +239,87 @@ function count(haystack, needle) {
 
 function writeEvents(result) {
   return result.events.filter((event) => event.event === 'write');
+}
+
+const fsWatchMockPreloadSource = String.raw`
+import fs, { appendFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+
+const originalSetTimeout = globalThis.setTimeout;
+
+function normalizePath(value) {
+  return String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function appendJsonl(path, payload) {
+  if (!path) return;
+  appendFileSync(path, JSON.stringify({ t: Date.now(), ...payload }) + '\n', 'utf8');
+}
+
+function mockWatch(path, options, listener) {
+  const callback = typeof options === 'function' ? options : listener;
+  const expectedSessionRoot = normalizePath(process.env.CODEX_HOME ? process.env.CODEX_HOME + '/sessions' : '');
+  const normalizedPath = normalizePath(path);
+  const isSessionWatch = Boolean(expectedSessionRoot) && normalizedPath === expectedSessionRoot;
+  appendJsonl(process.env.FS_WATCH_MOCK_LOG, {
+    event: 'watch',
+    path: String(path),
+    recursive: typeof options === 'object' ? Boolean(options?.recursive) : false,
+    isSessionWatch,
+  });
+
+  if (isSessionWatch && process.env.FS_WATCH_MOCK_MODE === 'throw') {
+    appendJsonl(process.env.FS_WATCH_MOCK_LOG, { event: 'watch-throw', path: String(path) });
+    throw new Error('mock fs.watch unsupported');
+  }
+
+  if (isSessionWatch && process.env.FS_WATCH_MOCK_MODE === 'trigger') {
+    const delayMs = Number.parseInt(process.env.FS_WATCH_MOCK_TRIGGER_DELAY_MS ?? '0', 10);
+    const filename = process.env.FS_WATCH_MOCK_FILENAME || 'rollout.jsonl';
+    originalSetTimeout(() => {
+      appendJsonl(process.env.FS_WATCH_MOCK_LOG, { event: 'watch-trigger', filename });
+      callback?.('change', filename);
+    }, Number.isFinite(delayMs) ? delayMs : 0);
+  }
+
+  return {
+    close() {
+      appendJsonl(process.env.FS_WATCH_MOCK_LOG, { event: 'watch-close', path: String(path), isSessionWatch });
+    },
+    unref() {
+      appendJsonl(process.env.FS_WATCH_MOCK_LOG, { event: 'watch-unref', path: String(path), isSessionWatch });
+      return this;
+    },
+  };
+}
+
+Object.defineProperty(fs, 'watch', {
+  configurable: true,
+  writable: true,
+  value: mockWatch,
+});
+syncBuiltinESMExports();
+
+if (process.env.TIMEOUT_MOCK_LOG) {
+  globalThis.setTimeout = function setTimeoutWithLog(callback, delay, ...args) {
+    appendJsonl(process.env.TIMEOUT_MOCK_LOG, { event: 'set-timeout', delay });
+    return originalSetTimeout(callback, delay, ...args);
+  };
+}
+`;
+
+async function writePreloadFile(source) {
+  const preloadPath = join(tempDir, `${Math.random().toString(16).slice(2)}-preload.mjs`);
+  await writeFile(preloadPath, source, 'utf8');
+  return pathToFileURL(preloadPath).href;
+}
+
+async function readJsonlFile(filePath) {
+  if (!existsSync(filePath)) return [];
+  return (await readFile(filePath, 'utf8'))
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
 
 describe('Phase 2 K.S Codex title wrapper', () => {
@@ -435,6 +517,118 @@ describe('Phase 2 K.S Codex title wrapper', () => {
 
     assert.equal(result.code, 0);
     assert.match(result.stderr, /pty bridge dropped: reason=queue-cap-exceeded msg_id=msg-drop/);
+  });
+
+  test('session map fs.watch trigger records without waiting for polling', async () => {
+    const codexHome = join(tempDir, `codex-home-watch-${Date.now()}`);
+    const sessionDir = join(codexHome, 'sessions', '2026', '05', '10');
+    const sessionId = '44444444-4444-4444-8444-444444444444';
+    const transcriptPath = join(
+      sessionDir,
+      `rollout-2026-05-10T01-00-00-${sessionId}.jsonl`,
+    );
+    const watchLogPath = join(tempDir, `watch-${Date.now()}.jsonl`);
+    const preloadPath = await writePreloadFile(fsWatchMockPreloadSource);
+
+    const result = await runWrapper({
+      nodeArgs: ['--import', preloadPath],
+      env: {
+        IPC_NAME: 'test-map-watch',
+        CODEX_HOME: codexHome,
+        IPC_CODEX_SESSION_MAP_POLL_MS: '10000',
+        IPC_CODEX_SESSION_MAP_TIMEOUT_MS: '1000',
+        IPC_CODEX_SESSION_MAP_POST_HUB: '0',
+        PTY_MOCK_CODEX_SESSION_ID: sessionId,
+        PTY_MOCK_CODEX_SESSION_PATH: transcriptPath,
+        PTY_MOCK_CODEX_SESSION_DELAY_MS: '35',
+        PTY_MOCK_EXIT_MS: '220',
+        FS_WATCH_MOCK_LOG: watchLogPath,
+        FS_WATCH_MOCK_MODE: 'trigger',
+        FS_WATCH_MOCK_TRIGGER_DELAY_MS: '80',
+        FS_WATCH_MOCK_FILENAME: `2026/05/10/rollout-2026-05-10T01-00-00-${sessionId}.jsonl`,
+      },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    const records = (await readFile(
+      join(codexHome, 'ipcx-session-map', 'test-map-watch.jsonl'),
+      'utf8',
+    )).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].sessionId, sessionId);
+    assert.equal(records[0].transcriptPath, transcriptPath);
+
+    const watchEvents = await readJsonlFile(watchLogPath);
+    assert.equal(watchEvents.some((event) => event.event === 'watch' && event.isSessionWatch && event.recursive), true);
+    assert.equal(watchEvents.some((event) => event.event === 'watch-trigger'), true);
+    assert.equal(watchEvents.some((event) => event.event === 'watch-close' && event.isSessionWatch), true);
+  });
+
+  test('session map default polling deadline is 60 minutes', async () => {
+    const codexHome = join(tempDir, `codex-home-deadline-${Date.now()}`);
+    const watchLogPath = join(tempDir, `watch-deadline-${Date.now()}.jsonl`);
+    const timeoutLogPath = join(tempDir, `timeouts-${Date.now()}.jsonl`);
+    const preloadPath = await writePreloadFile(fsWatchMockPreloadSource);
+
+    const result = await runWrapper({
+      nodeArgs: ['--import', preloadPath],
+      env: {
+        IPC_NAME: 'test-map-deadline',
+        CODEX_HOME: codexHome,
+        IPC_CODEX_SESSION_MAP_POST_HUB: '0',
+        PTY_MOCK_EXIT_MS: '120',
+        FS_WATCH_MOCK_LOG: watchLogPath,
+        TIMEOUT_MOCK_LOG: timeoutLogPath,
+      },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    const timeoutDelays = (await readJsonlFile(timeoutLogPath))
+      .filter((event) => event.event === 'set-timeout')
+      .map((event) => event.delay);
+    assert.equal(timeoutDelays.includes(60 * 60 * 1000), true);
+    assert.equal(timeoutDelays.includes(5 * 60 * 1000), false);
+  });
+
+  test('session map falls back to polling when fs.watch is unavailable', async () => {
+    const codexHome = join(tempDir, `codex-home-watch-fallback-${Date.now()}`);
+    const sessionDir = join(codexHome, 'sessions', '2026', '05', '10');
+    const sessionId = '55555555-5555-4555-8555-555555555555';
+    const transcriptPath = join(
+      sessionDir,
+      `rollout-2026-05-10T01-05-00-${sessionId}.jsonl`,
+    );
+    const watchLogPath = join(tempDir, `watch-fallback-${Date.now()}.jsonl`);
+    const preloadPath = await writePreloadFile(fsWatchMockPreloadSource);
+
+    const result = await runWrapper({
+      nodeArgs: ['--import', preloadPath],
+      env: {
+        IPC_NAME: 'test-map-watch-fallback',
+        CODEX_HOME: codexHome,
+        IPC_CODEX_SESSION_MAP_POLL_MS: '10',
+        IPC_CODEX_SESSION_MAP_TIMEOUT_MS: '1000',
+        IPC_CODEX_SESSION_MAP_POST_HUB: '0',
+        PTY_MOCK_CODEX_SESSION_ID: sessionId,
+        PTY_MOCK_CODEX_SESSION_PATH: transcriptPath,
+        PTY_MOCK_CODEX_SESSION_DELAY_MS: '80',
+        PTY_MOCK_EXIT_MS: '240',
+        FS_WATCH_MOCK_LOG: watchLogPath,
+        FS_WATCH_MOCK_MODE: 'throw',
+      },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /session map watch unavailable, falling back to polling/);
+    const records = (await readFile(
+      join(codexHome, 'ipcx-session-map', 'test-map-watch-fallback.jsonl'),
+      'utf8',
+    )).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].sessionId, sessionId);
+
+    const watchEvents = await readJsonlFile(watchLogPath);
+    assert.equal(watchEvents.some((event) => event.event === 'watch-throw'), true);
   });
 
   test('records IPC_NAME to a local Codex session map for resume lookup', async () => {

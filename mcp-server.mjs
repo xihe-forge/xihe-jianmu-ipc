@@ -2493,13 +2493,25 @@ function connect() {
 
   socket.addEventListener('message', handleWsMessage);
 
-  socket.addEventListener('close', (event) => {
+  socket.addEventListener('close', async (event) => {
     if (isShuttingDown) return;
     mcpTrace('ws_disconnect', { code: event.code, reason: event.reason });
     process.stderr.write(`[ipc] disconnected from hub (code=${event.code})\n`);
     if (ws !== socket) return;
     ws = null;
     stopAllCodexThreadKeepalives('ws-close');
+    if (event.code === 4001) {
+      try {
+        await fetch(`http://${HOST}:${IPC_PORT}/reclaim-name`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: IPC_NAME }),
+        });
+        process.stderr.write(`[ipc] reclaimed name '${IPC_NAME}' after 4001\n`);
+      } catch (err) {
+        process.stderr.write(`[ipc] reclaim-name failed: ${err?.message ?? err}\n`);
+      }
+    }
     scheduleReconnect();
   });
 
@@ -2557,13 +2569,25 @@ async function initialConnect() {
 
         socket.addEventListener('message', handleWsMessage);
 
-        socket.addEventListener('close', (ev) => {
+        socket.addEventListener('close', async (event) => {
           if (isShuttingDown) return;
-          mcpTrace('ws_disconnect', { code: ev.code, reason: ev.reason });
-          process.stderr.write(`[ipc] disconnected from hub (code=${ev.code})\n`);
+          mcpTrace('ws_disconnect', { code: event.code, reason: event.reason });
+          process.stderr.write(`[ipc] disconnected from hub (code=${event.code})\n`);
           if (ws !== socket) return;
           ws = null;
           stopAllCodexThreadKeepalives('ws-close');
+          if (event.code === 4001) {
+            try {
+              await fetch(`http://${HOST}:${IPC_PORT}/reclaim-name`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: IPC_NAME }),
+              });
+              process.stderr.write(`[ipc] reclaimed name '${IPC_NAME}' after 4001\n`);
+            } catch (err) {
+              process.stderr.write(`[ipc] reclaim-name failed: ${err?.message ?? err}\n`);
+            }
+          }
           scheduleReconnect();
         });
 
